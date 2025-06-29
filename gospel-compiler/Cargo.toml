@@ -1,0 +1,10 @@
+[package]
+name = "gospel-compiler"
+description = "Compiler for gospel source files"
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
