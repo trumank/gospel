@@ -10,13 +10,15 @@ pub enum GospelOpcode {
     // Basic opcodes
     Noop = 0x00, // ; ->
     #[strum(props(immediate_count = "1", stack_out_count = "1"))]
-    Constant = 0x01, // <imm>; -> [push stack]
+    IntConstant = 0x01, // <imm>; -> [push stack]
     #[strum(props(stack_in_count = "1", stack_out_count = "2"))]
     Dup = 0x02, // ; [pop stack] -> [push stack], [push stack]
+    #[strum(props(stack_in_count = "1", stack_out_count = "2"))]
+    Dup2 = 0x03, // ; [pop stack] -> [push stack], [push stack]
     #[strum(props(stack_in_count = "2", stack_out_count = "2"))]
-    Permute = 0x03, // ; [pop stack], [pop stack] -> [push stack], [push stack]
+    Permute = 0x04, // ; [pop stack], [pop stack] -> [push stack], [push stack]
     #[strum(props(stack_in_count = "1"))]
-    Pop = 0x04, // ; [pop stack] ->
+    Pop = 0x05, // ; [pop stack] ->
     // Structure opcodes
     #[strum(props(stack_in_count = "1"))]
     Align = 0x10, // ; [pop stack] ->
@@ -26,6 +28,8 @@ pub enum GospelOpcode {
     BaseClass = 0x12, // <imm>; [pop stack] ->
     #[strum(props(immediate_count = "1", stack_in_count = "1"))]
     Member = 0x13, // <imm>; [pop stack] ->
+    #[strum(props(stack_in_count = "1"))]
+    ReturnTypeLayout = 0x14, // [pop stack] ->
     // Logical opcodes
     #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
     And = 0x20, // ; [pop stack], [pop stack] -> [push stack]
@@ -54,6 +58,21 @@ pub enum GospelOpcode {
     LoadSlot = 0x51, // <imm>; -> [push stack]
     #[strum(props(immediate_count = "1", stack_out_count = "1"))]
     StoreSlot = 0x52, // <imm>; -> [push stack]
+    // Type opcodes
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
+    DynamicType = 0x60, // <imm>; [pop stack] [pop stack] x <imm> -> [push stack]
+    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
+    TypeLayoutGetSize = 0x61, // ; [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
+    TypeLayoutGetAlignment = 0x62, // ; [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
+    TypeLayoutGetUnalignedSize = 0x63, // ; [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
+    TypeLayoutDoesMemberExist = 0x64, // <imm>; [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
+    TypeLayoutGetMemberType = 0x65, // <imm>; [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
+    TypeLayoutIsBaseOf = 0x66, // [pop stack] [pop stack] -> [push stack]
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
