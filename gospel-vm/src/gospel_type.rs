@@ -1,10 +1,41 @@
 ﻿use std::io::{Read, Write};
 use anyhow::anyhow;
-use strum_macros::{FromRepr};
+use strum_macros::{Display, FromRepr};
 use crate::bytecode::GospelInstruction;
 use crate::ser::{ReadExt, Readable, WriteExt, Writeable};
 
+/// Corresponds to <arch> in LLVM target triplet
+/// Architecture determines the instruction set and, sometimes, the calling convention used (combined with sys)
 #[derive(Debug, PartialEq, Eq, Clone, Copy, FromRepr)]
+#[repr(u8)]
+pub enum GospelTargetArch {
+    X86_64 = 0x00,
+    ARM64 = 0x01,
+    ARM64EC = 0x02,
+}
+
+/// Corresponds to <sys> in LLVM target triplet
+/// Target system generally defines calling convention used and object file format
+#[derive(Debug, PartialEq, Eq, Clone, Copy, FromRepr)]
+#[repr(u8)]
+pub enum GospelTargetOS {
+    None = 0x00,
+    Win32 = 0x01,
+    Linux = 0x02,
+    Darwin = 0x03,
+}
+
+/// Corresponds to <env> in LLVM target triplet
+/// Target env determines the ABI rules used for type layout calculation, for example semantics used for C++ class inheritance and exception handling
+#[derive(Debug, PartialEq, Eq, Clone, Copy, FromRepr)]
+#[repr(u8)]
+pub enum GospelTargetEnv {
+    MSVC = 0x00,
+    Gnu = 0x01,
+    Macho = 0x02,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, FromRepr, Display)]
 #[repr(u8)]
 pub enum GospelValueType {
     Integer = 0x00,
@@ -13,28 +44,12 @@ pub enum GospelValueType {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, FromRepr)]
-#[repr(u32)]
-pub enum GospelPlatform {
-    Unknown = 0x00,
-    Windows = 0x01,
-    Linux = 0x02,
-    Mac = 0x03,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy, FromRepr)]
-#[repr(u32)]
-pub enum GospelArch {
-    X64 = 0x00,
-    ARM64 = 0x01,
-    ARM64EC = 0x02,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy, FromRepr)]
-#[repr(u32)]
+#[repr(u8)]
 pub(crate) enum GospelPlatformConfigProperty {
-    PlatformId = 0x00, // ID of the platform, one of the values of GospelPlatform
-    PlatformWordSize = 0x01, // Size of the pointer for the platform, in bytes (8 for 64-bit platforms)
-    PlatformArch = 0x02, // Architecture for the platform, one of the values of GospelArch
+    TargetArch = 0x00, // target architecture (GospelTargetArch)
+    TargetOS = 0x01, // target operating system (GospelTargetOS)
+    TargetEnv = 0x02, // target environment (GospelTargetEnv)
+    AddressSize = 0x03, // size of the address (a pointer) on the platform, in bytes (8 bytes for 64-bit platforms, 4 bytes for 32-bit platforms)
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, FromRepr)]

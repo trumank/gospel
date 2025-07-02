@@ -1,5 +1,5 @@
-﻿use std::io::{Read, Write};
-use anyhow::anyhow;
+﻿use std::io::{Cursor, Read, Write};
+use anyhow::{anyhow, bail};
 use strum_macros::FromRepr;
 use crate::gospel_type::{GospelExternalTypeReference, GospelStaticTypeInstance, GospelTypeDefinition};
 use crate::ser::{ReadExt, Readable, WriteExt, Writeable};
@@ -58,11 +58,14 @@ pub(crate) struct GospelStringTable {
     pub(crate) data: Vec<String>,
 }
 impl GospelStringTable {
-    pub fn create(data: Vec<String>) -> Self {
+    pub(crate) fn create(data: Vec<String>) -> Self {
         Self{data}
     }
-    pub fn get(&self, index: u32) -> &str {
-        self.data[index as usize].as_str()
+    pub(crate) fn get(&self, index: u32) -> anyhow::Result<&str> {
+        if index as usize >= self.data.len() {
+            bail!("Invalid string table index #{} out of bounds (number of strings: {})", index, self.data.len());
+        }
+        Ok(self.data[index as usize].as_str())
     }
 }
 
@@ -97,7 +100,7 @@ impl Writeable for GospelContainerImport {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct GospelContainer {
+pub struct GospelContainer {
     pub(crate) header: GospelContainerHeader,
     pub(crate) imports: Vec<GospelContainerImport>,
     pub(crate) globals: Vec<GospelGlobalDefinition>,
@@ -107,8 +110,13 @@ pub(crate) struct GospelContainer {
     pub(crate) strings: GospelStringTable,
 }
 impl GospelContainer {
-    pub fn container_name(&self) -> &str {
+    pub fn container_name(&self) -> anyhow::Result<&str> {
         self.strings.get(self.header.container_name)
+    }
+    /// Reads the type container from the provided data buffer
+    pub fn read(data: &[u8]) -> anyhow::Result<GospelContainer> {
+        let mut reader = Cursor::new(data);
+        Ok(reader.de()?)
     }
 }
 

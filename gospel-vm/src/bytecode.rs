@@ -13,19 +13,20 @@ pub enum GospelOpcode {
     IntConstant = 0x01, // <imm>; -> [push stack]
     #[strum(props(stack_in_count = "1", stack_out_count = "2"))]
     Dup = 0x02, // ; [pop stack] -> [push stack], [push stack]
-    #[strum(props(stack_in_count = "1", stack_out_count = "2"))]
-    Dup2 = 0x03, // ; [pop stack] -> [push stack], [push stack]
     #[strum(props(stack_in_count = "2", stack_out_count = "2"))]
-    Permute = 0x04, // ; [pop stack], [pop stack] -> [push stack], [push stack]
+    Permute = 0x03, // ; [pop stack], [pop stack] -> [push stack], [push stack]
     #[strum(props(stack_in_count = "1"))]
-    Pop = 0x05, // ; [pop stack] ->
+    Pop = 0x04, // ; [pop stack] ->
+    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
+    Equals = 0x05, // ; [pop stack] [pop stack] -> [push stack]
+    Return = 0x06, // ; ->
     // Structure opcodes
     #[strum(props(stack_in_count = "1"))]
     Align = 0x10, // ; [pop stack] ->
     #[strum(props(stack_in_count = "1"))]
     Pad = 0x11, // ; [pop stack] ->
-    #[strum(props(immediate_count = "1", stack_in_count = "1"))]
-    BaseClass = 0x12, // <imm>; [pop stack] ->
+    #[strum(props(stack_in_count = "1"))]
+    BaseClass = 0x12, // ; [pop stack] ->
     #[strum(props(immediate_count = "1", stack_in_count = "1"))]
     Member = 0x13, // <imm>; [pop stack] ->
     #[strum(props(stack_in_count = "1"))]
@@ -38,7 +39,11 @@ pub enum GospelOpcode {
     #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
     Xor = 0x22, // ; [pop stack], [pop stack] -> [push stack]
     #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
-    Flip = 0x23, // ; [pop stack], [pop stack] -> [push stack]
+    Shl = 0x23, // ; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
+    Shr = 0x24, // ; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
+    ReverseBits = 0x25, // ; [pop stack] -> [push stack]
     // Arithmetic opcodes
     #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
     Add = 0x30, // ; [pop stack], [pop stack] -> [push stack]
@@ -46,8 +51,12 @@ pub enum GospelOpcode {
     Sub = 0x31, // ; [pop stack], [pop stack] -> [push stack]
     #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
     Mul = 0x32, // ; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
+    Div = 0x33, // ; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
+    Rem = 0x34, // ; [pop stack], [pop stack] -> [push stack]
     #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
-    Neg = 0x33, // ; [pop stack] -> [push stack]
+    Neg = 0x35, // ; [pop stack] -> [push stack]
     // Control flow opcodes
     #[strum(props(immediate_count = "1"))]
     Branch = 0x40, // <imm>; ->
@@ -56,11 +65,11 @@ pub enum GospelOpcode {
     // Data storage opcodes
     #[strum(props(immediate_count = "1", stack_out_count = "1"))]
     LoadSlot = 0x51, // <imm>; -> [push stack]
-    #[strum(props(immediate_count = "1", stack_out_count = "1"))]
-    StoreSlot = 0x52, // <imm>; -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "1"))]
+    StoreSlot = 0x52, // <imm>; [pop stack] ->
     // Type opcodes
     #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
-    DynamicType = 0x60, // <imm>; [pop stack] [pop stack] x <imm> -> [push stack]
+    CreateTypeLayout = 0x60, // <imm>; [pop stack] [pop stack] x <imm> -> [push stack]
     #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
     TypeLayoutGetSize = 0x61, // ; [pop stack] -> [push stack]
     #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
@@ -70,9 +79,15 @@ pub enum GospelOpcode {
     #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
     TypeLayoutDoesMemberExist = 0x64, // <imm>; [pop stack] -> [push stack]
     #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
-    TypeLayoutGetMemberType = 0x65, // <imm>; [pop stack] -> [push stack]
+    TypeLayoutGetMemberOffset = 0x65, // <imm>; [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
+    TypeLayoutGetMemberSize = 0x66, // <imm>; [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
+    TypeLayoutGetMemberTypeLayout = 0x67, // <imm>; [pop stack] -> [push stack]
     #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
-    TypeLayoutIsBaseOf = 0x66, // [pop stack] [pop stack] -> [push stack]
+    TypeLayoutIsChildOf = 0x68, // [pop stack] [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
+    TypeLayoutGetOffsetOfBase = 0x69, // [pop stack] [pop stack] -> [push stack]
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -139,11 +154,11 @@ pub struct GospelInstruction {
 }
 
 impl GospelInstruction {
-    fn raw_opcode(&self) -> u8 { self.raw_opcode }
-    fn opcode(&self) -> Option<GospelOpcode> { GospelOpcode::from_repr(self.raw_opcode) }
-    fn instruction_encoding(&self) -> GospelInstructionEncoding { self.instruction_encoding }
-    fn immediate_operands(&self) -> &[u32] { &self.immediate_operands[0..self.instruction_encoding.immediate_count()] }
-    fn immediate_operand_at(&self, index: usize) -> Option<u32> { if index < self.instruction_encoding.immediate_count() { Some(self.immediate_operands[index]) } else { None } }
+    pub fn raw_opcode(&self) -> u8 { self.raw_opcode }
+    pub fn opcode(&self) -> Option<GospelOpcode> { GospelOpcode::from_repr(self.raw_opcode) }
+    pub fn instruction_encoding(&self) -> GospelInstructionEncoding { self.instruction_encoding }
+    pub fn immediate_operands(&self) -> &[u32] { &self.immediate_operands[0..self.instruction_encoding.immediate_count()] }
+    pub  fn immediate_operand_at(&self, index: usize) -> Option<u32> { if index < self.instruction_encoding.immediate_count() { Some(self.immediate_operands[index]) } else { None } }
 
     pub fn create(opcode: GospelOpcode, immediate_operands: &[u32]) -> GospelInstruction {
         let instruction_encoding = GospelInstructionEncoding::from_opcode(opcode);

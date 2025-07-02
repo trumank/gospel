@@ -1,5 +1,5 @@
-mod bytecode;
-mod gospel_type;
+pub mod bytecode;
+pub mod gospel_type;
 mod ser;
-mod container;
-mod vm;
+pub mod container;
+pub mod vm;
