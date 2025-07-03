@@ -2,38 +2,30 @@
 use anyhow::{anyhow, bail};
 use crate::bytecode::{GospelInstruction, GospelOpcode};
 use crate::container::{GospelContainer, GospelContainerImport, GospelContainerVersion, GospelGlobalDefinition};
-use crate::gospel_type::{GospelExternalTypeReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticTypeInstance, GospelStaticValue, GospelStaticValueType, GospelTypeArgumentDefinition, GospelTypeDefinition, GospelTypeIndex, GospelValueType};
+use crate::gospel_type::{GospelExternalFunctionReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelFunctionArgument, GospelFunctionDefinition, GospelFunctionIndex, GospelValueType, GospelLazyValue, GospelFunctionNamePair};
 
-/// Represents a reference to another type
+/// Represents a reference to a function
 #[derive(Debug, Clone)]
-pub enum GospelSourceTypeReference {
-    /// a reference to a type in this container
-    LocalType{type_name: String},
-    /// a reference to a type in another container
-    ExternalType{container_name: String, type_name: String},
+pub enum GospelSourceFunctionReference {
+    /// a reference to a function in this container
+    LocalFunction{ function_name: String},
+    /// a reference to a function in another container
+    ExternalFunction{container_name: String, function_name: String},
 }
 
 /// Represents a static value
 #[derive(Debug, Clone)]
 pub enum GospelSourceStaticValue {
     Integer(i32),
-    TypeReference(GospelSourceTypeReference),
-    StaticTypeInstance(GospelSourceStaticTypeInstance),
-}
-impl GospelSourceStaticValue {
-    pub fn result_value_type(&self) -> GospelValueType {
-        match self {
-            GospelSourceStaticValue::Integer(_) => { GospelValueType::Integer }
-            GospelSourceStaticValue::TypeReference(_) => { GospelValueType::TypeReference }
-            GospelSourceStaticValue::StaticTypeInstance(_) => { GospelValueType::TypeLayout }
-        }
-    }
+    FunctionId(GospelSourceFunctionReference),
+    LazyValue(GospelSourceLazyValue),
 }
 
-/// Represents a type instance created from type reference and arguments represented as static values
+/// Represents a lazily evaluated value created by calling the provided function with the given set of arguments
 #[derive(Debug, Clone)]
-pub struct GospelSourceStaticTypeInstance {
-    pub type_reference: GospelSourceTypeReference,
+pub struct GospelSourceLazyValue {
+    pub function_reference: GospelSourceFunctionReference,
+    pub return_value_type: GospelValueType,
     pub arguments: Vec<GospelSourceStaticValue>,
 }
 
@@ -49,81 +41,56 @@ pub enum GospelSourceSlotBinding {
     PlatformConfigProperty(GospelPlatformConfigProperty),
     /// slot is initialized with the value of a global variable with the specified name
     GlobalVariableValue(String),
-    /// slot is initialized with the value of the type argument at the given index
-    TypeArgumentValue(u32),
-}
-impl GospelSourceSlotBinding {
-    fn static_value_type(&self) -> Option<GospelValueType> {
-        match self {
-            GospelSourceSlotBinding::StaticValue(x) => Some(x.result_value_type()),
-            GospelSourceSlotBinding::PlatformConfigProperty(_) => Some(GospelValueType::Integer),
-            GospelSourceSlotBinding::GlobalVariableValue(_) => Some(GospelValueType::Integer),
-            _ => None
-        }
-    }
+    /// slot is initialized with the value of the function argument at the given index
+    ArgumentValue(u32),
 }
 
 #[derive(Debug, Clone)]
 struct GospelSourceSlotDefinition {
-    slot_name: String,
     slot_type: GospelValueType,
     slot_biding: GospelSourceSlotBinding,
 }
 #[derive(Debug, Clone)]
-struct GospelSourceTypeArgument {
+struct GospelSourceFunctionArgument {
     argument_type: GospelValueType,
     default_value: Option<GospelSourceStaticValue>,
 }
 
-/// Allows building definitions of types to be added to the type container writer later
+/// Allows building definitions of functions to be added to the container writer later
 #[derive(Debug, Clone, Default)]
-pub struct GospelSourceTypeDefinition {
-    type_name: String,
-    arguments: Vec<GospelSourceTypeArgument>,
+pub struct GospelSourceFunctionDefinition {
+    function_name: String,
+    hidden: bool,
+    arguments: Vec<GospelSourceFunctionArgument>,
     slots: Vec<GospelSourceSlotDefinition>,
     code: Vec<GospelInstruction>,
     referenced_strings: Vec<String>,
     referenced_string_lookup: HashMap<String, u32>,
 }
-impl GospelSourceTypeDefinition {
-    pub fn create(type_name: &str) -> Self {
+impl GospelSourceFunctionDefinition {
+    /// Creates a named function. When hidden is true, the function will not be visible outside the current container by name
+    pub fn create(function_name: &str, hidden: bool) -> Self {
         Self{
-            type_name: type_name.to_string(),
-            ..GospelSourceTypeDefinition::default()
+            function_name: function_name.to_string(),
+            hidden,
+            ..GospelSourceFunctionDefinition::default()
         }
     }
-    pub fn add_type_argument(&mut self, name: &str, value_type: GospelValueType, default_value: Option<GospelSourceStaticValue>) -> anyhow::Result<u32> {
-        if default_value.is_some() && default_value.as_ref().unwrap().result_value_type() != value_type {
-            bail!("Default value for type argument {} is of incompatible type", name.to_string());
-        }
+    pub fn add_function_argument(&mut self, value_type: GospelValueType, default_value: Option<GospelSourceStaticValue>) -> u32 {
         let new_argument_index = self.arguments.len() as u32;
-        self.arguments.push(GospelSourceTypeArgument{
+        self.arguments.push(GospelSourceFunctionArgument {
             argument_type: value_type,
             default_value,
         });
-        Ok(new_argument_index)
+        new_argument_index
     }
-    pub fn add_slot(&mut self, name: &str, value_type: GospelValueType, binding: GospelSourceSlotBinding) -> anyhow::Result<u32> {
-        // Attempt to evaluate the type of the binding with the information we have available (for globals we might not have enough information to do validation here)
-        let binding_value_type = match binding {
-            GospelSourceSlotBinding::TypeArgumentValue(index) => {
-                if index as usize >= self.arguments.len() {
-                    bail!("Invalid slot binding to type argument index #{} out of bounds (number of type arguments: {})", index, self.arguments.len());
-                }
-                Some(self.arguments[index as usize].argument_type)
-            }
-            _ => binding.static_value_type()
-        };
-        if binding_value_type.is_some() && binding_value_type.unwrap() != value_type {
-            bail!("Slot binding value type is incompatible with the value type of the slot");
-        }
+    pub fn add_slot(&mut self, value_type: GospelValueType, binding: GospelSourceSlotBinding) -> u32 {
         let new_slot_index = self.slots.len() as u32;
         self.slots.push(GospelSourceSlotDefinition{
-            slot_name: name.to_string(),
             slot_type: value_type,
             slot_biding: binding,
         });
-        Ok(new_slot_index)
+        new_slot_index
     }
     /// Note that this function should generally not be used directly, but is public to make extensions easier
     pub fn add_string_internal(&mut self, string: &str) -> u32 {
@@ -159,33 +126,33 @@ impl GospelSourceTypeDefinition {
         }
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[target_instruction_index])))
     }
-    pub fn add_member_instruction(&mut self, opcode: GospelOpcode, member_name: &str) -> anyhow::Result<u32> {
-        if opcode != GospelOpcode::Member && opcode != GospelOpcode::TypeLayoutDoesMemberExist &&
+    pub fn add_named_instruction(&mut self, opcode: GospelOpcode, member_name: &str) -> anyhow::Result<u32> {
+        if opcode != GospelOpcode::TypeLayoutDefineMember && opcode != GospelOpcode::TypeLayoutDoesMemberExist &&
             opcode != GospelOpcode::TypeLayoutGetMemberOffset && opcode != GospelOpcode::TypeLayoutGetMemberSize &&
-            opcode != GospelOpcode::TypeLayoutGetMemberTypeLayout {
-            bail!("Invalid opcode for control flow instruction (Member, TypeLayoutDoesMemberExist, TypeLayoutGetMemberOffset, TypeLayoutGetMemberSize and TypeLayoutGetMemberTypeLayout are allowed)");
+            opcode != GospelOpcode::TypeLayoutGetMemberTypeLayout && opcode != GospelOpcode::TypeLayoutAllocate {
+            bail!("Invalid opcode for named instruction (TypeLayoutAllocate, TypeLayoutDefineMember, TypeLayoutDoesMemberExist, TypeLayoutGetMemberOffset, TypeLayoutGetMemberSize and TypeLayoutGetMemberTypeLayout are allowed)");
         }
         let string_index = self.add_string_internal(member_name);
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[string_index])))
     }
     pub fn add_variadic_instruction(&mut self, opcode: GospelOpcode, argument_count: u32) -> anyhow::Result<u32> {
-        if opcode != GospelOpcode::CreateTypeLayout {
-            bail!("Invalid opcode for variadic instruction (CreateTypeLayout is allowed)");
+        if opcode != GospelOpcode::Call {
+            bail!("Invalid opcode for variadic instruction (only Call is allowed)");
         }
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[argument_count])))
     }
 }
 
-/// Base class used for the creation of type containers
+/// Base class used for the creation of containers
 #[derive(Debug, Clone, Default)]
 pub struct GospelContainerWriter {
     container: GospelContainer,
     string_lookup: HashMap<String, u32>,
     globals_lookup: HashMap<String, u32>,
-    types_lookup: HashMap<String, u32>,
+    function_lookup: HashMap<String, u32>,
     container_lookup: HashMap<String, u32>,
-    import_container_type_lookup: Vec<HashMap<String, u32>>,
-    static_type_instance_lookup: HashMap<GospelStaticTypeInstance, u32>,
+    import_container_function_lookup: Vec<HashMap<String, u32>>,
+    lazy_value_lookup: HashMap<GospelLazyValue, u32>,
 }
 impl GospelContainerWriter {
     pub fn create(container_name: &str) -> GospelContainerWriter {
@@ -197,19 +164,18 @@ impl GospelContainerWriter {
     pub fn define_global(&mut self, name: &str, default_value: Option<i32>) -> anyhow::Result<()> {
         self.find_or_define_global(name, default_value).map(|_| {})
     }
-    pub fn define_type(&mut self, source: GospelSourceTypeDefinition) -> anyhow::Result<()> {
-        if self.types_lookup.contains_key(source.type_name.as_str()) {
-            bail!("Type with name {} is already defined in this container", source.type_name);
+    pub fn define_function(&mut self, source: GospelSourceFunctionDefinition) -> anyhow::Result<()> {
+        if self.function_lookup.contains_key(source.function_name.as_str()) {
+            bail!("Function with name {} is already defined in this container", source.function_name);
         }
-        let type_name = self.store_string(source.type_name.as_str());
 
-        let mut arguments: Vec<GospelTypeArgumentDefinition> = Vec::with_capacity(source.arguments.len());
+        let mut arguments: Vec<GospelFunctionArgument> = Vec::with_capacity(source.arguments.len());
         for argument in &source.arguments {
             let default_value = if argument.default_value.is_some() {
                 Some(self.convert_static_value(argument.default_value.as_ref().unwrap())?)
             } else { None };
 
-            arguments.push(GospelTypeArgumentDefinition{
+            arguments.push(GospelFunctionArgument {
                 argument_type: argument.argument_type,
                 default_value,
             })
@@ -222,22 +188,24 @@ impl GospelContainerWriter {
                 value_type: slot.slot_type,
                 binding,
                 binding_data,
-                debug_name: self.store_string(slot.slot_name.as_str()),
             });
         }
-
         let referenced_strings: Vec<u32> = source.referenced_strings.iter().map(|x| {
             self.store_string(x.as_str())
         }).collect();
 
-        let type_index = self.container.types.len() as u32;
-        let type_name_string = source.type_name.clone();
-        self.container.types.push(GospelTypeDefinition{
-            type_name, arguments, slots,
+        let function_index = self.container.functions.len() as u32;
+        let function_name_string = source.function_name.clone();
+        if !source.hidden {
+            let function_name = self.store_string(source.function_name.as_str());
+            self.container.function_names.push(GospelFunctionNamePair{ function_index, function_name });
+        }
+        self.container.functions.push(GospelFunctionDefinition {
+            arguments, slots,
             code: source.code,
             referenced_strings,
         });
-        self.types_lookup.insert(type_name_string, type_index);
+        self.function_lookup.insert(function_name_string, function_index);
         Ok({})
     }
     pub fn build(self) -> GospelContainer {
@@ -269,9 +237,9 @@ impl GospelContainerWriter {
                 let value = self.convert_static_value(&GospelSourceStaticValue::Integer(global_variable_index as i32))?;
                 Ok((GospelSlotBinding::GlobalVariableValue, value))
             }
-            GospelSourceSlotBinding::TypeArgumentValue(argument_index) => {
+            GospelSourceSlotBinding::ArgumentValue(argument_index) => {
                 let value = self.convert_static_value(&GospelSourceStaticValue::Integer(*argument_index as i32))?;
-                Ok((GospelSlotBinding::TypeArgumentValue, value))
+                Ok((GospelSlotBinding::ArgumentValue, value))
             }
         }
     }
@@ -292,7 +260,7 @@ impl GospelContainerWriter {
         self.globals_lookup.insert(name.to_string(), new_global_index);
         Ok(new_global_index)
     }
-    fn find_or_define_external_type(&mut self, container_name: &str, type_name: &str) -> u32 {
+    fn find_or_define_external_function(&mut self, container_name: &str, function_name: &str) -> u32 {
         // Resolve the index of the container first
         let container_index = if let Some(existing_container_index) = self.container_lookup.get(container_name) {
             *existing_container_index
@@ -301,44 +269,44 @@ impl GospelContainerWriter {
             let container_name_index = self.store_string(container_name);
 
             self.container.imports.push(GospelContainerImport{ container_name: container_name_index });
-            self.import_container_type_lookup.push(HashMap::new());
+            self.import_container_function_lookup.push(HashMap::new());
             self.container_lookup.insert(container_name.to_string(), new_container_index);
             new_container_index
         };
         // Referenced container builder cannot be a local variable here because of rust borrowing rules
-        if let Some(existing_external_type_index) = self.import_container_type_lookup[container_index as usize].get(type_name) {
-            *existing_external_type_index
+        if let Some(existing_external_function_index) = self.import_container_function_lookup[container_index as usize].get(function_name) {
+            *existing_external_function_index
         } else {
-            let new_external_type_index = self.container.external_types.len() as u32;
-            let type_name_index = self.store_string(type_name);
-            self.container.external_types.push(GospelExternalTypeReference{
+            let new_external_function_index = self.container.external_functions.len() as u32;
+            let function_name_index = self.store_string(function_name);
+            self.container.external_functions.push(GospelExternalFunctionReference {
                 import_index: container_index,
-                type_name: type_name_index,
+                function_name: function_name_index,
             });
-            self.import_container_type_lookup[container_index as usize].insert(type_name.to_string(), new_external_type_index);
-            new_external_type_index
+            self.import_container_function_lookup[container_index as usize].insert(function_name.to_string(), new_external_function_index);
+            new_external_function_index
         }
     }
-    fn find_or_add_static_type_instance(&mut self, type_index: GospelTypeIndex, arguments: Vec<GospelStaticValue>) -> u32 {
-        let type_instance = GospelStaticTypeInstance{ type_index, arguments };
-        if let Some(existing_type_instance_index) = self.static_type_instance_lookup.get(&type_instance) {
-            *existing_type_instance_index
+    fn find_or_add_lazy_value(&mut self, function_index: GospelFunctionIndex, arguments: Vec<GospelStaticValue>) -> u32 {
+        let lazy_value = GospelLazyValue{ function_index, arguments };
+        if let Some(existing_lazy_value_index) = self.lazy_value_lookup.get(&lazy_value) {
+            *existing_lazy_value_index
         } else {
-            let new_type_instance_index = self.container.static_instances.len() as u32;
-            self.container.static_instances.push(type_instance.clone());
-            self.static_type_instance_lookup.insert(type_instance, new_type_instance_index);
-            new_type_instance_index
+            let new_lazy_value_index = self.container.lazy_values.len() as u32;
+            self.container.lazy_values.push(lazy_value.clone());
+            self.lazy_value_lookup.insert(lazy_value, new_lazy_value_index);
+            new_lazy_value_index
         }
     }
-    fn convert_type_reference(&mut self, source: &GospelSourceTypeReference) -> anyhow::Result<GospelTypeIndex> {
+    fn convert_function_reference(&mut self, source: &GospelSourceFunctionReference) -> anyhow::Result<GospelFunctionIndex> {
         match source {
-            GospelSourceTypeReference::LocalType{type_name} => {
-                self.types_lookup.get(type_name.as_str()).map(|type_index| {
-                    GospelTypeIndex::create_local(*type_index)
-                }).ok_or_else(|| anyhow!("Failed to find locally defined type {}", type_name.to_string()))
+            GospelSourceFunctionReference::LocalFunction {function_name} => {
+                self.function_lookup.get(function_name.as_str()).map(|function_index| {
+                    GospelFunctionIndex::create_local(*function_index)
+                }).ok_or_else(|| anyhow!("Failed to find locally defined function {}", function_name.to_string()))
             }
-            GospelSourceTypeReference::ExternalType {container_name, type_name} => {
-                Ok(GospelTypeIndex::create_external(self.find_or_define_external_type(container_name.as_str(), type_name.as_str())))
+            GospelSourceFunctionReference::ExternalFunction {container_name, function_name} => {
+                Ok(GospelFunctionIndex::create_external(self.find_or_define_external_function(container_name.as_str(), function_name.as_str())))
             }
         }
     }
@@ -351,25 +319,25 @@ impl GospelContainerWriter {
                     data: *integer_value as u32,
                 })
             }
-            GospelSourceStaticValue::TypeReference(type_reference) => {
+            GospelSourceStaticValue::FunctionId(type_reference) => {
                 Ok(GospelStaticValue{
-                    value_type: GospelValueType::TypeReference,
-                    static_type: GospelStaticValueType::TypeReference,
-                    data: self.convert_type_reference(type_reference)?.raw_value(),
+                    value_type: GospelValueType::FunctionPointer,
+                    static_type: GospelStaticValueType::FunctionIndex,
+                    data: self.convert_function_reference(type_reference)?.raw_value(),
                 })
             }
-            GospelSourceStaticValue::StaticTypeInstance(type_instance) => {
-                let type_id = self.convert_type_reference(&type_instance.type_reference)?;
+            GospelSourceStaticValue::LazyValue(lazy_value) => {
+                let function_index = self.convert_function_reference(&lazy_value.function_reference)?;
 
-                let mut arguments: Vec<GospelStaticValue> = Vec::with_capacity(type_instance.arguments.len());
-                for argument in &type_instance.arguments {
+                let mut arguments: Vec<GospelStaticValue> = Vec::with_capacity(lazy_value.arguments.len());
+                for argument in &lazy_value.arguments {
                     arguments.push(self.convert_static_value(argument)?);
                 }
-                let type_instance_index = self.find_or_add_static_type_instance(type_id, arguments);
+                let lazy_value_index = self.find_or_add_lazy_value(function_index, arguments);
                 Ok(GospelStaticValue{
-                    value_type: GospelValueType::TypeLayout,
-                    static_type: GospelStaticValueType::StaticTypeInstance,
-                    data: type_instance_index,
+                    value_type: lazy_value.return_value_type,
+                    static_type: GospelStaticValueType::LazyValue,
+                    data: lazy_value_index,
                 })
             }
         }

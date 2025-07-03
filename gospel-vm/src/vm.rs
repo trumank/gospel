@@ -5,16 +5,16 @@ use std::rc::Rc;
 use anyhow::{anyhow, bail};
 use crate::bytecode::{GospelInstruction, GospelOpcode};
 use crate::container::GospelContainer;
-use crate::gospel_type::{GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelTargetArch, GospelTargetEnv, GospelTargetOS, GospelTypeDefinition, GospelTypeIndex, GospelValueType};
+use crate::gospel_type::{GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelTargetArch, GospelTargetEnv, GospelTargetOS, GospelFunctionDefinition, GospelFunctionIndex, GospelValueType};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GospelBaseClassLayout {
     pub offset: usize,
     pub actual_size: usize,
     pub layout: GospelTypeLayout,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GospelMemberLayout {
     pub name: String,
     pub offset: usize,
@@ -25,7 +25,7 @@ pub struct GospelMemberLayout {
 /// Represents a fully resolved layout of a particular type
 /// This exposes information such as the size of the type, its alignment, unaligned size,
 /// and offsets, sizes and full type layouts of its members
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GospelTypeLayout {
     pub name: String,
     pub alignment: usize,
@@ -33,19 +33,19 @@ pub struct GospelTypeLayout {
     pub size: usize,
     pub base_classes: Vec<GospelBaseClassLayout>,
     pub members: Vec<GospelMemberLayout>,
-    pub source_type: Option<GospelVMTypeReference>,
-    pub source_args: Option<Vec<GospelVMValue>>,
 }
 impl GospelTypeLayout {
-    // Note that types with no source information are never considered source identical
-    pub fn source_identical(&self, other: &Self) -> bool {
-        self.source_type.is_some() && other.source_type.is_some() &&
-            self.source_type.as_ref().unwrap().reference_identical(other.source_type.as_ref().unwrap()) &&
-            self.source_args == other.source_args
+    /// Creates a new type layout opaque to the VM. Additional members can be added manually if some transparency of the type layout is desired
+    pub fn create_opaque(name: String, alignment: usize, size: usize) -> GospelTypeLayout {
+        GospelTypeLayout{
+            name, alignment, size,
+            unaligned_size: size,
+            ..GospelTypeLayout::default()
+        }
     }
     // Note that returned base offset is absolute, not relative to the parent offset
     pub fn get_base_offset(&self, base: &Self) -> Option<usize> {
-        if self.source_identical(base) {
+        if self.eq(base) {
             return Some(0) // no offset, this is the base
         }
         for base_class in &self.base_classes {
@@ -95,53 +95,47 @@ impl GospelVMTargetTriplet {
     }
 }
 
-/// Represents reference to a particular type located inside a particular container
-/// Type cannot be used directly; type instances can be created and their layouts investigated
-/// by using GospelVMTypeReference:resolve with the required template arguments
-/// Two type references are identical if they point to the type with the same name in the same container
+/// Represents reference to a function located in a particular container
 #[derive(Debug, Clone)]
-pub struct GospelVMTypeReference {
+pub struct GospelVMFunctionPointer {
     container: Rc<GospelVMContainer>,
-    type_index: u32,
+    function_index: u32,
 }
-impl GospelVMTypeReference {
-    pub fn reference_identical(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.container, &other.container) && self.type_index == other.type_index
+impl GospelVMFunctionPointer {
+    pub fn pointer_equal(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.container, &other.container) && self.function_index == other.function_index
     }
 }
-impl GospelVMTypeReference {
+impl GospelVMFunctionPointer {
     /// Returns the type container which defines this type
     pub fn source_container(&self) -> Rc<GospelVMContainer> {
         self.container.clone()
     }
-    /// Returns the name of the type referenced
-    pub fn type_name(&self) -> anyhow::Result<&str> {
-        self.container.get_type_name(self.type_index)
+    /// Returns the name of the function
+    pub fn function_name(&self) -> Option<&str> {
+        self.container.get_function_name(self.function_index)
     }
-    /// Attempts to resolve the layout of this type using the arguments provided
-    pub fn resolve_layout(&self, args: &Vec<GospelVMValue>) -> anyhow::Result<GospelTypeLayout> {
-        self.container.resolve_layout_internal(self.type_index, args)
-    }
-    fn resolve_layout_static(&self, args: &Vec<GospelStaticValue>) -> anyhow::Result<GospelTypeLayout> {
-        self.container.resolve_layout_static(self.type_index, args)
+    /// Attempts to execute this function and returns the result
+    pub fn execute(&self, args: &Vec<GospelVMValue>) -> anyhow::Result<GospelVMValue> {
+        self.container.execute_function_internal(self.function_index, args, 0)
     }
 }
 
 /// VM Value represents a value that VM bytecode can read and write
-/// Currently supported value types are integers, type references and type layouts
-/// Type references can be converted into type layouts by providing them with arguments
+/// Currently supported value types are integers, function pointers and type layouts
+/// Function pointers can be called to yield their return value
 /// Values can be compared for equality, but values of certain types might never be equivalent (for example, unnamed type layouts are never equivalent, even to themselves)
 #[derive(Debug, Clone)]
 pub enum GospelVMValue {
     Integer(i32), // signed 32-bit integer value
-    TypeDefinition(GospelVMTypeReference), // definition of a type with no template arguments
+    FunctionPointer(GospelVMFunctionPointer), // definition of a type with no template arguments
     TypeLayout(GospelTypeLayout), // pre-computed type layout
 }
 impl GospelVMValue {
     pub fn value_type(&self) -> GospelValueType {
         match self {
             GospelVMValue::Integer(_) => { GospelValueType::Integer }
-            GospelVMValue::TypeDefinition(_) => { GospelValueType::TypeReference }
+            GospelVMValue::FunctionPointer(_) => { GospelValueType::FunctionPointer }
             GospelVMValue::TypeLayout(_) => { GospelValueType::TypeLayout }
         }
     }
@@ -153,12 +147,12 @@ impl PartialEq for GospelVMValue {
                 GospelVMValue::Integer(b) => { *a == *b }
                 _ => false
             }
-            GospelVMValue::TypeDefinition(a) => match other {
-                GospelVMValue::TypeDefinition(b) => { a.reference_identical(b) }
+            GospelVMValue::FunctionPointer(a) => match other {
+                GospelVMValue::FunctionPointer(b) => { a.pointer_equal(b) }
                 _ => false
             }
             GospelVMValue::TypeLayout(a) => match other {
-                GospelVMValue::TypeLayout(b) => { a.source_identical(b) }
+                GospelVMValue::TypeLayout(b) => { a.eq(b) }
                 _ => false
             }
         }
@@ -174,21 +168,22 @@ struct GospelGlobalStorage {
 
 #[derive(Debug)]
 struct GospelVMExecutionState<'a> {
-    pub target_triplet: &'a GospelVMTargetTriplet,
-    pub instructions: &'a Vec<GospelInstruction>,
-    pub slot_definitions: &'a Vec<GospelSlotDefinition>,
-    pub layout_builder: GospelTypeLayout,
-    pub slots: Vec<Option<GospelVMValue>>,
-    pub referenced_strings: Vec<String>,
-    pub stack: Vec<GospelVMValue>,
-    pub current_instruction_index: usize,
-    pub current_loop_jump_count: usize,
-    pub max_stack_size: usize,
-    pub max_loop_jumps: usize,
+    target_triplet: &'a GospelVMTargetTriplet,
+    instructions: &'a Vec<GospelInstruction>,
+    slot_definitions: &'a Vec<GospelSlotDefinition>,
+    slots: Vec<Option<GospelVMValue>>,
+    referenced_strings: Vec<String>,
+    stack: Vec<GospelVMValue>,
+    current_instruction_index: usize,
+    current_loop_jump_count: usize,
+    recursion_counter: usize,
+    max_stack_size: usize,
+    max_loop_jumps: usize,
+    max_recursion_depth: usize,
 }
 impl GospelVMExecutionState<'_> {
     fn align_value(value: usize, align: usize) -> usize {
-        let reminder = value % align;
+        let reminder = if align == 0 { 0 } else { value % align };
         if reminder == 0 { value } else { value + (align - reminder) }
     }
     fn push_stack_check_overflow(&mut self, value: GospelVMValue) -> anyhow::Result<()> {
@@ -249,16 +244,40 @@ impl GospelVMExecutionState<'_> {
             _ => bail!("Expected integer value, got value of different type")
         }
     }
-    fn unwrap_value_as_type_definition_checked(value: GospelVMValue) -> anyhow::Result<GospelVMTypeReference> {
+    fn unwrap_value_as_function_pointer_checked(value: GospelVMValue) -> anyhow::Result<GospelVMFunctionPointer> {
         match value {
-            GospelVMValue::TypeDefinition(unwrapped) => { Ok(unwrapped) }
-            _ => bail!("Expected type definition value, got value of different type")
+            GospelVMValue::FunctionPointer(unwrapped) => { Ok(unwrapped) }
+            _ => bail!("Expected function pointer, got value of different type")
         }
     }
-    fn unwrap_value_as_type_layout_checked(value: GospelVMValue) -> anyhow::Result<GospelTypeLayout> {
+    fn validate_type_layout_complete(value: &GospelVMValue) -> anyhow::Result<()> {
+        if let GospelVMValue::TypeLayout(type_layout) = value {
+            if type_layout.size == 0 {
+                bail!("Expected a complete type layout value, but got an incomplete type layout. Non-finalized type layouts cannot be read");
+            }
+        }
+        Ok({})
+    }
+    fn unwrap_value_as_complete_type_layout_checked(value: GospelVMValue) -> anyhow::Result<GospelTypeLayout> {
         match value {
-            GospelVMValue::TypeLayout(unwrapped) => { Ok(unwrapped) }
-            _ => bail!("Expected type layout value, got value of different type")
+            GospelVMValue::TypeLayout(unwrapped) => {
+                if unwrapped.size == 0 {
+                    bail!("Expected a complete type layout value, but got an incomplete type layout. Non-finalized type layouts cannot be read");
+                }
+                Ok(unwrapped)
+            }
+            _ => bail!("Expected type layout value, got value of a different type")
+        }
+    }
+    fn unwrap_value_as_partial_type_layout_checked(value: GospelVMValue) -> anyhow::Result<GospelTypeLayout> {
+        match value {
+            GospelVMValue::TypeLayout(unwrapped) => {
+                if unwrapped.size != 0 {
+                    bail!("Expected a partial type layout, but got a complete type layout. Finalized type layouts cannot be written");
+                }
+                Ok(unwrapped)
+            }
+            _ => bail!("Expected type layout value, got value of a different type")
         }
     }
     fn do_bitwise_op<F: Fn(u32, u32) -> u32>(&mut self, op: F) -> anyhow::Result<()> {
@@ -275,7 +294,7 @@ impl GospelVMExecutionState<'_> {
     }
     fn do_member_access_op_checked<F: Fn(GospelMemberLayout) -> GospelVMValue>(&mut self, member_name_index: usize, op: F) -> anyhow::Result<()> {
         let member_name = self.copy_referenced_string_checked(member_name_index)?;
-        let type_layout = Self::unwrap_value_as_type_layout_checked(self.pop_stack_check_underflow()?)?;
+        let type_layout = Self::unwrap_value_as_complete_type_layout_checked(self.pop_stack_check_underflow()?)?;
 
         let result_member = type_layout.find_named_member(member_name.as_str()).ok_or_else(|| {
             anyhow!("Failed to find member named {} inside type {}", member_name.clone(), type_layout.name.clone())
@@ -283,12 +302,7 @@ impl GospelVMExecutionState<'_> {
         op(result_member);
         Ok({})
     }
-    fn run(state: &mut GospelVMExecutionState) -> anyhow::Result<GospelTypeLayout> {
-        // Set up defaults for alignment and unaligned size
-        state.layout_builder.alignment = 1;
-        state.layout_builder.unaligned_size = 0;
-        state.layout_builder.size = 0;
-
+    fn run(state: &mut GospelVMExecutionState) -> anyhow::Result<GospelVMValue> {
         // Main VM loop
         state.current_instruction_index = 0;
         state.current_loop_jump_count = 0;
@@ -323,70 +337,33 @@ impl GospelVMExecutionState<'_> {
                 GospelOpcode::Equals => {
                     let stack_value_a = state.pop_stack_check_underflow()?;
                     let stack_value_b = state.pop_stack_check_underflow()?;
+
+                    // This is a bit too aggressive, but we do not want incomplete type values to leak any information about their contents until they are finalized
+                    Self::validate_type_layout_complete(&stack_value_a)?;
+                    Self::validate_type_layout_complete(&stack_value_b)?;
+
                     let result = stack_value_a == stack_value_b;
                     state.push_stack_check_overflow(GospelVMValue::Integer(result as i32))?;
                 }
-                GospelOpcode::Return => {
-                    break;
-                }
-                // Structure opcodes
-                GospelOpcode::Align => {
+                GospelOpcode::ReturnValue => {
                     let stack_value = state.pop_stack_check_underflow()?;
-                    let alignment = Self::unwrap_value_as_int_checked(stack_value)? as usize;
-                    state.layout_builder.alignment = max(state.layout_builder.alignment, alignment);
-                    state.layout_builder.unaligned_size = Self::align_value(state.layout_builder.unaligned_size, alignment);
+                    return Ok(stack_value)
                 }
-                GospelOpcode::Pad => {
-                    let stack_value = state.pop_stack_check_underflow()?;
-                    let padding_bytes = Self::unwrap_value_as_int_checked(stack_value)? as usize;
-                    state.layout_builder.unaligned_size += padding_bytes;
-                }
-                GospelOpcode::BaseClass => {
-                    let stack_value = state.pop_stack_check_underflow()?;
-                    let base_class_layout = Self::unwrap_value_as_type_layout_checked(stack_value)?;
-
-                    // Make sure the alignment requirement is met for the base class
-                    state.layout_builder.alignment = max(state.layout_builder.alignment, base_class_layout.alignment);
-                    state.layout_builder.unaligned_size = Self::align_value(state.layout_builder.unaligned_size, base_class_layout.alignment);
-
-                    // Actual class size differs depending on ABI used, on MSVC aligned base class size is used, while on GNU/Darwin
-                    // unaligned class size is used, saving some space on derived types that are inherited from base classes ending with alignment padding
-                    let actual_base_class_size = if state.target_triplet.uses_aligned_base_class_size() {
-                        base_class_layout.size
-                    } else { base_class_layout.unaligned_size };
-
-                    state.layout_builder.base_classes.push(GospelBaseClassLayout{
-                        offset: state.layout_builder.unaligned_size,
-                        actual_size: actual_base_class_size,
-                        layout: base_class_layout,
-                    });
-                    state.layout_builder.unaligned_size += actual_base_class_size;
-                }
-                GospelOpcode::Member => {
-                    let member_name_index = Self::immediate_value_checked(instruction, 0)? as usize;
-                    let member_name = state.copy_referenced_string_checked(member_name_index)?;
-
-                    let stack_value = state.pop_stack_check_underflow()?;
-                    let member_layout = Self::unwrap_value_as_type_layout_checked(stack_value)?;
-
-                    // Make sure the alignment requirement is met for the member
-                    state.layout_builder.alignment = max(state.layout_builder.alignment, member_layout.alignment);
-                    state.layout_builder.unaligned_size = Self::align_value(state.layout_builder.unaligned_size, member_layout.alignment);
-
-                    let actual_size = member_layout.size;
-                    state.layout_builder.members.push(GospelMemberLayout{
-                        name: member_name,
-                        offset: state.layout_builder.unaligned_size,
-                        actual_size,
-                        layout: member_layout,
-                    });
-                    state.layout_builder.unaligned_size += actual_size;
-                }
-                GospelOpcode::ReturnTypeLayout => {
-                    let stack_value = state.pop_stack_check_underflow()?;
-                    let redirected_layout = Self::unwrap_value_as_type_layout_checked(stack_value)?;
-                    // This type is a type alias, as such its layout is actually a layout of another type (likely dynamically constructed earlier)
-                    return Ok(redirected_layout)
+                GospelOpcode::Call => {
+                    let number_of_arguments = Self::immediate_value_checked(instruction, 0)? as usize;
+                    let function_pointer = Self::unwrap_value_as_function_pointer_checked(state.pop_stack_check_underflow()?)?;
+                    let mut function_arguments: Vec<GospelVMValue> = Vec::with_capacity(number_of_arguments);
+                    for _ in 0..number_of_arguments {
+                        function_arguments.push(state.pop_stack_check_underflow()?);
+                    }
+                    if state.recursion_counter >= state.max_recursion_depth {
+                        bail!("Recursion limit reached");
+                    }
+                    let return_value = function_pointer.container.execute_function_internal(function_pointer.function_index, &function_arguments, state.recursion_counter).map_err(|err| {
+                        let function_name = function_pointer.function_name().unwrap_or("<unknown>");
+                        anyhow!("Failed to call function {}: {}", function_name.to_string(), err.to_string())
+                    })?;
+                    state.push_stack_check_overflow(return_value)?;
                 }
                 // Logical opcodes
                 GospelOpcode::And => { state.do_bitwise_op(|a, b| a & b)?; }
@@ -441,36 +418,23 @@ impl GospelVMExecutionState<'_> {
                     let new_slot_value = state.pop_stack_check_underflow()?;
                     state.write_slot_value_checked(slot_index, new_slot_value)?;
                 }
-                // Type opcodes
-                GospelOpcode::CreateTypeLayout => {
-                    let number_of_arguments = Self::immediate_value_checked(instruction, 0)? as usize;
-                    let type_definition = Self::unwrap_value_as_type_definition_checked(state.pop_stack_check_underflow()?)?;
-                    let mut type_arguments: Vec<GospelVMValue> = Vec::with_capacity(number_of_arguments);
-                    for _ in 0..number_of_arguments {
-                        type_arguments.push(state.pop_stack_check_underflow()?);
-                    }
-                    let resolved_layout = type_definition.resolve_layout(&type_arguments).map_err(|err| {
-                        let type_name = type_definition.type_name().unwrap_or("<unknown>");
-                        anyhow!("Failed to resolve type layout for type definition {}: {}", type_name.to_string(), err.to_string())
-                    })?;
-                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(resolved_layout))?;
-                }
+                // Type layout access opcodes
                 GospelOpcode::TypeLayoutGetSize => {
-                    let type_layout = Self::unwrap_value_as_type_layout_checked(state.pop_stack_check_underflow()?)?;
+                    let type_layout = Self::unwrap_value_as_complete_type_layout_checked(state.pop_stack_check_underflow()?)?;
                     state.push_stack_check_overflow(GospelVMValue::Integer(type_layout.size as i32))?;
                 }
                 GospelOpcode::TypeLayoutGetAlignment => {
-                    let type_layout = Self::unwrap_value_as_type_layout_checked(state.pop_stack_check_underflow()?)?;
+                    let type_layout = Self::unwrap_value_as_complete_type_layout_checked(state.pop_stack_check_underflow()?)?;
                     state.push_stack_check_overflow(GospelVMValue::Integer(type_layout.alignment as i32))?;
                 }
                 GospelOpcode::TypeLayoutGetUnalignedSize => {
-                    let type_layout = Self::unwrap_value_as_type_layout_checked(state.pop_stack_check_underflow()?)?;
+                    let type_layout = Self::unwrap_value_as_complete_type_layout_checked(state.pop_stack_check_underflow()?)?;
                     state.push_stack_check_overflow(GospelVMValue::Integer(type_layout.unaligned_size as i32))?;
                 }
                 GospelOpcode::TypeLayoutDoesMemberExist => {
                     let member_name_index = Self::immediate_value_checked(instruction, 0)? as usize;
                     let member_name = state.copy_referenced_string_checked(member_name_index)?;
-                    let type_layout = Self::unwrap_value_as_type_layout_checked(state.pop_stack_check_underflow()?)?;
+                    let type_layout = Self::unwrap_value_as_complete_type_layout_checked(state.pop_stack_check_underflow()?)?;
 
                     let result = type_layout.members.iter().any(|x| x.name == member_name);
                     state.push_stack_check_overflow(GospelVMValue::Integer(result as i32))?;
@@ -488,29 +452,113 @@ impl GospelVMExecutionState<'_> {
                     state.do_member_access_op_checked(member_name_index, |x| GospelVMValue::TypeLayout(x.layout))?;
                 }
                 GospelOpcode::TypeLayoutIsChildOf => {
-                    let child_layout = Self::unwrap_value_as_type_layout_checked(state.pop_stack_check_underflow()?)?;
-                    let parent_layout = Self::unwrap_value_as_type_layout_checked(state.pop_stack_check_underflow()?)?;
+                    let child_layout = Self::unwrap_value_as_complete_type_layout_checked(state.pop_stack_check_underflow()?)?;
+                    let parent_layout = Self::unwrap_value_as_complete_type_layout_checked(state.pop_stack_check_underflow()?)?;
 
                     let result = child_layout.get_base_offset(&parent_layout).is_some();
                     state.push_stack_check_overflow(GospelVMValue::Integer(result as i32))?;
                 }
                 GospelOpcode::TypeLayoutGetOffsetOfBase => {
-                    let child_layout = Self::unwrap_value_as_type_layout_checked(state.pop_stack_check_underflow()?)?;
-                    let parent_layout = Self::unwrap_value_as_type_layout_checked(state.pop_stack_check_underflow()?)?;
+                    let child_layout = Self::unwrap_value_as_complete_type_layout_checked(state.pop_stack_check_underflow()?)?;
+                    let parent_layout = Self::unwrap_value_as_complete_type_layout_checked(state.pop_stack_check_underflow()?)?;
 
                     let result = child_layout.get_base_offset(&parent_layout)
                         .ok_or_else(|| anyhow!("Type {} is not a base of type {}", child_layout.name.clone(), parent_layout.name.clone()))?;
                     state.push_stack_check_overflow(GospelVMValue::Integer(result as i32))?;
                 }
+                // Structure opcodes
+                GospelOpcode::TypeLayoutAllocate => {
+                    let type_name_index = Self::immediate_value_checked(instruction, 0)? as usize;
+                    let type_name = state.copy_referenced_string_checked(type_name_index)?;
+
+                    let allocated_layout = GospelTypeLayout{
+                        name: type_name,
+                        alignment: 1,
+                        unaligned_size: 0,
+                        size: 0, // size 0 is an implicit marked of a partial type layout
+                        ..GospelTypeLayout::default()
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(allocated_layout))?;
+                }
+                GospelOpcode::TypeLayoutAlign => {
+                    let mut layout_builder = Self::unwrap_value_as_partial_type_layout_checked(state.pop_stack_check_underflow()?)?;
+                    let stack_value = state.pop_stack_check_underflow()?;
+                    let alignment = Self::unwrap_value_as_int_checked(stack_value)? as usize;
+
+                    if alignment == 0 {
+                        bail!("Invalid alignment of zero (division by zero)");
+                    }
+                    layout_builder.alignment = max(layout_builder.alignment, alignment);
+                    layout_builder.unaligned_size = Self::align_value(layout_builder.unaligned_size, alignment);
+                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
+                }
+                GospelOpcode::TypeLayoutPad => {
+                    let mut layout_builder = Self::unwrap_value_as_partial_type_layout_checked(state.pop_stack_check_underflow()?)?;
+                    let stack_value = state.pop_stack_check_underflow()?;
+                    let padding_bytes = Self::unwrap_value_as_int_checked(stack_value)? as usize;
+
+                    layout_builder.unaligned_size += padding_bytes;
+                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
+                }
+                GospelOpcode::TypeLayoutDefineBaseClass => {
+                    let mut layout_builder = Self::unwrap_value_as_partial_type_layout_checked(state.pop_stack_check_underflow()?)?;
+                    let stack_value = state.pop_stack_check_underflow()?;
+                    let base_class_layout = Self::unwrap_value_as_complete_type_layout_checked(stack_value)?;
+
+                    // Make sure the alignment requirement is met for the base class
+                    layout_builder.alignment = max(layout_builder.alignment, base_class_layout.alignment);
+                    layout_builder.unaligned_size = Self::align_value(layout_builder.unaligned_size, base_class_layout.alignment);
+
+                    // Actual class size differs depending on ABI used, on MSVC aligned base class size is used, while on GNU/Darwin
+                    // unaligned class size is used, saving some space on derived types that are inherited from base classes ending with alignment padding
+                    let actual_base_class_size = if state.target_triplet.uses_aligned_base_class_size() {
+                        base_class_layout.size
+                    } else { base_class_layout.unaligned_size };
+
+                    layout_builder.base_classes.push(GospelBaseClassLayout{
+                        offset: layout_builder.unaligned_size,
+                        actual_size: actual_base_class_size,
+                        layout: base_class_layout,
+                    });
+                    layout_builder.unaligned_size += actual_base_class_size;
+                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
+                }
+                GospelOpcode::TypeLayoutDefineMember => {
+                    let member_name_index = Self::immediate_value_checked(instruction, 0)? as usize;
+                    let member_name = state.copy_referenced_string_checked(member_name_index)?;
+
+                    let mut layout_builder = Self::unwrap_value_as_partial_type_layout_checked(state.pop_stack_check_underflow()?)?;
+                    let stack_value = state.pop_stack_check_underflow()?;
+                    let member_layout = Self::unwrap_value_as_complete_type_layout_checked(stack_value)?;
+
+                    // Make sure the alignment requirement is met for the member
+                    layout_builder.alignment = max(layout_builder.alignment, member_layout.alignment);
+                    layout_builder.unaligned_size = Self::align_value(layout_builder.unaligned_size, member_layout.alignment);
+
+                    let actual_size = member_layout.size;
+                    layout_builder.members.push(GospelMemberLayout{
+                        name: member_name,
+                        offset: layout_builder.unaligned_size,
+                        actual_size,
+                        layout: member_layout,
+                    });
+                    layout_builder.unaligned_size += actual_size;
+                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
+                }
+                GospelOpcode::TypeLayoutFinalize => {
+                    let mut layout_builder = Self::unwrap_value_as_partial_type_layout_checked(state.pop_stack_check_underflow()?)?;
+
+                    // Make sure the size is at least one byte, and calculate the aligned size from unaligned size
+                    if layout_builder.unaligned_size == 0 {
+                        layout_builder.unaligned_size = 1;
+                    }
+                    layout_builder.size = Self::align_value(layout_builder.unaligned_size, layout_builder.alignment);
+                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
+                }
             };
         }
-
-        // Make sure the size is at least one byte, and calculate the aligned size from unaligned size
-        if state.layout_builder.unaligned_size == 0 {
-           state.layout_builder.unaligned_size = 1;
-        }
-        state.layout_builder.size = Self::align_value(state.layout_builder.unaligned_size, state.layout_builder.alignment);
-        Ok(state.layout_builder.clone())
+        // Function should always at the very least return a value, empty function code or fall through without return is an error
+        bail!("Function failed to return a value");
     }
 }
 
@@ -520,85 +568,80 @@ pub struct GospelVMContainer {
     container: Rc<GospelContainer>,
     external_references: Vec<Rc<GospelVMContainer>>,
     global_lookup_by_id: HashMap<usize, Rc<GospelGlobalStorage>>,
-    type_lookup_by_name: HashMap<String, u32>,
+    function_lookup_by_name: HashMap<String, u32>,
+    name_lookup_by_function: HashMap<u32, u32>,
 }
 impl GospelVMContainer {
     /// Returns the name of this type container
     pub fn container_name(&self) -> anyhow::Result<&str> {
         self.container.container_name()
     }
-    /// Attempts to find a type with the given name in this container and returns a reference to it
-    pub fn find_named_type(self: &Rc<Self>, name: &str) -> Option<GospelVMTypeReference> {
-        self.type_lookup_by_name.get(name).map(|type_index| GospelVMTypeReference{
-            container: self.clone(), type_index: *type_index })
+    /// Attempts to find a function with the given name in this container and returns a reference to it
+    pub fn find_named_function(self: &Rc<Self>, name: &str) -> Option<GospelVMFunctionPointer> {
+        self.function_lookup_by_name.get(name).map(|type_index| GospelVMFunctionPointer {
+            container: self.clone(), function_index: *type_index })
     }
-    fn get_type_name(&self, index: u32) -> anyhow::Result<&str> {
-        let type_definition = &self.container.types[index as usize];
-        self.container.strings.get(type_definition.type_name)
+    fn get_function_name(&self, function_index: u32) -> Option<&str> {
+        self.name_lookup_by_function.get(&function_index)
+            .and_then(|x| self.container.strings.get(*x).ok())
     }
-    fn resolve_type_index(self: &Rc<Self>, type_index: GospelTypeIndex) -> anyhow::Result<GospelVMTypeReference> {
-        if type_index.is_external() {
-            if type_index.index() as usize >= self.container.external_types.len() {
-                bail!("Invalid external type index #{} out of bounds (num external type references in container: {})", type_index.index(), self.container.external_types.len());
+    fn resolve_function_index(self: &Rc<Self>, function_index: GospelFunctionIndex) -> anyhow::Result<GospelVMFunctionPointer> {
+        if function_index.is_external() {
+            if function_index.index() as usize >= self.container.external_functions.len() {
+                bail!("Invalid external function index #{} out of bounds (num external function references in container: {})", function_index.index(), self.container.external_functions.len());
             }
-            let external_type = &self.container.external_types[type_index.index() as usize];
-            if external_type.import_index as usize >= self.external_references.len() {
-                bail!("Invalid external container reference index #{} out of bounds (num external container references: {})", external_type.import_index, self.external_references.len());
+            let external_function = &self.container.external_functions[function_index.index() as usize];
+            if external_function.import_index as usize >= self.external_references.len() {
+                bail!("Invalid external container reference index #{} out of bounds (num external container references: {})", external_function.import_index, self.external_references.len());
             }
-            let source_container = &self.external_references[external_type.import_index as usize];
-            let type_name = self.container.strings.get(external_type.type_name)?;
-            return source_container.find_named_type(type_name)
-                .ok_or_else(|| { anyhow!("Imported named type {} does not exist in container {}", self.container_name().unwrap(), type_name.to_string()) });
+            let source_container = &self.external_references[external_function.import_index as usize];
+            let type_name = self.container.strings.get(external_function.function_name)?;
+            return source_container.find_named_function(type_name)
+                .ok_or_else(|| { anyhow!("Imported named function {} does not exist in container {}", self.container_name().unwrap(), type_name.to_string()) });
         }
-        Ok(GospelVMTypeReference{ container: self.clone(), type_index: type_index.index() })
+        Ok(GospelVMFunctionPointer { container: self.clone(), function_index: function_index.index() })
     }
-    fn resolve_static_type_instance_layout(self: &Rc<Self>, index: u32) -> anyhow::Result<GospelTypeLayout> {
-        if index as usize >= self.container.static_instances.len() {
-            bail!("Invalid static type instance index #{} out of bounds (num static type instances in container: {})", index, self.container.static_instances.len());
+    fn resolve_lazy_value(self: &Rc<Self>, index: u32, recursion_counter: usize) -> anyhow::Result<GospelVMValue> {
+        if index as usize >= self.container.lazy_values.len() {
+            bail!("Invalid lazy value index #{} out of bounds (num static type instances in container: {})", index, self.container.lazy_values.len());
         }
-        let type_instance = &self.container.static_instances[index as usize];
-        let type_reference = self.resolve_type_index(type_instance.type_index)?;
-        type_reference.resolve_layout_static(&type_instance.arguments)
+        let lazy_value = &self.container.lazy_values[index as usize];
+        let type_reference = self.resolve_function_index(lazy_value.function_index)?;
+        type_reference.container.execute_function_static(type_reference.function_index, &lazy_value.arguments, recursion_counter)
     }
-    fn resolve_static_value(self: &Rc<Self>, value: &GospelStaticValue) -> anyhow::Result<GospelVMValue> {
-        match value.value_type {
-            GospelValueType::Integer => {
-                match value.static_type {
-                    GospelStaticValueType::Integer => {
-                        Ok(GospelVMValue::Integer(value.data as i32))
-                    }
-                    _ => bail!("Invalid static initializer for integer value")
+    fn resolve_static_value(self: &Rc<Self>, value: &GospelStaticValue, recursion_counter: usize) -> anyhow::Result<GospelVMValue> {
+        match value.static_type {
+            GospelStaticValueType::Integer => {
+                if value.value_type != GospelValueType::FunctionPointer {
+                    bail!("Incompatible integer static initializer with a value type that is not an integer");
                 }
+                Ok(GospelVMValue::Integer(value.data as i32))
             }
-            GospelValueType::TypeReference => {
-                match value.static_type {
-                    GospelStaticValueType::TypeReference => {
-                        let type_index = GospelTypeIndex::create_raw(value.data);
-                        let reference = self.resolve_type_index(type_index)?;
-                        Ok(GospelVMValue::TypeDefinition(reference))
-                    }
-                    _ => bail!("Invalid static initializer for type definition")
+            GospelStaticValueType::FunctionIndex => {
+                if value.value_type != GospelValueType::FunctionPointer {
+                    bail!("Incompatible function index static initializer with a value type that is not a function pointer");
                 }
+                let function_index = GospelFunctionIndex::create_raw(value.data);
+                let reference = self.resolve_function_index(function_index)?;
+                Ok(GospelVMValue::FunctionPointer(reference))
             }
-            GospelValueType::TypeLayout => {
-                match value.static_type {
-                    GospelStaticValueType::StaticTypeInstance => {
-                        let layout = self.resolve_static_type_instance_layout(value.data)?;
-                        Ok(GospelVMValue::TypeLayout(layout))
-                    }
-                    _ => bail!("Invalid static initializer for type layout")
+            GospelStaticValueType::LazyValue => {
+                let resolved_value = self.resolve_lazy_value(value.data, recursion_counter)?;
+                if resolved_value.value_type() != value.value_type {
+                    bail!("Incompatible lazy value initializer yielded value type different from the value type specified");
                 }
+                Ok(resolved_value)
             }
         }
     }
-    fn resolve_layout_static(self: &Rc<Self>, index: u32, args: &Vec<GospelStaticValue>) -> anyhow::Result<GospelTypeLayout> {
+    fn execute_function_static(self: &Rc<Self>, index: u32, args: &Vec<GospelStaticValue>, recursion_counter: usize) -> anyhow::Result<GospelVMValue> {
         let mut resolved_args: Vec<GospelVMValue> = Vec::new();
         for argument_index in 0..args.len() {
-            let resolved_value = self.resolve_static_value(&args[argument_index])
+            let resolved_value = self.resolve_static_value(&args[argument_index], recursion_counter)
                 .map_err(|x| anyhow!("Failed to resolve template argument #{} value: {}", argument_index, x.to_string()))?;
             resolved_args.push(resolved_value)
         }
-        self.resolve_layout_internal(index, &resolved_args)
+        self.execute_function_internal(index, &resolved_args, recursion_counter)
     }
     fn resolve_platform_config_property(&self, property: GospelPlatformConfigProperty) -> i32 {
         match property {
@@ -608,7 +651,7 @@ impl GospelVMContainer {
             GospelPlatformConfigProperty::AddressSize => { self.target_triplet.address_size() as i32 }
         }
     }
-    fn resolve_slot_binding(self: &Rc<Self>, type_definition: &GospelTypeDefinition, slot: &GospelSlotDefinition, args: &Vec<GospelVMValue>) -> anyhow::Result<Option<GospelVMValue>> {
+    fn resolve_slot_binding(self: &Rc<Self>, type_definition: &GospelFunctionDefinition, slot: &GospelSlotDefinition, args: &Vec<GospelVMValue>, recursion_counter: usize) -> anyhow::Result<Option<GospelVMValue>> {
         match slot.binding {
             GospelSlotBinding::Uninitialized => {
                 Ok(None)
@@ -617,7 +660,7 @@ impl GospelVMContainer {
                 if slot.value_type != slot.binding_data.value_type {
                     bail!("Slot value type is not compatible with static value type specified")
                 }
-                let resolved_value = self.resolve_static_value(&slot.binding_data)?;
+                let resolved_value = self.resolve_static_value(&slot.binding_data, recursion_counter)?;
                 Ok(Some(resolved_value))
             }
             GospelSlotBinding::GlobalVariableValue => {
@@ -650,7 +693,7 @@ impl GospelVMContainer {
                 let resolved_value = self.resolve_platform_config_property(config_property);
                 Ok(Some(GospelVMValue::Integer(resolved_value)))
             }
-            GospelSlotBinding::TypeArgumentValue => {
+            GospelSlotBinding::ArgumentValue => {
                 if slot.binding_data.value_type != GospelValueType::Integer {
                     bail!("Invalid template argument value slot binding data, expected value type to be integer")
                 }
@@ -664,7 +707,7 @@ impl GospelVMContainer {
                 let resolved_value = if argument_index >= args.len() {
                     let static_value = type_definition.arguments[argument_index].default_value.clone()
                         .ok_or_else(|| anyhow!("Missing value for argument #{} with no default value provided", argument_index))?;
-                    self.resolve_static_value(&static_value)?
+                    self.resolve_static_value(&static_value, recursion_counter)?
                 } else {
                     args[argument_index].clone()
                 };
@@ -675,48 +718,41 @@ impl GospelVMContainer {
             }
         }
     }
-    fn resolve_layout_internal(self: &Rc<Self>, index: u32, args: &Vec<GospelVMValue>) -> anyhow::Result<GospelTypeLayout> {
-        if index as usize >= self.container.types.len() {
-            bail!("Invalid type index #{} out of bounds (num types in container: {})", index, self.container.types.len());
+    fn execute_function_internal(self: &Rc<Self>, index: u32, args: &Vec<GospelVMValue>, recursion_counter: usize) -> anyhow::Result<GospelVMValue> {
+        if index as usize >= self.container.functions.len() {
+            bail!("Invalid function index #{} out of bounds (num functions in container: {})", index, self.container.functions.len());
         }
-        let type_definition = &self.container.types[index as usize];
+        let function_definition = &self.container.functions[index as usize];
 
         // Construct a fresh VM state
         let mut vm_state = GospelVMExecutionState{
             target_triplet: &self.target_triplet,
-            instructions: &type_definition.code,
-            slot_definitions: &type_definition.slots,
-            layout_builder: GospelTypeLayout::default(),
-            slots: Vec::with_capacity(type_definition.slots.len()),
-            referenced_strings: Vec::with_capacity(type_definition.referenced_strings.len()),
+            instructions: &function_definition.code,
+            slot_definitions: &function_definition.slots,
+            slots: Vec::with_capacity(function_definition.slots.len()),
+            referenced_strings: Vec::with_capacity(function_definition.referenced_strings.len()),
             stack: Vec::new(),
             current_instruction_index: 0,
             current_loop_jump_count: 0,
+            recursion_counter,
             max_stack_size: 256, // TODO: Make limits configurable
             max_loop_jumps: 8192,
+            max_recursion_depth: 128,
         };
 
         // Populate slots with their initial values
-        for slot_index in 0..type_definition.slots.len() {
-            let slot_value = self.resolve_slot_binding(type_definition, &type_definition.slots[slot_index], args)
-            .map_err(|x| {
-                let slot_name = self.container.strings.get(type_definition.slots[slot_index].debug_name).unwrap_or("<invalid>");
-                anyhow!("Failed to bind slot #{} ({}) value: {}", slot_index, slot_name.to_string(), x.to_string())
-            })?;
+        for slot_index in 0..function_definition.slots.len() {
+            let slot_value = self.resolve_slot_binding(function_definition, &function_definition.slots[slot_index], args, recursion_counter)
+            .map_err(|x| anyhow!("Failed to bind slot #{} value: {}", slot_index, x.to_string()))?;
             vm_state.slots.push(slot_value)
         }
 
         // Populate referenced strings
-        for string_index in &type_definition.referenced_strings {
+        for string_index in &function_definition.referenced_strings {
             vm_state.referenced_strings.push(self.container.strings.get(*string_index)?.to_string());
         }
 
-        // Populate layout builder with metadata
-        vm_state.layout_builder.name = self.container.strings.get(type_definition.type_name)?.to_string();
-        vm_state.layout_builder.source_type = Some(GospelVMTypeReference{container: self.clone(), type_index: index});
-        vm_state.layout_builder.source_args = Some(args.clone());
-
-        // Run the VM to evaluate the type now. Note that this can give us a completely different type as well
+        // Run the VM now to calculate the result of the function
         GospelVMExecutionState::run(&mut vm_state)
     }
 }
@@ -724,7 +760,7 @@ impl GospelVMContainer {
 /// VM state for the Gospel VM
 /// Containers can be injected into the VM to register type definitions
 /// Global variables can be defined to supply additional information to the type definitions.
-/// Type definitions can be retrieved with find_type
+/// Function definitions can be retrieved with find_named_function
 /// WARNING: VM instances are NOT thread safe, and must be wrapped into RWLock to be safely usable concurrently
 pub struct GospelVMState {
     target_triplet: GospelVMTargetTriplet,
@@ -762,13 +798,14 @@ impl GospelVMState {
             container: wrapped_container.clone(),
             external_references,
             global_lookup_by_id: HashMap::new(),
-            type_lookup_by_name: HashMap::new()
+            function_lookup_by_name: HashMap::new(),
+            name_lookup_by_function: HashMap::new(),
         };
 
-        // Build lookup table for types by name, and create globals referenced by the container
-        for type_index in 0..wrapped_container.types.len() {
-            let type_name = wrapped_container.strings.get(wrapped_container.types[type_index].type_name)?;
-            vm_container.type_lookup_by_name.insert(type_name.to_string(), type_index as u32);
+        // Build lookup table for functions by name, and create globals referenced by the container
+        for function_name_pair in &wrapped_container.function_names {
+            let function_name = wrapped_container.strings.get(function_name_pair.function_name)?;
+            vm_container.function_lookup_by_name.insert(function_name.to_string(), function_name_pair.function_index);
         }
         for global_index in 0..wrapped_container.globals.len() {
             let global_name = wrapped_container.strings.get(wrapped_container.globals[global_index].name)?;
@@ -798,11 +835,10 @@ impl GospelVMState {
         Ok({})
     }
 
-    /// Returns the type container by name
+    /// Returns a container by name
     pub fn find_named_container(&self, name: &str) -> Option<Rc<GospelVMContainer>> {
         self.containers_by_name.get(name).map(|x| x.clone())
     }
-
     fn find_or_create_global(&mut self, name: &str, initial_value: Option<i32>) -> anyhow::Result<Rc<GospelGlobalStorage>> {
         if let Some(existing_global) = self.globals_by_name.get(name) {
 

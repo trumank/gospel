@@ -1,7 +1,7 @@
 ﻿use std::io::{Cursor, Read, Write};
 use anyhow::{anyhow, bail};
 use strum_macros::FromRepr;
-use crate::gospel_type::{GospelExternalTypeReference, GospelStaticTypeInstance, GospelTypeDefinition};
+use crate::gospel_type::{GospelExternalFunctionReference, GospelFunctionDefinition, GospelFunctionNamePair, GospelLazyValue, GospelNamedConstant};
 use crate::ser::{ReadExt, Readable, WriteExt, Writeable};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default, FromRepr)]
@@ -110,14 +110,18 @@ impl Writeable for GospelContainerImport {
     }
 }
 
+
+
 #[derive(Debug, Clone, Default)]
 pub struct GospelContainer {
     pub(crate) header: GospelContainerHeader,
     pub(crate) imports: Vec<GospelContainerImport>,
     pub(crate) globals: Vec<GospelGlobalDefinition>,
-    pub(crate) types: Vec<GospelTypeDefinition>,
-    pub(crate) external_types: Vec<GospelExternalTypeReference>,
-    pub(crate) static_instances: Vec<GospelStaticTypeInstance>,
+    pub(crate) functions: Vec<GospelFunctionDefinition>,
+    pub(crate) function_names: Vec<GospelFunctionNamePair>,
+    pub(crate) external_functions: Vec<GospelExternalFunctionReference>,
+    pub(crate) lazy_values: Vec<GospelLazyValue>,
+    pub(crate) constants: Vec<GospelNamedConstant>,
     pub(crate) strings: GospelStringTable,
 }
 impl GospelContainer {
@@ -137,9 +141,11 @@ impl Readable for GospelContainer {
             header: stream.de()?,
             imports: stream.de()?,
             globals: stream.de()?,
-            types: stream.de()?,
-            external_types: stream.de()?,
-            static_instances: stream.de()?,
+            functions: stream.de()?,
+            function_names: stream.de()?,
+            external_functions: stream.de()?,
+            lazy_values: stream.de()?,
+            constants: stream.de()?,
             strings: stream.de()?,
         })
     }
@@ -149,9 +155,11 @@ impl Writeable for GospelContainer {
         stream.ser(&self.header)?;
         stream.ser(&self.imports)?;
         stream.ser(&self.globals)?;
-        stream.ser(&self.types)?;
-        stream.ser(&self.external_types)?;
-        stream.ser(&self.static_instances)?;
+        stream.ser(&self.functions)?;
+        stream.ser(&self.function_names)?;
+        stream.ser(&self.external_functions)?;
+        stream.ser(&self.lazy_values)?;
+        stream.ser(&self.constants)?;
         stream.ser(&self.strings)?;
         Ok({})
     }

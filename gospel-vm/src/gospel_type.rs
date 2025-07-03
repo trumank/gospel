@@ -39,7 +39,7 @@ pub enum GospelTargetEnv {
 #[repr(u8)]
 pub enum GospelValueType {
     Integer = 0x00,
-    TypeReference = 0x01,
+    FunctionPointer = 0x01,
     TypeLayout = 0x02,
 }
 
@@ -56,8 +56,8 @@ pub enum GospelPlatformConfigProperty {
 #[repr(u8)]
 pub(crate) enum GospelStaticValueType {
     Integer = 0x00, // value is signed integer, interpret data as literal i32 value
-    TypeReference = 0x01, // value is a type definition, interpret data as GospelTypeIndex
-    StaticTypeInstance = 0x02, // value is a type layout for a static type instance, interpret data as static type index
+    FunctionIndex = 0x01, // value is a function pointer, data is an ID of the function
+    LazyValue = 0x02, // data is an ID of a lazy value, value is returned by evaluation of the value expression
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
@@ -92,7 +92,7 @@ pub(crate) enum GospelSlotBinding {
     StaticValue = 0x01, // initialized with static value
     PlatformConfigProperty = 0x02, // platform config property by ID (stored as integer static value)
     GlobalVariableValue = 0x03, // input variable value by name (index stored as integer static value)
-    TypeArgumentValue = 0x04, // value of the type argument passed to the type definition
+    ArgumentValue = 0x04, // value of the type argument passed to the type definition
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -100,7 +100,6 @@ pub(crate) struct GospelSlotDefinition {
     pub(crate) value_type: GospelValueType,
     pub(crate) binding: GospelSlotBinding,
     pub(crate) binding_data: GospelStaticValue,
-    pub(crate) debug_name: u32,
 }
 impl Readable for GospelSlotDefinition {
     fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
@@ -111,8 +110,7 @@ impl Readable for GospelSlotDefinition {
         let binding = GospelSlotBinding::from_repr(raw_binding)
             .ok_or_else(|| anyhow!("Unknown slot binding value"))?;
         let binding_data: GospelStaticValue = stream.de()?;
-        let debug_name: u32 = stream.de()?;
-        Ok(Self{value_type, binding, binding_data, debug_name})
+        Ok(Self{value_type, binding, binding_data})
     }
 }
 impl Writeable for GospelSlotDefinition {
@@ -120,17 +118,16 @@ impl Writeable for GospelSlotDefinition {
         stream.ser(&(self.value_type as u8))?;
         stream.ser(&(self.binding as u8))?;
         stream.ser(&self.binding_data)?;
-        stream.ser(&self.debug_name)?;
         Ok({})
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct GospelTypeArgumentDefinition {
+pub(crate) struct GospelFunctionArgument {
     pub argument_type: GospelValueType, // type of the argument
     pub default_value: Option<GospelStaticValue>, // default value for the argument, if available
 }
-impl Readable for GospelTypeArgumentDefinition {
+impl Readable for GospelFunctionArgument {
     fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
         let raw_argument_type: u8 = stream.de()?;
         let argument_type = GospelValueType::from_repr(raw_argument_type)
@@ -139,7 +136,7 @@ impl Readable for GospelTypeArgumentDefinition {
         Ok(Self{argument_type, default_value})
     }
 }
-impl Writeable for GospelTypeArgumentDefinition {
+impl Writeable for GospelFunctionArgument {
     fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
         let raw_argument_type = self.argument_type as u8;
         stream.ser(&raw_argument_type)?;
@@ -149,17 +146,15 @@ impl Writeable for GospelTypeArgumentDefinition {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct GospelTypeDefinition {
-    pub type_name: u32, // name of the type, index to string table
-    pub arguments: Vec<GospelTypeArgumentDefinition>, // type arguments for this type
+pub(crate) struct GospelFunctionDefinition {
+    pub arguments: Vec<GospelFunctionArgument>, // arguments for this function
     pub slots: Vec<GospelSlotDefinition>, // slots to bind to the code
     pub code: Vec<GospelInstruction>, // bytecode for the VM
     pub referenced_strings: Vec<u32>, // indices of strings referenced by the bytecode
 }
-impl Readable for GospelTypeDefinition {
+impl Readable for GospelFunctionDefinition {
     fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
         Ok(Self{
-            type_name: stream.de()?,
             arguments: stream.de()?,
             slots: stream.de()?,
             code: stream.de()?,
@@ -167,9 +162,8 @@ impl Readable for GospelTypeDefinition {
         })
     }
 }
-impl Writeable for GospelTypeDefinition {
+impl Writeable for GospelFunctionDefinition {
     fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
-        stream.ser(&self.type_name)?;
         stream.ser(&self.arguments)?;
         stream.ser(&self.slots)?;
         stream.ser(&self.code)?;
@@ -179,8 +173,8 @@ impl Writeable for GospelTypeDefinition {
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub(crate) struct GospelTypeIndex(u32);
-impl GospelTypeIndex {
+pub(crate) struct GospelFunctionIndex(u32);
+impl GospelFunctionIndex {
     const INDEX_SHIFT: u32 = 0;
     const INDEX_MASK: u32 = (1 << 31) - 1;
     const TYPE_SHIFT: u32 = 31;
@@ -204,12 +198,12 @@ impl GospelTypeIndex {
     }
     pub(crate) fn is_external(self) -> bool { self.kind() == 1 }
 }
-impl Readable for GospelTypeIndex {
+impl Readable for GospelFunctionIndex {
     fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
         Ok(Self(stream.de()?))
     }
 }
-impl Writeable for GospelTypeIndex {
+impl Writeable for GospelFunctionIndex {
     fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
         stream.ser(&self.0)?;
         Ok({})
@@ -217,43 +211,85 @@ impl Writeable for GospelTypeIndex {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
-pub(crate) struct GospelStaticTypeInstance {
-    pub type_index: GospelTypeIndex, // index of the base type definition
-    pub arguments: Vec<GospelStaticValue>, // argument values for type definition arguments
+pub(crate) struct GospelLazyValue {
+    pub function_index: GospelFunctionIndex, // index of the function
+    pub arguments: Vec<GospelStaticValue>, // argument values for the function invocation
 }
-impl Readable for GospelStaticTypeInstance {
+impl Readable for GospelLazyValue {
     fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
         Ok(Self{
-            type_index: stream.de()?,
+            function_index: stream.de()?,
             arguments: stream.de()?,
         })
     }
 }
-impl Writeable for GospelStaticTypeInstance {
+impl Writeable for GospelLazyValue {
     fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
-        stream.ser(&self.type_index)?;
+        stream.ser(&self.function_index)?;
         stream.ser(&self.arguments)?;
         Ok({})
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Hash)]
-pub(crate) struct GospelExternalTypeReference {
-    pub import_index: u32, // index of the container from imports from which the named type is imported
-    pub type_name: u32, // name of the imported type, index to the string table string
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub(crate) struct GospelNamedConstant {
+    pub(crate) name: u32, // name of the constant, index to the string table
+    pub(crate) value: GospelStaticValue, // value of the constant
 }
-impl Readable for GospelExternalTypeReference {
+impl Readable for GospelNamedConstant {
     fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
         Ok(Self{
-            import_index: stream.de()?,
-            type_name: stream.de()?,
+            name: stream.de()?,
+            value: stream.de()?,
         })
     }
 }
-impl Writeable for GospelExternalTypeReference {
+impl Writeable for GospelNamedConstant {
+    fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
+        stream.ser(&self.name)?;
+        stream.ser(&self.value)?;
+        Ok({})
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub(crate) struct GospelFunctionNamePair {
+    pub(crate) function_index: u32, // index of a local function
+    pub(crate) function_name: u32, // name of the function, index to the string table
+}
+impl Readable for GospelFunctionNamePair {
+    fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
+        Ok(Self{
+            function_index: stream.de()?,
+            function_name: stream.de()?,
+        })
+    }
+}
+impl Writeable for GospelFunctionNamePair {
+    fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
+        stream.ser(&self.function_index)?;
+        stream.ser(&self.function_name)?;
+        Ok({})
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Hash)]
+pub(crate) struct GospelExternalFunctionReference {
+    pub import_index: u32, // index of the container from imports from which the named type is imported
+    pub function_name: u32, // name of the imported function, index to the string table
+}
+impl Readable for GospelExternalFunctionReference {
+    fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
+        Ok(Self{
+            import_index: stream.de()?,
+            function_name: stream.de()?,
+        })
+    }
+}
+impl Writeable for GospelExternalFunctionReference {
     fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
         stream.ser(&self.import_index)?;
-        stream.ser(&self.type_name)?;
+        stream.ser(&self.function_name)?;
         Ok({})
     }
 }
