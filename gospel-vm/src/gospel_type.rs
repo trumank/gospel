@@ -39,13 +39,13 @@ pub enum GospelTargetEnv {
 #[repr(u8)]
 pub enum GospelValueType {
     Integer = 0x00,
-    TypeDefinition = 0x01,
+    TypeReference = 0x01,
     TypeLayout = 0x02,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, FromRepr)]
 #[repr(u8)]
-pub(crate) enum GospelPlatformConfigProperty {
+pub enum GospelPlatformConfigProperty {
     TargetArch = 0x00, // target architecture (GospelTargetArch)
     TargetOS = 0x01, // target operating system (GospelTargetOS)
     TargetEnv = 0x02, // target environment (GospelTargetEnv)
@@ -56,8 +56,8 @@ pub(crate) enum GospelPlatformConfigProperty {
 #[repr(u8)]
 pub(crate) enum GospelStaticValueType {
     Integer = 0x00, // value is signed integer, interpret data as literal i32 value
-    TypeDefinition = 0x01, // value is a type definition, interpret data as GospelTypeIndex
-    StaticTypeLayout = 0x02, // value is a type layout for a local type instance, interpret data as index
+    TypeReference = 0x01, // value is a type definition, interpret data as GospelTypeIndex
+    StaticTypeInstance = 0x02, // value is a type layout for a static type instance, interpret data as static type index
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
@@ -91,8 +91,8 @@ pub(crate) enum GospelSlotBinding {
     Uninitialized = 0x00, // slot is left uninitialized, attempting to read contents before writing them will result in an error
     StaticValue = 0x01, // initialized with static value
     PlatformConfigProperty = 0x02, // platform config property by ID (stored as integer static value)
-    InputVariableValue = 0x03, // input variable value by name (index stored as integer static value)
-    TemplateArgumentValue = 0x04, // value of the type argument passed to the type definition
+    GlobalVariableValue = 0x03, // input variable value by name (index stored as integer static value)
+    TypeArgumentValue = 0x04, // value of the type argument passed to the type definition
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -127,23 +127,20 @@ impl Writeable for GospelSlotDefinition {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct GospelTypeArgumentDefinition {
-    pub argument_name: u32, // name of the argument, index to string table
     pub argument_type: GospelValueType, // type of the argument
     pub default_value: Option<GospelStaticValue>, // default value for the argument, if available
 }
 impl Readable for GospelTypeArgumentDefinition {
     fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
-        let argument_name: u32 = stream.de()?;
         let raw_argument_type: u8 = stream.de()?;
         let argument_type = GospelValueType::from_repr(raw_argument_type)
             .ok_or_else(|| anyhow!("Unknown type argument type"))?;
         let default_value: Option<GospelStaticValue> = stream.de()?;
-        Ok(Self{argument_name, argument_type, default_value})
+        Ok(Self{argument_type, default_value})
     }
 }
 impl Writeable for GospelTypeArgumentDefinition {
     fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
-        stream.ser(&self.argument_name)?;
         let raw_argument_type = self.argument_type as u8;
         stream.ser(&raw_argument_type)?;
         stream.ser(&self.default_value)?;
@@ -196,8 +193,8 @@ impl GospelTypeIndex {
         Self::create_raw(((index & Self::INDEX_MASK) << Self::INDEX_SHIFT) |
             ((kind & Self::TYPE_MASK) << Self::TYPE_SHIFT))
     }
-    fn create_local(index: u32) -> Self { Self::create(index, 0) }
-    fn create_external(index: u32) -> Self { Self::create(index, 1) }
+    pub(crate) fn create_local(index: u32) -> Self { Self::create(index, 0) }
+    pub(crate) fn create_external(index: u32) -> Self { Self::create(index, 1) }
 
     pub(crate) fn index(self) -> u32 {
         (self.0 >> Self::INDEX_SHIFT) & Self::INDEX_MASK
@@ -205,7 +202,6 @@ impl GospelTypeIndex {
     fn kind(self) -> u32 {
         (self.0 >> Self::TYPE_SHIFT) & Self::TYPE_MASK
     }
-    pub(crate) fn is_local(self) -> bool { self.kind() == 0 }
     pub(crate) fn is_external(self) -> bool { self.kind() == 1 }
 }
 impl Readable for GospelTypeIndex {
@@ -220,7 +216,7 @@ impl Writeable for GospelTypeIndex {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Hash)]
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub(crate) struct GospelStaticTypeInstance {
     pub type_index: GospelTypeIndex, // index of the base type definition
     pub arguments: Vec<GospelStaticValue>, // argument values for type definition arguments

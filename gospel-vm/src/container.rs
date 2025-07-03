@@ -4,13 +4,19 @@ use strum_macros::FromRepr;
 use crate::gospel_type::{GospelExternalTypeReference, GospelStaticTypeInstance, GospelTypeDefinition};
 use crate::ser::{ReadExt, Readable, WriteExt, Writeable};
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, FromRepr)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default, FromRepr)]
 #[repr(u32)]
 pub(crate) enum GospelContainerVersion {
+    #[default]
     Initial = 0x00, // initial version
 }
+impl GospelContainerVersion {
+    pub(crate) fn current_version() -> GospelContainerVersion {
+        GospelContainerVersion::Initial
+    }
+}
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct GospelContainerHeader {
     pub(crate) version: GospelContainerVersion,
     pub(crate) container_name: u32, // name of this container without extension, index to the string table
@@ -53,13 +59,18 @@ impl Writeable for GospelGlobalDefinition {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct GospelStringTable {
-    pub(crate) data: Vec<String>,
+    data: Vec<String>,
 }
 impl GospelStringTable {
     pub(crate) fn create(data: Vec<String>) -> Self {
         Self{data}
+    }
+    pub(crate) fn store(&mut self, string: String) -> u32 {
+        let current_index = self.data.len() as u32;
+        self.data.push(string);
+        current_index
     }
     pub(crate) fn get(&self, index: u32) -> anyhow::Result<&str> {
         if index as usize >= self.data.len() {
@@ -99,7 +110,7 @@ impl Writeable for GospelContainerImport {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GospelContainer {
     pub(crate) header: GospelContainerHeader,
     pub(crate) imports: Vec<GospelContainerImport>,

@@ -141,7 +141,7 @@ impl GospelVMValue {
     pub fn value_type(&self) -> GospelValueType {
         match self {
             GospelVMValue::Integer(_) => { GospelValueType::Integer }
-            GospelVMValue::TypeDefinition(_) => { GospelValueType::TypeDefinition }
+            GospelVMValue::TypeDefinition(_) => { GospelValueType::TypeReference }
             GospelVMValue::TypeLayout(_) => { GospelValueType::TypeLayout }
         }
     }
@@ -570,9 +570,9 @@ impl GospelVMContainer {
                     _ => bail!("Invalid static initializer for integer value")
                 }
             }
-            GospelValueType::TypeDefinition => {
+            GospelValueType::TypeReference => {
                 match value.static_type {
-                    GospelStaticValueType::TypeDefinition => {
+                    GospelStaticValueType::TypeReference => {
                         let type_index = GospelTypeIndex::create_raw(value.data);
                         let reference = self.resolve_type_index(type_index)?;
                         Ok(GospelVMValue::TypeDefinition(reference))
@@ -582,7 +582,7 @@ impl GospelVMContainer {
             }
             GospelValueType::TypeLayout => {
                 match value.static_type {
-                    GospelStaticValueType::StaticTypeLayout => {
+                    GospelStaticValueType::StaticTypeInstance => {
                         let layout = self.resolve_static_type_instance_layout(value.data)?;
                         Ok(GospelVMValue::TypeLayout(layout))
                     }
@@ -620,7 +620,7 @@ impl GospelVMContainer {
                 let resolved_value = self.resolve_static_value(&slot.binding_data)?;
                 Ok(Some(resolved_value))
             }
-            GospelSlotBinding::InputVariableValue => {
+            GospelSlotBinding::GlobalVariableValue => {
                 if slot.binding_data.value_type != GospelValueType::Integer {
                     bail!("Invalid input variable slot binding data, expected value type to be integer")
                 }
@@ -650,7 +650,7 @@ impl GospelVMContainer {
                 let resolved_value = self.resolve_platform_config_property(config_property);
                 Ok(Some(GospelVMValue::Integer(resolved_value)))
             }
-            GospelSlotBinding::TemplateArgumentValue => {
+            GospelSlotBinding::TypeArgumentValue => {
                 if slot.binding_data.value_type != GospelValueType::Integer {
                     bail!("Invalid template argument value slot binding data, expected value type to be integer")
                 }
