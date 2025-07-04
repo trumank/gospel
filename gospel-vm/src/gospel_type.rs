@@ -6,17 +6,27 @@ use crate::ser::{ReadExt, Readable, WriteExt, Writeable};
 
 /// Corresponds to <arch> in LLVM target triplet
 /// Architecture determines the instruction set and, sometimes, the calling convention used (combined with sys)
-#[derive(Debug, PartialEq, Eq, Clone, Copy, FromRepr)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, FromRepr, EnumString)]
 #[repr(u8)]
 pub enum GospelTargetArch {
     X86_64 = 0x00,
     ARM64 = 0x01,
     ARM64EC = 0x02,
 }
+impl GospelTargetArch {
+    /// Returns the architecture current binary has been compiled for (if it can be represented)
+    pub fn current_arch() -> Option<GospelTargetArch> {
+        match std::env::consts::ARCH {
+            "x86_64" => Some(GospelTargetArch::X86_64),
+            "aarch64" => Some(GospelTargetArch::ARM64),
+            _ => None,
+        }
+    }
+}
 
 /// Corresponds to <sys> in LLVM target triplet
 /// Target system generally defines calling convention used and object file format
-#[derive(Debug, PartialEq, Eq, Clone, Copy, FromRepr)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, FromRepr, EnumString)]
 #[repr(u8)]
 pub enum GospelTargetOS {
     None = 0x00,
@@ -24,10 +34,32 @@ pub enum GospelTargetOS {
     Linux = 0x02,
     Darwin = 0x03,
 }
+impl GospelTargetOS {
+    /// Returns the OS the binary has been compiled for (if it can be represented)
+    pub fn current_os() -> Option<GospelTargetOS> {
+        match std::env::consts::OS {
+            "windows" => Some(GospelTargetOS::Win32),
+            "linux" => Some(GospelTargetOS::Linux),
+            "android" => Some(GospelTargetOS::Linux),
+            "macos" => Some(GospelTargetOS::Darwin),
+            "ios" => Some(GospelTargetOS::Darwin),
+            _ => None,
+        }
+    }
+    /// Returns the default environment for the OS in question. Returns none for bare metal
+    pub fn default_env(self) -> Option<GospelTargetEnv> {
+        match self {
+            GospelTargetOS::None => None,
+            GospelTargetOS::Win32 => Some(GospelTargetEnv::MSVC),
+            GospelTargetOS::Linux => Some(GospelTargetEnv::Gnu),
+            GospelTargetOS::Darwin => Some(GospelTargetEnv::Macho),
+        }
+    }
+}
 
 /// Corresponds to <env> in LLVM target triplet
 /// Target env determines the ABI rules used for type layout calculation, for example semantics used for C++ class inheritance and exception handling
-#[derive(Debug, PartialEq, Eq, Clone, Copy, FromRepr)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, FromRepr, EnumString)]
 #[repr(u8)]
 pub enum GospelTargetEnv {
     MSVC = 0x00,

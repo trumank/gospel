@@ -1,7 +1,11 @@
-use std::fs::{read_to_string, write};
+use std::fs::{read, read_to_string, write};
 use std::path::PathBuf;
 use std::process::exit;
+use std::rc::Rc;
+use anyhow::{anyhow, bail};
 use clap::Parser;
+use gospel_vm::container::GospelContainer;
+use gospel_vm::vm::{GospelVMContainer, GospelVMState, GospelVMTargetTriplet, GospelVMValue};
 use gospel_vm::writer::GospelContainerWriter;
 use crate::assembler::GospelAssembler;
 
@@ -21,9 +25,30 @@ struct ActionAssembleContainer {
 }
 
 #[derive(Parser, Debug)]
+struct ActionEvalFunction {
+    /// Container files to load to the VM before evaluation of the expression
+    #[arg(long, short)]
+    input: Vec<PathBuf>,
+    /// Target triple to use as a platform config. When not provided, current platform will be used instead (environment is assumed to be native to the platform)
+    #[arg(long, short)]
+    target: Option<String>,
+    /// Name of the container to find the function in, if not provided all containers are searched in the same order they are passed on the command line
+    #[arg(long, short)]
+    container_name: Option<String>,
+    /// Name of the function to call
+    #[arg(index = 1)]
+    function_name: String,
+    /// Optional arguments to provide to the function
+    #[arg(index = 2)]
+    function_args: Vec<String>,
+}
+
+#[derive(Parser, Debug)]
 enum Action {
     /// Assembles low level gospel assembly source files to a type container
     Assemble(ActionAssembleContainer),
+    /// Eval a named function with the provided arguments
+    Eval(ActionEvalFunction),
 }
 
 #[derive(Parser, Debug)]
@@ -33,7 +58,7 @@ struct Args {
     action: Action,
 }
 
-fn do_action_assemble(action: ActionAssembleContainer) {
+fn do_action_assemble(action: ActionAssembleContainer) -> anyhow::Result<()> {
     let mut container_writer = GospelContainerWriter::create(action.container_name.as_str());
     let mut failed_to_compile_files = false;
     
@@ -57,27 +82,78 @@ fn do_action_assemble(action: ActionAssembleContainer) {
     }
     
     if failed_to_compile_files {
-        eprintln!("Not writing container because one or more source files failed to compile");
-        exit(1);
+        bail!("Not writing container because one or more source files failed to compile");
     }
     let result_container = container_writer.build();
     let output_file_name = action.output.unwrap_or_else(|| PathBuf::from(format!("{}.gso", action.container_name)));
-    let container_serialize_result = result_container.write();
-    
-    if container_serialize_result.is_err() {
-        eprintln!("Failed to serialize container: {}", container_serialize_result.unwrap_err().to_string());
-        exit(1);
+    let container_serialized_data = result_container.write()
+        .map_err(|x| anyhow!("Failed to serialize container: {}", x.to_string()))?;
+    write(output_file_name.clone(), container_serialized_data)
+        .map_err(|x| anyhow!("Failed to write container file {}: {}", output_file_name.to_string_lossy(), x.to_string()))
+}
+
+fn do_action_eval(action: ActionEvalFunction) -> anyhow::Result<()> {
+    // Parse target triplet
+    let target_triplet = if let Some(target_triplet_name) = &action.target {
+        GospelVMTargetTriplet::parse(target_triplet_name.as_str())
+            .map_err(|x| anyhow!("Failed to parse provided target triplet: {}", x.to_string()))?
+    } else {
+        GospelVMTargetTriplet::current_target()
+            .ok_or_else(|| anyhow!("Current platform is not a valid target. Please specify target manually with --target "))?
+    };
+
+    // Load containers to the VM
+    let mut vm_state = GospelVMState::create(target_triplet);
+    let mut all_containers: Vec<Rc<GospelVMContainer>> = Vec::new();
+
+    for container_file_name in &action.input {
+        let file_buffer = read(container_file_name)
+            .map_err(|x| anyhow!("Failed to open container file {}: {}", container_file_name.to_string_lossy(), x.to_string()))?;
+        let parsed_container = GospelContainer::read(&file_buffer)
+            .map_err(|x| anyhow!("Failed to parse container file {}: {}", container_file_name.to_string_lossy(), x.to_string()))?;
+        let mounted_container = vm_state.mount_container(parsed_container)
+            .map_err(|x| anyhow!("Failed to mount container file {}: {}", container_file_name.to_string_lossy(), x.to_string()))?;
+        all_containers.push(mounted_container);
     }
-    let write_result = write(output_file_name.clone(), container_serialize_result.unwrap());
-    if write_result.is_err() {
-        eprintln!("Failed to write container file {}: {}", output_file_name.to_string_lossy(), write_result.unwrap_err().to_string());
-        exit(1);
+
+    // Find the function definition by name
+    let result_function_pointer = if let Some(container_name) = &action.container_name {
+        vm_state.find_named_container(container_name.as_str())
+            .and_then(|x| x.find_named_function(action.function_name.as_str()))
+            .ok_or_else(|| anyhow!("Failed to find a function named {} in container {}", action.container_name.as_ref().unwrap().clone(), action.function_name.clone()))?
+    } else {
+        all_containers.iter()
+            .map(|x| x.find_named_function(action.function_name.as_str()))
+            .find(|x| x.is_some()).flatten()
+            .ok_or_else(|| anyhow!("Failed to find a function named {} in any container", action.function_name.clone()))?
+    };
+
+    // Assemble and evaluate function arguments
+    let mut function_arguments: Vec<GospelVMValue> = Vec::new();
+    for argument_string in &action.function_args {
+        let assembled_value = GospelAssembler::assemble_static_value("<repl>", argument_string.as_str())
+            .map_err(|x| anyhow!("Failed to assemble argument value \"{}\": {}", argument_string.clone(), x.to_string()))?;
+        let evaluated_value = vm_state.eval_source_value(&assembled_value, &Some(result_function_pointer.source_container()))
+            .map_err(|x| anyhow!("Failed to eval argument value \"{}\": {}", argument_string.clone(), x.to_string()))?;
+        function_arguments.push(evaluated_value);
     }
+
+    // Evaluate the function
+    let function_result = result_function_pointer.execute(&function_arguments)
+        .map_err(|x| anyhow!("Failed to execute function: {}", x.to_string()))?;
+    // Print the result now
+    println!("{}", function_result);
+    Ok({})
 }
 
 fn main() {
     let args = Args::parse();
-    match args.action {
+    let result = match args.action {
         Action::Assemble(assemble_action) => do_action_assemble(assemble_action),
+        Action::Eval(eval_action) => do_action_eval(eval_action),
     };
+    if let Err(error) = result {
+        eprintln!("error: {}", error.to_string());
+        exit(1);
+    }
 }

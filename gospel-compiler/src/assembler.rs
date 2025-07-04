@@ -6,7 +6,6 @@ use strum_macros::Display;
 use gospel_vm::bytecode::{GospelInstruction, GospelOpcode};
 use gospel_vm::gospel_type::{GospelPlatformConfigProperty, GospelValueType};
 use gospel_vm::writer::{GospelContainerWriter, GospelSourceFunctionDefinition, GospelSourceFunctionReference, GospelSourceSlotBinding, GospelSourceStaticValue};
-use gospel_vm::writer::GospelSourceStaticValue::Integer;
 use std::str::FromStr;
 
 #[derive(Logos, Debug, Clone, PartialEq, Display)]
@@ -419,7 +418,7 @@ impl GospelAssembler<'_> {
             ctx.next_expect_token(AssemblerToken::AssignmentOperator)?;
             let next_token = ctx.next_checked()?;
             let static_value = Self::parse_static_value_constant(next_token, ctx)?;
-            if let Integer(integer_default_value) = static_value {
+            if let GospelSourceStaticValue::Integer(integer_default_value) = static_value {
                 global_default_value = Some(integer_default_value);
             } else {
                 return Err(ctx.fail("Global variable declarations can only have integer literals as default values"));
@@ -439,9 +438,11 @@ impl GospelAssembler<'_> {
             _ => Err(ctx.fail(format!("Expected top level statement (function), got {}", top_level_token)))
         }
     }
+    /// Creates an assembler instance that will assemble the files and write the results to the given writer
     pub fn create(writer: &mut GospelContainerWriter) -> GospelAssembler<'_> {
         GospelAssembler{writer, global_variable_names: HashSet::new()}
     }
+    /// Assembles the provided source assembly file and writes results to the underlying writer
     pub fn assemble_file_contents(&mut self, file_name: &str, contents: &str) -> anyhow::Result<()> {
         let mut lex_context = GospelLexerContext{file_name, lex: AssemblerToken::lexer(contents)};
 
@@ -451,6 +452,12 @@ impl GospelAssembler<'_> {
             current_token = lex_context.next_or_eof()?;
         }
         Ok({})
+    }
+    /// Assembles the given input as a static value and returns it
+    pub fn assemble_static_value(file_name: &str, contents: &str) -> anyhow::Result<GospelSourceStaticValue> {
+        let mut lex_context = GospelLexerContext{file_name, lex: AssemblerToken::lexer(contents)};
+        let start_token = lex_context.next_checked()?;
+        Self::parse_static_value_constant(start_token, &mut lex_context)
     }
 }
 

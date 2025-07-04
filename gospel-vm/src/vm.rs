@@ -1,11 +1,15 @@
 ﻿use std::cell::RefCell;
 use std::cmp::max;
 use std::collections::HashMap;
+use std::fmt::{Display, Formatter};
 use std::rc::Rc;
 use anyhow::{anyhow, bail};
+use strum_macros::Display;
 use crate::bytecode::{GospelInstruction, GospelOpcode};
 use crate::container::GospelContainer;
 use crate::gospel_type::{GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelTargetArch, GospelTargetEnv, GospelTargetOS, GospelFunctionDefinition, GospelFunctionIndex, GospelValueType};
+use crate::writer::{GospelSourceFunctionReference, GospelSourceLazyValue, GospelSourceStaticValue};
+use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GospelBaseClassLayout {
@@ -87,11 +91,55 @@ pub struct GospelVMTargetTriplet {
     pub env: GospelTargetEnv,
 }
 impl GospelVMTargetTriplet {
+    /// Returns the address size for the provided target triplet
     pub fn address_size(&self) -> usize {
         8 // All currently supported architectures are 64-bit
     }
     fn uses_aligned_base_class_size(&self) -> bool {
         self.env == GospelTargetEnv::MSVC // MSVC uses aligned base class size when calculating layout of child class, GNU and Darwin use unaligned size
+    }
+    /// Resolves a value of the platform config property
+    pub fn resolve_platform_config_property(&self, property: GospelPlatformConfigProperty) -> i32 {
+        match property {
+            GospelPlatformConfigProperty::TargetArch => { self.arch as i32 }
+            GospelPlatformConfigProperty::TargetOS => { self.sys as i32 }
+            GospelPlatformConfigProperty::TargetEnv => { self.env as i32 }
+            GospelPlatformConfigProperty::AddressSize => { self.address_size() as i32 }
+        }
+    }
+    /// Returns the target that the current executable has been compiled for
+    pub fn current_target() -> Option<GospelVMTargetTriplet> {
+        let current_arch = GospelTargetArch::current_arch();
+        let current_os = GospelTargetOS::current_os();
+        let default_env = current_os.as_ref().and_then(|x| x.default_env());
+
+        if current_arch.is_none() || current_os.is_none() || default_env.is_none() {
+            None
+        } else { Some(GospelVMTargetTriplet{
+            arch: current_arch.unwrap(),
+            sys: current_os.unwrap(),
+            env: default_env.unwrap(),
+        }) }
+    }
+    pub fn parse(triplet_str: &str) -> anyhow::Result<GospelVMTargetTriplet> {
+        let splits: Vec<&str> = triplet_str.split('-').collect();
+        if splits.len() <= 2 {
+            bail!("Target triplet string too short, need at least 2 parts (<arch>-<os>)");
+        }
+        if splits.len() > 3 {
+            bail!("Target triplet string too long, should consist of at most 3 parts (<arch>-<os>-<env>)");
+        }
+        let arch = GospelTargetArch::from_str(splits[0])
+            .map_err(|x| anyhow!("Failed to parse arch: {}", x.to_string()))?;
+        let sys = GospelTargetOS::from_str(splits[1])
+            .map_err(|x| anyhow!("Failed to parse OS: {}", x.to_string()))?;
+        let env = if splits.len() >= 3 {
+            GospelTargetEnv::from_str(splits[2])
+                .map_err(|x| anyhow!("Failed to parse env: {}", x.to_string()))?
+        } else {
+            sys.default_env().ok_or_else(|| anyhow!("Default env for OS not available please specify env manually (<arch>-<os>-<env>)"))?
+        };
+        Ok(GospelVMTargetTriplet{arch, sys, env})
     }
 }
 
@@ -104,6 +152,13 @@ pub struct GospelVMFunctionPointer {
 impl GospelVMFunctionPointer {
     pub fn pointer_equal(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.container, &other.container) && self.function_index == other.function_index
+    }
+}
+impl Display for GospelVMFunctionPointer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let container_name = self.container.container_name().unwrap_or("<unknown>");
+        let function_name = self.function_name().unwrap_or("<unknown>");
+        write!(f, "{}:{}", container_name, function_name)
     }
 }
 impl GospelVMFunctionPointer {
@@ -125,10 +180,13 @@ impl GospelVMFunctionPointer {
 /// Currently supported value types are integers, function pointers and type layouts
 /// Function pointers can be called to yield their return value
 /// Values can be compared for equality, but values of certain types might never be equivalent (for example, unnamed type layouts are never equivalent, even to themselves)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Display)]
 pub enum GospelVMValue {
+    #[strum(to_string = "Integer({0})")]
     Integer(i32), // signed 32-bit integer value
+    #[strum(to_string = "FunctionPointer({0})")]
     FunctionPointer(GospelVMFunctionPointer), // definition of a type with no template arguments
+    #[strum(to_string = "TypeLayout({0:#?})")]
     TypeLayout(GospelTypeLayout), // pre-computed type layout
 }
 impl GospelVMValue {
@@ -650,7 +708,7 @@ impl GospelVMContainer {
             GospelStaticValueType::PlatformConfigProperty => {
                 let config_property = GospelPlatformConfigProperty::from_repr(value.data as u8)
                     .ok_or_else(|| anyhow!("Unknown platform config property"))?;
-                let resolved_value = self.resolve_platform_config_property(config_property);
+                let resolved_value = self.target_triplet.resolve_platform_config_property(config_property);
                 Ok(GospelVMValue::Integer(resolved_value))
             }
         }
@@ -663,14 +721,6 @@ impl GospelVMContainer {
             resolved_args.push(resolved_value)
         }
         self.execute_function_internal(index, &resolved_args, recursion_counter)
-    }
-    fn resolve_platform_config_property(&self, property: GospelPlatformConfigProperty) -> i32 {
-        match property {
-            GospelPlatformConfigProperty::TargetArch => { self.target_triplet.arch as i32 }
-            GospelPlatformConfigProperty::TargetOS => { self.target_triplet.sys as i32 }
-            GospelPlatformConfigProperty::TargetEnv => { self.target_triplet.env as i32 }
-            GospelPlatformConfigProperty::AddressSize => { self.target_triplet.address_size() as i32 }
-        }
     }
     fn resolve_slot_binding(self: &Rc<Self>, type_definition: &GospelFunctionDefinition, slot: &GospelSlotDefinition, args: &Vec<GospelVMValue>, recursion_counter: usize) -> anyhow::Result<Option<GospelVMValue>> {
         match slot.binding {
@@ -826,9 +876,69 @@ impl GospelVMState {
     pub fn find_named_container(&self, name: &str) -> Option<Rc<GospelVMContainer>> {
         self.containers_by_name.get(name).map(|x| x.clone())
     }
+
+    /// Returns a value of the global variable by name if it is defined and has a value, or None otherwise
+    pub fn get_global_variable_value(&self, name: &str) -> Option<i32> {
+        self.globals_by_name.get(name).and_then(|global_storage| global_storage.current_value.borrow().clone())
+    }
+
+    /// Attempts to find a function definition by its fully qualified name (container name combined with function name)
+    /// Providing the container context allows resolving local function references as well
+    pub fn find_function_by_reference(&self, reference: &GospelSourceFunctionReference, context: &Option<Rc<GospelVMContainer>>) -> Option<GospelVMFunctionPointer> {
+        match reference {
+            GospelSourceFunctionReference::LocalFunction{function_name} => {
+                context.as_ref().and_then(|container| container.find_named_function(function_name.as_str()))
+            }
+            GospelSourceFunctionReference::ExternalFunction {function_name, container_name} => {
+                self.find_named_container(container_name.as_str()).and_then(|container| container.find_named_function(function_name.as_str()))
+            }
+        }
+    }
+
+    /// Allows evaluating a source value without building a container first (REPL-like API)
+    pub fn eval_source_value(&self, value: &GospelSourceStaticValue, context: &Option<Rc<GospelVMContainer>>) -> anyhow::Result<GospelVMValue> {
+        match value {
+            GospelSourceStaticValue::FunctionId(function_reference) => {
+                self.find_function_by_reference(&function_reference, context)
+                    .map(|function_pointer| GospelVMValue::FunctionPointer(function_pointer))
+                    .ok_or_else(|| anyhow!("Failed to find function by function reference {}", function_reference))
+            }
+            GospelSourceStaticValue::GlobalVariableValue(global_variable_name) => {
+                self.get_global_variable_value(global_variable_name.as_str())
+                    .map(|integer_value| GospelVMValue::Integer(integer_value))
+                    .ok_or_else(|| anyhow!("Global variable named {} is not defined or does not have a value assigned", global_variable_name))
+            }
+            GospelSourceStaticValue::Integer(integer_value) => {
+                Ok(GospelVMValue::Integer(*integer_value))
+            }
+            GospelSourceStaticValue::PlatformConfigProperty(config_property) => {
+                Ok(GospelVMValue::Integer(self.target_triplet.resolve_platform_config_property(*config_property)))
+            }
+            GospelSourceStaticValue::LazyValue(lazy_value) => {
+                self.eval_lazy_value(lazy_value, context)
+            }
+        }
+    }
+
+    /// Allows evaluating a source lazy value without building a container first (REPL-like API)
+    pub fn eval_lazy_value(&self, value: &GospelSourceLazyValue, context: &Option<Rc<GospelVMContainer>>) -> anyhow::Result<GospelVMValue> {
+        let function_pointer = self.find_function_by_reference(&value.function_reference, context)
+            .ok_or_else(|| anyhow!("Failed to find function {} to evaluate the lazy value", value.function_reference))?;
+
+        let mut compiled_function_arguments: Vec<GospelVMValue> = Vec::with_capacity(value.arguments.len());
+        for source_argument in &value.arguments {
+            let argument_value = self.eval_source_value(source_argument, context)?;
+            compiled_function_arguments.push(argument_value);
+        }
+        let eval_result = function_pointer.execute(&compiled_function_arguments)?;
+        if eval_result.value_type() != value.return_value_type {
+            bail!("Function returned value of incompatible type {} (expected: {})", eval_result.value_type(), value.return_value_type);
+        }
+        Ok(eval_result)
+    }
+
     fn find_or_create_global(&mut self, name: &str, initial_value: Option<i32>) -> anyhow::Result<Rc<GospelGlobalStorage>> {
         if let Some(existing_global) = self.globals_by_name.get(name) {
-
             if let Some(unwrapped_initial_value) = initial_value {
                 let mut current_initial_value = existing_global.initial_value.borrow_mut();
 

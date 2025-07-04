@@ -1,15 +1,18 @@
 ﻿use std::collections::HashMap;
 use anyhow::{anyhow, bail};
+use strum_macros::Display;
 use crate::bytecode::{GospelInstruction, GospelOpcode};
 use crate::container::{GospelContainer, GospelContainerImport, GospelContainerVersion, GospelGlobalDefinition};
 use crate::gospel_type::{GospelExternalFunctionReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelFunctionArgument, GospelFunctionDefinition, GospelFunctionIndex, GospelValueType, GospelLazyValue, GospelFunctionNamePair};
 
 /// Represents a reference to a function
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Display)]
 pub enum GospelSourceFunctionReference {
     /// a reference to a function in this container
+    #[strum(to_string = "LocalFunction({function_name})")]
     LocalFunction{ function_name: String},
     /// a reference to a function in another container
+    #[strum(to_string = "ExternalFunction({container_name}:{function_name})")]
     ExternalFunction{container_name: String, function_name: String},
 }
 
