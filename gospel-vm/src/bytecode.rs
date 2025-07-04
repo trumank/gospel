@@ -1,10 +1,11 @@
 ﻿use std::io::{Read, Write};
-use strum_macros::{Display, EnumProperty, FromRepr};
+use strum_macros::{Display, EnumProperty, EnumString, FromRepr};
 use crate::ser::{ReadExt, Readable, WriteExt, Writeable};
 use std::string::ToString;
+use anyhow::bail;
 use strum::EnumProperty;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, FromRepr, EnumProperty, Display)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, FromRepr, EnumProperty, Display, EnumString)]
 #[repr(u8)]
 pub enum GospelOpcode {
     // Basic opcodes
@@ -163,16 +164,20 @@ impl GospelInstruction {
     pub fn immediate_operands(&self) -> &[u32] { &self.immediate_operands[0..self.instruction_encoding.immediate_count()] }
     pub  fn immediate_operand_at(&self, index: usize) -> Option<u32> { if index < self.instruction_encoding.immediate_count() { Some(self.immediate_operands[index]) } else { None } }
 
-    pub fn create(opcode: GospelOpcode, immediate_operands: &[u32]) -> GospelInstruction {
+    pub fn create(opcode: GospelOpcode, immediate_operands: &[u32]) -> anyhow::Result<GospelInstruction> {
         let instruction_encoding = GospelInstructionEncoding::from_opcode(opcode);
-        assert_eq!(instruction_encoding.immediate_count(), immediate_operands.len(), "Operand count mismatch for opcode {}: expected {} immediate operands, but {} operands were provided",
+        if instruction_encoding.immediate_count() != immediate_operands.len() {
+            bail!("Operand count mismatch for opcode {}: expected {} immediate operands, but {} operands were provided",
                    opcode.to_string(), instruction_encoding.immediate_count(), immediate_operands.len());
-        Self{raw_opcode: opcode as u8, instruction_encoding, immediate_operands: immediate_operands.try_into().unwrap() }
+        }
+        Ok(Self{raw_opcode: opcode as u8, instruction_encoding, immediate_operands: immediate_operands.try_into()? })
     }
-    pub fn create_raw(raw_opcode: u8, encoding: GospelInstructionEncoding, immediate_operands: &[u32]) -> GospelInstruction {
-        assert_eq!(encoding.immediate_count(), immediate_operands.len(), "Operand count mismatch: expected {} immediate operands, but {} operands were provided",
-                   encoding.immediate_count(), immediate_operands.len());
-        Self{raw_opcode, instruction_encoding: encoding, immediate_operands: immediate_operands.try_into().unwrap() }
+    pub fn create_raw(raw_opcode: u8, encoding: GospelInstructionEncoding, immediate_operands: &[u32]) -> anyhow::Result<GospelInstruction> {
+        if encoding.immediate_count() != immediate_operands.len() {
+            bail!("Operand count mismatch: expected {} immediate operands, but {} operands were provided",
+                encoding.immediate_count(), immediate_operands.len());
+        }
+        Ok(Self{raw_opcode, instruction_encoding: encoding, immediate_operands: immediate_operands.try_into().unwrap() })
     }
 }
 
@@ -185,7 +190,7 @@ impl Readable for GospelInstruction {
         for immediate_operand_index in 0..instruction_encoding.immediate_count() {
             immediate_operands[immediate_operand_index] = stream.de()?;
         }
-        Ok(Self::create_raw(raw_opcode, instruction_encoding, &immediate_operands))
+        Ok(Self::create_raw(raw_opcode, instruction_encoding, &immediate_operands)?)
     }
 }
 impl Writeable for GospelInstruction {

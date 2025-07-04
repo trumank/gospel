@@ -169,6 +169,7 @@ struct GospelGlobalStorage {
 #[derive(Debug)]
 struct GospelVMExecutionState<'a> {
     target_triplet: &'a GospelVMTargetTriplet,
+    function_return_type: GospelValueType,
     instructions: &'a Vec<GospelInstruction>,
     slot_definitions: &'a Vec<GospelSlotDefinition>,
     slots: Vec<Option<GospelVMValue>>,
@@ -347,6 +348,12 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::ReturnValue => {
                     let stack_value = state.pop_stack_check_underflow()?;
+                    if stack_value.value_type() != state.function_return_type {
+                        bail!("Incompatible return value type");
+                    }
+                    if !state.stack.is_empty() {
+                        bail!("Stack not empty upon function return");
+                    }
                     return Ok(stack_value)
                 }
                 GospelOpcode::Call => {
@@ -632,6 +639,20 @@ impl GospelVMContainer {
                 }
                 Ok(resolved_value)
             }
+            GospelStaticValueType::GlobalVariableValue => {
+                let global_variable = self.global_lookup_by_id.get(&(value.data as usize))
+                    .ok_or_else(|| anyhow!("Failed to find global with index specified"))?;
+                // Make sure the global variable has been initialized
+                let current_value = global_variable.current_value.borrow().clone()
+                    .ok_or_else(|| anyhow!("Attempt to read uninitialized global variable {}", global_variable.name))?;
+                Ok(GospelVMValue::Integer(current_value))
+            }
+            GospelStaticValueType::PlatformConfigProperty => {
+                let config_property = GospelPlatformConfigProperty::from_repr(value.data as u8)
+                    .ok_or_else(|| anyhow!("Unknown platform config property"))?;
+                let resolved_value = self.resolve_platform_config_property(config_property);
+                Ok(GospelVMValue::Integer(resolved_value))
+            }
         }
     }
     fn execute_function_static(self: &Rc<Self>, index: u32, args: &Vec<GospelStaticValue>, recursion_counter: usize) -> anyhow::Result<GospelVMValue> {
@@ -653,65 +674,30 @@ impl GospelVMContainer {
     }
     fn resolve_slot_binding(self: &Rc<Self>, type_definition: &GospelFunctionDefinition, slot: &GospelSlotDefinition, args: &Vec<GospelVMValue>, recursion_counter: usize) -> anyhow::Result<Option<GospelVMValue>> {
         match slot.binding {
-            GospelSlotBinding::Uninitialized => {
-                Ok(None)
-            }
             GospelSlotBinding::StaticValue => {
-                if slot.value_type != slot.binding_data.value_type {
-                    bail!("Slot value type is not compatible with static value type specified")
-                }
-                let resolved_value = self.resolve_static_value(&slot.binding_data, recursion_counter)?;
-                Ok(Some(resolved_value))
-            }
-            GospelSlotBinding::GlobalVariableValue => {
-                if slot.binding_data.value_type != GospelValueType::Integer {
-                    bail!("Invalid input variable slot binding data, expected value type to be integer")
-                }
-                // For now all global variables are integers
-                if slot.value_type != GospelValueType::Integer {
-                    bail!("Slot value type is not compatible with global variable value type")
-                }
-
-                let global_variable = self.global_lookup_by_id.get(&(slot.binding_data.data as usize))
-                    .ok_or_else(|| anyhow!("Failed to find global with index specified"))?;
-                // Make sure the global variable has been initialized
-                let current_value = global_variable.current_value.borrow().clone()
-                    .ok_or_else(|| anyhow!("Attempt to read uninitialized global variable {}", global_variable.name))?;
-                Ok(Some(GospelVMValue::Integer(current_value)))
-            }
-            GospelSlotBinding::PlatformConfigProperty => {
-                if slot.binding_data.value_type != GospelValueType::Integer {
-                    bail!("Invalid platform config property slot binding data, expected value type to be integer")
-                }
-                // For now all platform config variables are integers
-                if slot.value_type != GospelValueType::Integer {
-                    bail!("Slot value type is not compatible with global variable value type")
-                }
-
-                let config_property = GospelPlatformConfigProperty::from_repr(slot.binding_data.value_type as u8)
-                    .ok_or_else(|| anyhow!("Unknown platform config property"))?;
-                let resolved_value = self.resolve_platform_config_property(config_property);
-                Ok(Some(GospelVMValue::Integer(resolved_value)))
+                if let Some(static_value) = slot.static_value {
+                    let resolved_value = self.resolve_static_value(&static_value, recursion_counter)?;
+                    if slot.value_type != resolved_value.value_type() {
+                        bail!("Slot value type is not compatible with static value type specified")
+                    }
+                    Ok(Some(resolved_value))
+                } else { Ok(None) }
             }
             GospelSlotBinding::ArgumentValue => {
-                if slot.binding_data.value_type != GospelValueType::Integer {
-                    bail!("Invalid template argument value slot binding data, expected value type to be integer")
+                if slot.argument_index as usize >= type_definition.arguments.len() {
+                    bail!("Invalid template argument index #{} (number of template arguments: {})", slot.argument_index, type_definition.arguments.len());
                 }
-                let argument_index = slot.binding_data.data as usize;
-                if argument_index >= type_definition.arguments.len() {
-                    bail!("Invalid template argument index #{} (number of template arguments: {})", argument_index, type_definition.arguments.len());
+                if type_definition.arguments[slot.argument_index as usize].argument_type != slot.value_type {
+                    bail!("Incompatible value type for slot and argument at index #{}", slot.argument_index);
                 }
-                if type_definition.arguments[argument_index].argument_type != slot.value_type {
-                    bail!("Incompatible value type for slot and argument at index #{}", argument_index);
-                }
-                let resolved_value = if argument_index >= args.len() {
-                    let static_value = type_definition.arguments[argument_index].default_value.clone()
-                        .ok_or_else(|| anyhow!("Missing value for argument #{} with no default value provided", argument_index))?;
+                let resolved_value = if slot.argument_index as usize >= args.len() {
+                    let static_value = type_definition.arguments[slot.argument_index as usize].default_value.clone()
+                        .ok_or_else(|| anyhow!("Missing value for argument #{} with no default value provided", slot.argument_index))?;
                     self.resolve_static_value(&static_value, recursion_counter)?
                 } else {
-                    args[argument_index].clone()
+                    args[slot.argument_index as usize].clone()
                 };
-                if resolved_value.value_type() != type_definition.arguments[argument_index].argument_type {
+                if resolved_value.value_type() != type_definition.arguments[slot.argument_index as usize].argument_type {
                     bail!("Incompatible value type for argument type and provided value");
                 }
                 Ok(Some(resolved_value))
@@ -727,6 +713,7 @@ impl GospelVMContainer {
         // Construct a fresh VM state
         let mut vm_state = GospelVMExecutionState{
             target_triplet: &self.target_triplet,
+            function_return_type: function_definition.return_value_type,
             instructions: &function_definition.code,
             slot_definitions: &function_definition.slots,
             slots: Vec::with_capacity(function_definition.slots.len()),

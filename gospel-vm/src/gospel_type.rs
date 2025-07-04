@@ -1,6 +1,6 @@
 ﻿use std::io::{Read, Write};
 use anyhow::anyhow;
-use strum_macros::{Display, FromRepr};
+use strum_macros::{Display, EnumString, FromRepr};
 use crate::bytecode::GospelInstruction;
 use crate::ser::{ReadExt, Readable, WriteExt, Writeable};
 
@@ -35,15 +35,27 @@ pub enum GospelTargetEnv {
     Macho = 0x02,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, FromRepr, Display)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, FromRepr, Display, EnumString)]
 #[repr(u8)]
 pub enum GospelValueType {
     Integer = 0x00,
     FunctionPointer = 0x01,
     TypeLayout = 0x02,
 }
+impl Readable for GospelValueType {
+    fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
+        let raw_value_type: u8 = stream.de()?;
+        Self::from_repr(raw_value_type).ok_or_else(|| anyhow!("Unknown value type"))
+    }
+}
+impl Writeable for GospelValueType {
+    fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
+        stream.ser(&(*self as u8))?;
+        Ok({})
+    }
+}
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, FromRepr)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, FromRepr, EnumString)]
 #[repr(u8)]
 pub enum GospelPlatformConfigProperty {
     TargetArch = 0x00, // target architecture (GospelTargetArch)
@@ -58,6 +70,20 @@ pub(crate) enum GospelStaticValueType {
     Integer = 0x00, // value is signed integer, interpret data as literal i32 value
     FunctionIndex = 0x01, // value is a function pointer, data is an ID of the function
     LazyValue = 0x02, // data is an ID of a lazy value, value is returned by evaluation of the value expression
+    PlatformConfigProperty = 0x03, // platform config property value, interpret data as GospelPlatformConfigProperty
+    GlobalVariableValue = 0x04, // global variable value by name, interpret data as name index
+}
+impl Readable for GospelStaticValueType {
+    fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
+        let raw_value_type: u8 = stream.de()?;
+        Self::from_repr(raw_value_type).ok_or_else(|| anyhow!("Unknown static value type"))
+    }
+}
+impl Writeable for GospelStaticValueType {
+    fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
+        stream.ser(&(*self as u8))?;
+        Ok({})
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
@@ -68,17 +94,16 @@ pub(crate) struct GospelStaticValue {
 }
 impl Readable for GospelStaticValue {
     fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self>  {
-        let raw_value_type: u8 = stream.de()?;
-        let value_type = GospelValueType::from_repr(raw_value_type).ok_or_else(|| anyhow!("Unknown value type"))?;
-        let raw_static_type: u8 = stream.de()?;
-        let static_type = GospelStaticValueType::from_repr(raw_static_type).ok_or_else(|| anyhow!("Unknown static value type"))?;
-        let data: u32 = stream.de()?;
-        Ok(Self{value_type, static_type, data})
+        Ok(Self{
+            value_type: stream.de()?,
+            static_type: stream.de()?,
+            data: stream.de()?,
+        })
     }
 }
 impl Writeable for GospelStaticValue {
     fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
-        stream.ser(&(self.value_type as u8))?;
+        stream.ser(&self.value_type)?;
         stream.ser(&(self.static_type as u8))?;
         stream.ser(&self.data)?;
         Ok({})
@@ -88,36 +113,45 @@ impl Writeable for GospelStaticValue {
 #[derive(Debug, PartialEq, Eq, Clone, Copy, FromRepr)]
 #[repr(u8)]
 pub(crate) enum GospelSlotBinding {
-    Uninitialized = 0x00, // slot is left uninitialized, attempting to read contents before writing them will result in an error
-    StaticValue = 0x01, // initialized with static value
-    PlatformConfigProperty = 0x02, // platform config property by ID (stored as integer static value)
-    GlobalVariableValue = 0x03, // input variable value by name (index stored as integer static value)
-    ArgumentValue = 0x04, // value of the type argument passed to the type definition
+    StaticValue = 0x00, // initialized with static value (if present)
+    ArgumentValue = 0x01, // value of the type argument passed to the type definition
+}
+impl Readable for GospelSlotBinding {
+    fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
+        let raw_value_type: u8 = stream.de()?;
+        Self::from_repr(raw_value_type).ok_or_else(|| anyhow!("Unknown slot binding"))
+    }
+}
+impl Writeable for GospelSlotBinding {
+    fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
+        stream.ser(&(*self as u8))?;
+        Ok({})
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct GospelSlotDefinition {
     pub(crate) value_type: GospelValueType,
     pub(crate) binding: GospelSlotBinding,
-    pub(crate) binding_data: GospelStaticValue,
+    pub(crate) static_value: Option<GospelStaticValue>,
+    pub(crate) argument_index: u32,
 }
 impl Readable for GospelSlotDefinition {
     fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
-        let raw_value_type: u8 = stream.de()?;
-        let value_type = GospelValueType::from_repr(raw_value_type)
-            .ok_or_else(|| anyhow!("Unknown slot value type"))?;
-        let raw_binding: u8 = stream.de()?;
-        let binding = GospelSlotBinding::from_repr(raw_binding)
-            .ok_or_else(|| anyhow!("Unknown slot binding value"))?;
-        let binding_data: GospelStaticValue = stream.de()?;
-        Ok(Self{value_type, binding, binding_data})
+        Ok(Self{
+            value_type: stream.de()?,
+            binding: stream.de()?,
+            static_value: stream.de()?,
+            argument_index: stream.de()?,
+        })
     }
 }
 impl Writeable for GospelSlotDefinition {
     fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
-        stream.ser(&(self.value_type as u8))?;
-        stream.ser(&(self.binding as u8))?;
-        stream.ser(&self.binding_data)?;
+        stream.ser(&self.value_type)?;
+        stream.ser(&self.binding)?;
+        stream.ser(&self.static_value)?;
+        stream.ser(&self.argument_index)?;
         Ok({})
     }
 }
@@ -148,6 +182,7 @@ impl Writeable for GospelFunctionArgument {
 #[derive(Debug, Clone)]
 pub(crate) struct GospelFunctionDefinition {
     pub arguments: Vec<GospelFunctionArgument>, // arguments for this function
+    pub return_value_type: GospelValueType, // type of the function return value
     pub slots: Vec<GospelSlotDefinition>, // slots to bind to the code
     pub code: Vec<GospelInstruction>, // bytecode for the VM
     pub referenced_strings: Vec<u32>, // indices of strings referenced by the bytecode
@@ -156,6 +191,7 @@ impl Readable for GospelFunctionDefinition {
     fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
         Ok(Self{
             arguments: stream.de()?,
+            return_value_type: stream.de()?,
             slots: stream.de()?,
             code: stream.de()?,
             referenced_strings: stream.de()?,
@@ -165,6 +201,7 @@ impl Readable for GospelFunctionDefinition {
 impl Writeable for GospelFunctionDefinition {
     fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
         stream.ser(&self.arguments)?;
+        stream.ser(&self.return_value_type)?;
         stream.ser(&self.slots)?;
         stream.ser(&self.code)?;
         stream.ser(&self.referenced_strings)?;

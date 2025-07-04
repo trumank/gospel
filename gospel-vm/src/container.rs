@@ -128,10 +128,17 @@ impl GospelContainer {
     pub fn container_name(&self) -> anyhow::Result<&str> {
         self.strings.get(self.header.container_name)
     }
-    /// Reads the type container from the provided data buffer
+    /// Reads the container from the provided data buffer
     pub fn read(data: &[u8]) -> anyhow::Result<GospelContainer> {
         let mut reader = Cursor::new(data);
         Ok(reader.de()?)
+    }
+    /// Serializes the container to a data buffer
+    pub fn write(&self) -> anyhow::Result<Vec<u8>> {
+        let mut data: Vec<u8> = Vec::new();
+        let mut writer = Cursor::new(&mut data);
+        writer.ser(self)?;
+        Ok(data)
     }
 }
 

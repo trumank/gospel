@@ -5,7 +5,7 @@ use crate::container::{GospelContainer, GospelContainerImport, GospelContainerVe
 use crate::gospel_type::{GospelExternalFunctionReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelFunctionArgument, GospelFunctionDefinition, GospelFunctionIndex, GospelValueType, GospelLazyValue, GospelFunctionNamePair};
 
 /// Represents a reference to a function
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GospelSourceFunctionReference {
     /// a reference to a function in this container
     LocalFunction{ function_name: String},
@@ -14,15 +14,33 @@ pub enum GospelSourceFunctionReference {
 }
 
 /// Represents a static value
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GospelSourceStaticValue {
+    /// signed integer literal
     Integer(i32),
+    /// pointer to the function with the provided name
     FunctionId(GospelSourceFunctionReference),
+    /// result of the evaluation of function with provided arguments
     LazyValue(GospelSourceLazyValue),
+    /// value of the provided platform config property
+    PlatformConfigProperty(GospelPlatformConfigProperty),
+    /// value of a global variable with the specified name
+    GlobalVariableValue(String),
+}
+impl GospelSourceStaticValue {
+    pub fn value_type(&self) -> GospelValueType {
+        match self {
+            GospelSourceStaticValue::Integer(_) => GospelValueType::Integer,
+            GospelSourceStaticValue::FunctionId(_) => GospelValueType::FunctionPointer,
+            GospelSourceStaticValue::LazyValue(value) => value.return_value_type,
+            GospelSourceStaticValue::PlatformConfigProperty(_) => GospelValueType::Integer,
+            GospelSourceStaticValue::GlobalVariableValue(_) => GospelValueType::Integer,
+        }
+    }
 }
 
 /// Represents a lazily evaluated value created by calling the provided function with the given set of arguments
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GospelSourceLazyValue {
     pub function_reference: GospelSourceFunctionReference,
     pub return_value_type: GospelValueType,
@@ -30,17 +48,13 @@ pub struct GospelSourceLazyValue {
 }
 
 /// Represents a value with which a slot is populated before type layout calculation occurs
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub enum GospelSourceSlotBinding {
     /// slot is not initialized with a value, and must be written to before value can be read from it
     #[default]
     Uninitialized,
     /// slot is initialized with the provided value
     StaticValue(GospelSourceStaticValue),
-    /// slot is initialized with the value of the provided platform config property
-    PlatformConfigProperty(GospelPlatformConfigProperty),
-    /// slot is initialized with the value of a global variable with the specified name
-    GlobalVariableValue(String),
     /// slot is initialized with the value of the function argument at the given index
     ArgumentValue(u32),
 }
@@ -66,6 +80,7 @@ pub struct GospelSourceFunctionDefinition {
     code: Vec<GospelInstruction>,
     referenced_strings: Vec<String>,
     referenced_string_lookup: HashMap<String, u32>,
+    return_value_type: Option<GospelValueType>,
 }
 impl GospelSourceFunctionDefinition {
     /// Creates a named function. When hidden is true, the function will not be visible outside the current container by name
@@ -76,24 +91,48 @@ impl GospelSourceFunctionDefinition {
             ..GospelSourceFunctionDefinition::default()
         }
     }
-    pub fn add_function_argument(&mut self, value_type: GospelValueType, default_value: Option<GospelSourceStaticValue>) -> u32 {
+    pub fn set_return_value_type(&mut self, return_value_type: GospelValueType) {
+        self.return_value_type = Some(return_value_type);
+    }
+    pub fn get_argument_type_at_index(&self, index: u32) -> Option<GospelValueType> {
+        if (index as usize) < self.arguments.len() {
+            Some(self.arguments[index as usize].argument_type)
+        } else { None }
+    }
+    pub fn add_function_argument(&mut self, value_type: GospelValueType, default_value: Option<GospelSourceStaticValue>) -> anyhow::Result<u32> {
+        if default_value.is_some() && default_value.as_ref().unwrap().value_type() != value_type {
+            bail!("Incompatible default value type for function argument");
+        }
         let new_argument_index = self.arguments.len() as u32;
         self.arguments.push(GospelSourceFunctionArgument {
             argument_type: value_type,
             default_value,
         });
-        new_argument_index
+        Ok(new_argument_index)
     }
-    pub fn add_slot(&mut self, value_type: GospelValueType, binding: GospelSourceSlotBinding) -> u32 {
+    pub fn add_slot(&mut self, value_type: GospelValueType, binding: GospelSourceSlotBinding) -> anyhow::Result<u32> {
+        if let GospelSourceSlotBinding::StaticValue(static_value) = &binding {
+            if static_value.value_type() != value_type {
+                bail!("Incompatible static value binding type for slot definition");
+            }
+        }
+        if let GospelSourceSlotBinding::ArgumentValue(argument_index) = &binding {
+            if *argument_index as usize >= self.arguments.len() {
+                bail!("Invalid argument index #{} out of bounds (number of function arguments: {})", argument_index, self.arguments.len());
+            }
+            if self.arguments[*argument_index as usize].argument_type != value_type {
+                bail!("Incompatible argument type at index #{} for slot definition", argument_index);
+            }
+        }
         let new_slot_index = self.slots.len() as u32;
         self.slots.push(GospelSourceSlotDefinition{
             slot_type: value_type,
             slot_biding: binding,
         });
-        new_slot_index
+        Ok(new_slot_index)
     }
     /// Note that this function should generally not be used directly, but is public to make extensions easier
-    pub fn add_string_internal(&mut self, string: &str) -> u32 {
+    pub fn add_string_reference_internal(&mut self, string: &str) -> u32 {
         if let Some(existing_index) = self.referenced_string_lookup.get(string) {
             return *existing_index
         }
@@ -115,16 +154,16 @@ impl GospelSourceFunctionDefinition {
         if opcode != GospelOpcode::LoadSlot && opcode != GospelOpcode::StoreSlot {
             bail!("Invalid opcode for slot instruction (LoadSlot and StoreSlot are allowed)");
         }
-        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[slot_index])))
+        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[slot_index])?))
     }
     pub fn add_int_constant_instruction(&mut self, value: i32) -> anyhow::Result<u32> {
-        Ok(self.add_instruction_internal(GospelInstruction::create(GospelOpcode::IntConstant, &[value as u32])))
+        Ok(self.add_instruction_internal(GospelInstruction::create(GospelOpcode::IntConstant, &[value as u32])?))
     }
     pub fn add_control_flow_instruction(&mut self, opcode: GospelOpcode, target_instruction_index: u32) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::Branch && opcode != GospelOpcode::BranchIfNot {
             bail!("Invalid opcode for control flow instruction (Branch and BranchIfNot are allowed)");
         }
-        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[target_instruction_index])))
+        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[target_instruction_index])?))
     }
     pub fn add_named_instruction(&mut self, opcode: GospelOpcode, member_name: &str) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::TypeLayoutDefineMember && opcode != GospelOpcode::TypeLayoutDoesMemberExist &&
@@ -132,14 +171,14 @@ impl GospelSourceFunctionDefinition {
             opcode != GospelOpcode::TypeLayoutGetMemberTypeLayout && opcode != GospelOpcode::TypeLayoutAllocate {
             bail!("Invalid opcode for named instruction (TypeLayoutAllocate, TypeLayoutDefineMember, TypeLayoutDoesMemberExist, TypeLayoutGetMemberOffset, TypeLayoutGetMemberSize and TypeLayoutGetMemberTypeLayout are allowed)");
         }
-        let string_index = self.add_string_internal(member_name);
-        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[string_index])))
+        let string_index = self.add_string_reference_internal(member_name);
+        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[string_index])?))
     }
     pub fn add_variadic_instruction(&mut self, opcode: GospelOpcode, argument_count: u32) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::Call {
             bail!("Invalid opcode for variadic instruction (only Call is allowed)");
         }
-        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[argument_count])))
+        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[argument_count])?))
     }
 }
 
@@ -168,7 +207,9 @@ impl GospelContainerWriter {
         if self.function_lookup.contains_key(source.function_name.as_str()) {
             bail!("Function with name {} is already defined in this container", source.function_name);
         }
-
+        if source.return_value_type.is_none() {
+            bail!("Function does not have a valid return value type; all functions must return a value");
+        }
         let mut arguments: Vec<GospelFunctionArgument> = Vec::with_capacity(source.arguments.len());
         for argument in &source.arguments {
             let default_value = if argument.default_value.is_some() {
@@ -183,12 +224,8 @@ impl GospelContainerWriter {
 
         let mut slots: Vec<GospelSlotDefinition> = Vec::with_capacity(source.slots.len());
         for slot in &source.slots {
-            let (binding, binding_data) = self.convert_slot_binding(&slot.slot_biding)?;
-            slots.push(GospelSlotDefinition{
-                value_type: slot.slot_type,
-                binding,
-                binding_data,
-            });
+            let slot_definition = self.convert_slot_binding(slot.slot_type, &slot.slot_biding)?;
+            slots.push(slot_definition);
         }
         let referenced_strings: Vec<u32> = source.referenced_strings.iter().map(|x| {
             self.store_string(x.as_str())
@@ -202,6 +239,7 @@ impl GospelContainerWriter {
         }
         self.container.functions.push(GospelFunctionDefinition {
             arguments, slots,
+            return_value_type: source.return_value_type.unwrap(),
             code: source.code,
             referenced_strings,
         });
@@ -219,27 +257,23 @@ impl GospelContainerWriter {
         self.string_lookup.insert(string.to_string(), new_index);
         new_index
     }
-    fn convert_slot_binding(&mut self, source: &GospelSourceSlotBinding) -> anyhow::Result<(GospelSlotBinding, GospelStaticValue)> {
+    fn convert_slot_binding(&mut self, value_type: GospelValueType, source: &GospelSourceSlotBinding) -> anyhow::Result<GospelSlotDefinition> {
         match source {
             GospelSourceSlotBinding::Uninitialized => {
-                let value = self.convert_static_value(&GospelSourceStaticValue::Integer(0))?;
-                Ok((GospelSlotBinding::Uninitialized, value))
+                Ok(GospelSlotDefinition{
+                    value_type, binding: GospelSlotBinding::StaticValue, static_value: None, argument_index: 0,
+                })
             },
             GospelSourceSlotBinding::StaticValue(source_value) => {
-                Ok((GospelSlotBinding::StaticValue, self.convert_static_value(source_value)?))
+                let static_value = self.convert_static_value(source_value)?;
+                Ok(GospelSlotDefinition{
+                    value_type, binding: GospelSlotBinding::StaticValue, static_value: Some(static_value), argument_index: 0,
+                })
             },
-            GospelSourceSlotBinding::PlatformConfigProperty(property) => {
-                let value = self.convert_static_value(&GospelSourceStaticValue::Integer(*property as i32))?;
-                Ok((GospelSlotBinding::PlatformConfigProperty, value))
-            },
-            GospelSourceSlotBinding::GlobalVariableValue(global_variable_name) => {
-                let global_variable_index = self.find_or_define_global(global_variable_name.as_str(), None)?;
-                let value = self.convert_static_value(&GospelSourceStaticValue::Integer(global_variable_index as i32))?;
-                Ok((GospelSlotBinding::GlobalVariableValue, value))
-            }
             GospelSourceSlotBinding::ArgumentValue(argument_index) => {
-                let value = self.convert_static_value(&GospelSourceStaticValue::Integer(*argument_index as i32))?;
-                Ok((GospelSlotBinding::ArgumentValue, value))
+                Ok(GospelSlotDefinition{
+                    value_type, binding: GospelSlotBinding::ArgumentValue, static_value: None, argument_index: *argument_index,
+                })
             }
         }
     }
@@ -338,6 +372,21 @@ impl GospelContainerWriter {
                     value_type: lazy_value.return_value_type,
                     static_type: GospelStaticValueType::LazyValue,
                     data: lazy_value_index,
+                })
+            }
+            GospelSourceStaticValue::PlatformConfigProperty(property) => {
+                Ok(GospelStaticValue{
+                    value_type: GospelValueType::Integer,
+                    static_type: GospelStaticValueType::PlatformConfigProperty,
+                    data: *property as u32,
+                })
+            },
+            GospelSourceStaticValue::GlobalVariableValue(global_variable_name) => {
+                let global_variable_index = self.find_or_define_global(global_variable_name.as_str(), None)?;
+                Ok(GospelStaticValue{
+                    value_type: GospelValueType::Integer,
+                    static_type: GospelStaticValueType::GlobalVariableValue,
+                    data: global_variable_index,
                 })
             }
         }
