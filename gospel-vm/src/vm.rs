@@ -488,9 +488,9 @@ impl GospelVMExecutionState<'_> {
                     state.push_stack_check_overflow(GospelVMValue::TypeLayout(allocated_layout))?;
                 }
                 GospelOpcode::TypeLayoutAlign => {
-                    let mut layout_builder = Self::unwrap_value_as_partial_type_layout_checked(state.pop_stack_check_underflow()?)?;
                     let stack_value = state.pop_stack_check_underflow()?;
                     let alignment = Self::unwrap_value_as_int_checked(stack_value)? as usize;
+                    let mut layout_builder = Self::unwrap_value_as_partial_type_layout_checked(state.pop_stack_check_underflow()?)?;
 
                     if alignment == 0 {
                         bail!("Invalid alignment of zero (division by zero)");
@@ -500,17 +500,17 @@ impl GospelVMExecutionState<'_> {
                     state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
                 }
                 GospelOpcode::TypeLayoutPad => {
-                    let mut layout_builder = Self::unwrap_value_as_partial_type_layout_checked(state.pop_stack_check_underflow()?)?;
                     let stack_value = state.pop_stack_check_underflow()?;
                     let padding_bytes = Self::unwrap_value_as_int_checked(stack_value)? as usize;
+                    let mut layout_builder = Self::unwrap_value_as_partial_type_layout_checked(state.pop_stack_check_underflow()?)?;
 
                     layout_builder.unaligned_size += padding_bytes;
                     state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
                 }
                 GospelOpcode::TypeLayoutDefineBaseClass => {
-                    let mut layout_builder = Self::unwrap_value_as_partial_type_layout_checked(state.pop_stack_check_underflow()?)?;
                     let stack_value = state.pop_stack_check_underflow()?;
                     let base_class_layout = Self::unwrap_value_as_complete_type_layout_checked(stack_value)?;
+                    let mut layout_builder = Self::unwrap_value_as_partial_type_layout_checked(state.pop_stack_check_underflow()?)?;
 
                     // Make sure the alignment requirement is met for the base class
                     layout_builder.alignment = max(layout_builder.alignment, base_class_layout.alignment);
@@ -534,9 +534,9 @@ impl GospelVMExecutionState<'_> {
                     let member_name_index = Self::immediate_value_checked(instruction, 0)? as usize;
                     let member_name = state.copy_referenced_string_checked(member_name_index)?;
 
-                    let mut layout_builder = Self::unwrap_value_as_partial_type_layout_checked(state.pop_stack_check_underflow()?)?;
                     let stack_value = state.pop_stack_check_underflow()?;
                     let member_layout = Self::unwrap_value_as_complete_type_layout_checked(stack_value)?;
+                    let mut layout_builder = Self::unwrap_value_as_partial_type_layout_checked(state.pop_stack_check_underflow()?)?;
 
                     // Make sure the alignment requirement is met for the member
                     layout_builder.alignment = max(layout_builder.alignment, member_layout.alignment);
