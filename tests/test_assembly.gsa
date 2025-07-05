@@ -1,6 +1,8 @@
 global test_global = 5;
 extern global external_global;
 
+constant assembly_version = 1;
+
 hidden function __define_opaque_base_type base_layout: TypeLayout size_and_alignment: Integer -> TypeLayout {
     LoadSlot base_layout;
     LoadSlot size_and_alignment;
@@ -24,6 +26,14 @@ function u32 -> TypeLayout {
     TypeLayoutAllocate "u32";
     LoadSlot &function __define_opaque_base_type;
     Call 2;
+    ReturnValue;
+};
+
+constant uint32_t = lazy u32 -> TypeLayout;
+constant lazy_global = global test_global;
+
+function ForwarderType forward: TypeLayout = constant uint32_t -> TypeLayout -> TypeLayout {
+    LoadSlot forward;
     ReturnValue;
 };
 

@@ -5,7 +5,7 @@ use logos::{Lexer, Logos};
 use strum_macros::Display;
 use gospel_vm::bytecode::{GospelInstruction, GospelOpcode};
 use gospel_vm::gospel_type::{GospelPlatformConfigProperty, GospelValueType};
-use gospel_vm::writer::{GospelContainerWriter, GospelSourceFunctionDefinition, GospelSourceFunctionReference, GospelSourceSlotBinding, GospelSourceStaticValue};
+use gospel_vm::writer::{GospelContainerWriter, GospelSourceFunctionDefinition, GospelSourceFunctionReference, GospelSourceLazyValue, GospelSourceSlotBinding, GospelSourceStaticValue};
 use std::str::FromStr;
 
 #[derive(Logos, Debug, Clone, PartialEq, Display)]
@@ -22,9 +22,15 @@ enum AssemblerToken {
     #[token("function")]
     #[strum(to_string = "function")]
     FunctionSpecifier,
+    #[token("constant")]
+    #[strum(to_string = "constant")]
+    ConstantSpecifier,
     #[token("global")]
     #[strum(to_string = "global")]
     GlobalVariableSpecifier,
+    #[token("lazy")]
+    #[strum(to_string = "lazy")]
+    LazyValueSpecifier,
     // Scope delimiters and local delimiters
     #[token("{")]
     #[strum(to_string = "{")]
@@ -330,10 +336,53 @@ impl GospelAssembler<'_> {
                 // Function specifier, next identifier is a function name. It also functions as a pre-declaration
                 let function_name = ctx.next_identifier()?;
                 // TODO: Only local functions can be referenced currently
-                Ok(GospelSourceStaticValue::FunctionId(GospelSourceFunctionReference::LocalFunction {function_name}))
+                let function_reference = GospelSourceFunctionReference::LocalFunction {function_name};
+
+                Ok(GospelSourceStaticValue::FunctionId(function_reference))
             }
-            // TODO: There is currently no assembler syntax for creation of lazy values
-            other => Err(ctx.fail(format!("Expected integer literal or platform, global or function specifier followed by name, got {}", other)))
+            AssemblerToken::ConstantSpecifier => {
+                // Constant specifiers are syntactic sugar for lazy values with no arguments
+                let constant_name = ctx.next_identifier()?;
+                // TODO: Only local functions can be referenced currently
+                let constant_reference = GospelSourceFunctionReference::LocalFunction {function_name: constant_name};
+
+                // Expect return value separator immediately, since constants cannot have arguments
+                ctx.next_expect_token(AssemblerToken::ReturnValueSeparator)?;
+
+                // Parse constant type now
+                let return_value_token = ctx.next_checked()?;
+                let return_value_type = Self::parse_value_type_token(&return_value_token)
+                    .ok_or_else(|| ctx.fail(format!("Expected lazy value type, got {}", return_value_token)))?;
+
+                Ok(GospelSourceStaticValue::LazyValue(GospelSourceLazyValue{
+                    function_reference: constant_reference,
+                    return_value_type,
+                    arguments: Vec::new()
+                }))
+            }
+            AssemblerToken::LazyValueSpecifier => {
+                // Lazy value, next identifier is a function name, followed by static arguments, followed by return value type
+                let function_name = ctx.next_identifier()?;
+                // TODO: Only local functions can be referenced currently
+                let function_reference = GospelSourceFunctionReference::LocalFunction {function_name};
+
+                // Parse arguments until we encounter the return value separator
+                let mut arguments: Vec<GospelSourceStaticValue> = Vec::new();
+                let mut current_token = ctx.next_checked()?;
+                while current_token != AssemblerToken::ReturnValueSeparator {
+                    let function_argument = Self::parse_static_value_constant(current_token, ctx)?;
+                    arguments.push(function_argument);
+                    current_token = ctx.next_checked()?;
+                }
+
+                // Parse return value type now
+                let return_value_token = ctx.next_checked()?;
+                let return_value_type = Self::parse_value_type_token(&return_value_token)
+                    .ok_or_else(|| ctx.fail(format!("Expected lazy value type, got {}", return_value_token)))?;
+
+                Ok(GospelSourceStaticValue::LazyValue(GospelSourceLazyValue{function_reference, return_value_type, arguments}))
+            }
+            other => Err(ctx.fail(format!("Expected integer literal or platform, global, lazy value or function specifier followed by name, got {}", other)))
         }
     }
     fn parse_function_definition(&mut self, ctx: &mut GospelLexerContext, attributes: AssemblerAttributeList) -> anyhow::Result<()> {
@@ -406,10 +455,11 @@ impl GospelAssembler<'_> {
 
         // Define the function finally
         self.writer.define_function(function_definition)
+            .map_err(|x| ctx.fail(x.to_string()))
     }
     fn parse_global_declaration(&mut self, ctx: &mut GospelLexerContext, attributes: AssemblerAttributeList) -> anyhow::Result<()> {
         if attributes.intersects(AssemblerAttributeList::Hidden) {
-            return Err(ctx.fail("Global variable declarations cannot be marked as extern"));
+            return Err(ctx.fail("Global variable declarations cannot be marked as hidden"));
         }
         let global_variable_name = ctx.next_identifier()?;
         let mut global_default_value: Option<i32> = None;
@@ -431,12 +481,41 @@ impl GospelAssembler<'_> {
 
         self.global_variable_names.insert(global_variable_name.clone());
         self.writer.define_global(&global_variable_name, global_default_value)
+            .map_err(|x| ctx.fail(x.to_string()))
+    }
+    fn parse_constant_definition(&mut self, ctx: &mut GospelLexerContext, attributes: AssemblerAttributeList) -> anyhow::Result<()> {
+        if attributes.intersects(AssemblerAttributeList::Extern) {
+            return Err(ctx.fail("Constant definitions cannot be marked as extern"));
+        }
+        let is_constant_hidden = attributes.intersects(AssemblerAttributeList::Hidden);
+        let constant_name = ctx.next_identifier()?;
+
+        // Constant must always be initialized with a static value
+        ctx.next_expect_token(AssemblerToken::AssignmentOperator)?;
+        let constant_value_token = ctx.next_checked()?;
+        let constant_value = Self::parse_static_value_constant(constant_value_token, ctx)?;
+        let return_value_type = constant_value.value_type();
+
+        // Should end with a statement terminator
+        ctx.next_expect_token(AssemblerToken::StatementSeparator)?;
+
+        let mut constant_definition = GospelSourceFunctionDefinition::create(constant_name.as_str(), is_constant_hidden);
+        constant_definition.set_return_value_type(return_value_type);
+
+        // Constants are simple syntactic sugar for declaring functions with no arguments that return a static value
+        let constant_slot_index = constant_definition.add_slot(return_value_type, GospelSourceSlotBinding::StaticValue(constant_value)).map_err(|x| ctx.fail(x.to_string()))?;
+        constant_definition.add_slot_instruction(GospelOpcode::LoadSlot, constant_slot_index).map_err(|x| ctx.fail(x.to_string()))?;
+        constant_definition.add_simple_instruction(GospelOpcode::ReturnValue).map_err(|x| ctx.fail(x.to_string()))?;
+
+        self.writer.define_function(constant_definition)
+            .map_err(|x| ctx.fail(x.to_string()))
     }
     fn parse_top_level_statement(&mut self, start_token: AssemblerToken, ctx: &mut GospelLexerContext) -> anyhow::Result<()> {
         let (attributes, top_level_token) = Self::parse_attribute_list(start_token, ctx)?;
         match top_level_token {
             AssemblerToken::FunctionSpecifier => self.parse_function_definition(ctx, attributes),
             AssemblerToken::GlobalVariableSpecifier => self.parse_global_declaration(ctx, attributes),
+            AssemblerToken::ConstantSpecifier => self.parse_constant_definition(ctx, attributes),
             _ => Err(ctx.fail(format!("Expected top level statement (function), got {}", top_level_token)))
         }
     }
