@@ -112,7 +112,7 @@ impl GospelInstructionEncoding {
     pub fn from_raw(raw: u8) -> GospelInstructionEncoding {
         Self(raw)
     }
-    fn from_components(immediate_count: usize, stack_in: usize, stack_out: usize) -> GospelInstructionEncoding {
+    pub fn from_components(immediate_count: usize, stack_in: usize, stack_out: usize) -> GospelInstructionEncoding {
         Self::from_raw(
         ((immediate_count as u8 & ((1 << Self::IMMEDIATE_COUNT_BIT_COUNT) - 1)) << Self::IMMEDIATE_COUNT_BIT_SHIFT) |
             ((stack_in as u8 & ((1 << Self::STACK_IN_BIT_COUNT) - 1)) << Self::STACK_IN_BIT_SHIFT) |
@@ -199,7 +199,7 @@ impl Readable for GospelInstruction {
         for immediate_operand_index in 0..instruction_encoding.immediate_count() {
             immediate_operands[immediate_operand_index] = stream.de()?;
         }
-        Ok(Self::create_raw(raw_opcode, instruction_encoding, &immediate_operands)?)
+        Ok(Self::create_raw(raw_opcode, instruction_encoding, &immediate_operands[0..instruction_encoding.immediate_count()])?)
     }
 }
 impl Writeable for GospelInstruction {

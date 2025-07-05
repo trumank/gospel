@@ -245,8 +245,8 @@ impl<T: Sized + Writeable> Writeable for Option<T> {
     fn ser<S: Write>(&self, stream: &mut S) -> Result<()> {
         let has_value: bool = self.is_some();
         stream.ser(&has_value)?;
-        if self.is_some() {
-            T::ser(self.as_ref().unwrap(), stream)?;
+        if has_value {
+            stream.ser(self.as_ref().unwrap())?;
         }
         Ok({})
     }

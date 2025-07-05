@@ -195,17 +195,14 @@ pub(crate) struct GospelFunctionArgument {
 }
 impl Readable for GospelFunctionArgument {
     fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
-        let raw_argument_type: u8 = stream.de()?;
-        let argument_type = GospelValueType::from_repr(raw_argument_type)
-            .ok_or_else(|| anyhow!("Unknown type argument type"))?;
+        let argument_type: GospelValueType = stream.de()?;
         let default_value: Option<GospelStaticValue> = stream.de()?;
         Ok(Self{argument_type, default_value})
     }
 }
 impl Writeable for GospelFunctionArgument {
     fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
-        let raw_argument_type = self.argument_type as u8;
-        stream.ser(&raw_argument_type)?;
+        stream.ser(&self.argument_type)?;
         stream.ser(&self.default_value)?;
         Ok({})
     }
