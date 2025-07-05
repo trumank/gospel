@@ -1,7 +1,7 @@
 ﻿use std::io::{Cursor, Read, Write};
 use anyhow::{anyhow, bail};
 use strum_macros::FromRepr;
-use crate::gospel_type::{GospelExternalFunctionReference, GospelFunctionDefinition, GospelFunctionNamePair, GospelLazyValue, GospelNamedConstant};
+use crate::gospel_type::{GospelExternalFunctionReference, GospelFunctionDefinition, GospelFunctionNamePair, GospelLazyValue};
 use crate::ser::{ReadExt, Readable, WriteExt, Writeable};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default, FromRepr)]
@@ -121,7 +121,6 @@ pub struct GospelContainer {
     pub(crate) function_names: Vec<GospelFunctionNamePair>,
     pub(crate) external_functions: Vec<GospelExternalFunctionReference>,
     pub(crate) lazy_values: Vec<GospelLazyValue>,
-    pub(crate) constants: Vec<GospelNamedConstant>,
     pub(crate) strings: GospelStringTable,
 }
 impl GospelContainer {
@@ -152,7 +151,6 @@ impl Readable for GospelContainer {
             function_names: stream.de()?,
             external_functions: stream.de()?,
             lazy_values: stream.de()?,
-            constants: stream.de()?,
             strings: stream.de()?,
         })
     }
@@ -166,7 +164,6 @@ impl Writeable for GospelContainer {
         stream.ser(&self.function_names)?;
         stream.ser(&self.external_functions)?;
         stream.ser(&self.lazy_values)?;
-        stream.ser(&self.constants)?;
         stream.ser(&self.strings)?;
         Ok({})
     }

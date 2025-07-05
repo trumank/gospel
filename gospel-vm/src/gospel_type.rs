@@ -298,27 +298,6 @@ impl Writeable for GospelLazyValue {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub(crate) struct GospelNamedConstant {
-    pub(crate) name: u32, // name of the constant, index to the string table
-    pub(crate) value: GospelStaticValue, // value of the constant
-}
-impl Readable for GospelNamedConstant {
-    fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
-        Ok(Self{
-            name: stream.de()?,
-            value: stream.de()?,
-        })
-    }
-}
-impl Writeable for GospelNamedConstant {
-    fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
-        stream.ser(&self.name)?;
-        stream.ser(&self.value)?;
-        Ok({})
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) struct GospelFunctionNamePair {
     pub(crate) function_index: u32, // index of a local function
     pub(crate) function_name: u32, // name of the function, index to the string table
