@@ -281,6 +281,12 @@ impl GospelVMExecutionState<'_> {
         }
         self.slots[index].clone().ok_or_else(|| anyhow!("Invalid read of uninitialized data from slot at index #{}", index))
     }
+    fn borrow_slot_value_checked(&mut self, index: usize) -> anyhow::Result<GospelVMValue> {
+        if index >= self.slots.len() {
+            bail!("Invalid slot index #{} out of bounds (number of slots: {})", index, self.slots.len());
+        }
+        self.slots[index].take().ok_or_else(|| anyhow!("Invalid read of uninitialized data from slot at index #{}", index))
+    }
     fn write_slot_value_checked(&mut self, index: usize, value: GospelVMValue) -> anyhow::Result<()> {
         if index >= self.slots.len() {
             bail!("Invalid slot index #{} out of bounds (number of slots: {})", index, self.slots.len());
@@ -485,6 +491,11 @@ impl GospelVMExecutionState<'_> {
                     let slot_index = Self::immediate_value_checked(instruction, 0)? as usize;
                     let new_slot_value = state.pop_stack_check_underflow()?;
                     state.write_slot_value_checked(slot_index, new_slot_value)?;
+                }
+                GospelOpcode::TakeSlot => {
+                    let slot_index = Self::immediate_value_checked(instruction, 0)? as usize;
+                    let old_slot_value = state.borrow_slot_value_checked(slot_index)?;
+                    state.push_stack_check_overflow(old_slot_value)?;
                 }
                 // Type layout access opcodes
                 GospelOpcode::TypeLayoutGetSize => {

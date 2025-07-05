@@ -61,6 +61,8 @@ pub enum GospelOpcode {
     LoadSlot = 0x51, // <imm>; -> [push stack]
     #[strum(props(immediate_count = "1", stack_in_count = "1"))]
     StoreSlot = 0x52, // <imm>; [pop stack] ->
+    #[strum(props(immediate_count = "1", stack_out_count = "1"))]
+    TakeSlot = 0x53, // <imm>; -> [push stack]
     // Type layout access opcodes
     #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
     TypeLayoutGetSize = 0x61, // ; [pop stack] -> [push stack]
