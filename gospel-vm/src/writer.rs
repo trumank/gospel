@@ -192,6 +192,7 @@ impl GospelSourceFunctionDefinition {
 #[derive(Debug, Clone, Default)]
 pub struct GospelContainerWriter {
     container: GospelContainer,
+    container_name: String,
     string_lookup: HashMap<String, u32>,
     globals_lookup: HashMap<String, u32>,
     function_lookup: HashMap<String, u32>,
@@ -202,6 +203,7 @@ pub struct GospelContainerWriter {
 impl GospelContainerWriter {
     pub fn create(container_name: &str) -> GospelContainerWriter {
         let mut writer = GospelContainerWriter::default();
+        writer.container_name = container_name.to_string();
         writer.container.header.container_name = writer.store_string(container_name);
         writer.container.header.version = GospelContainerVersion::current_version();
         writer
@@ -338,15 +340,23 @@ impl GospelContainerWriter {
             new_lazy_value_index
         }
     }
+    fn find_locally_defined_function_index(&self, function_name: &str) -> anyhow::Result<GospelFunctionIndex> {
+        self.function_lookup.get(function_name).map(|function_index| {
+            GospelFunctionIndex::create_local(*function_index)
+        }).ok_or_else(|| anyhow!("Failed to find locally defined function {}", function_name.to_string()))
+    }
     fn convert_function_reference(&mut self, source: &GospelSourceFunctionReference) -> anyhow::Result<GospelFunctionIndex> {
         match source {
             GospelSourceFunctionReference::LocalFunction {function_name} => {
-                self.function_lookup.get(function_name.as_str()).map(|function_index| {
-                    GospelFunctionIndex::create_local(*function_index)
-                }).ok_or_else(|| anyhow!("Failed to find locally defined function {}", function_name.to_string()))
+                self.find_locally_defined_function_index(function_name.as_str())
             }
             GospelSourceFunctionReference::ExternalFunction {container_name, function_name} => {
-                Ok(GospelFunctionIndex::create_external(self.find_or_define_external_function(container_name.as_str(), function_name.as_str())))
+                // This could still be a reference to a local function if container name is the name of the container we are building
+                if container_name.as_str() == self.container_name.as_str() {
+                    self.find_locally_defined_function_index(function_name.as_str())
+                } else {
+                    Ok(GospelFunctionIndex::create_external(self.find_or_define_external_function(container_name.as_str(), function_name.as_str())))
+                }
             }
         }
     }
