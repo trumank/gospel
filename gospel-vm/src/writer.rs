@@ -150,6 +150,9 @@ impl GospelSourceFunctionDefinition {
         self.code.push(instruction);
         new_instruction_index
     }
+    pub fn add_simple_instruction(&mut self, instruction: GospelOpcode) -> anyhow::Result<u32> {
+        Ok(self.add_instruction_internal(GospelInstruction::create(instruction, &[])?))
+    }
     pub fn add_slot_instruction(&mut self, opcode: GospelOpcode, slot_index: u32) -> anyhow::Result<u32> {
         if slot_index as usize >= self.slots.len() {
             bail!("Invalid slot index #{} out of bounds (number of slots: {})", slot_index, self.slots.len());
