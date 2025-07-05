@@ -705,7 +705,7 @@ impl GospelVMContainer {
     fn resolve_static_value(self: &Rc<Self>, value: &GospelStaticValue, recursion_counter: usize) -> anyhow::Result<GospelVMValue> {
         match value.static_type {
             GospelStaticValueType::Integer => {
-                if value.value_type != GospelValueType::FunctionPointer {
+                if value.value_type != GospelValueType::Integer {
                     bail!("Incompatible integer static initializer with a value type that is not an integer");
                 }
                 Ok(GospelVMValue::Integer(value.data as i32))
