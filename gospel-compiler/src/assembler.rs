@@ -8,8 +8,16 @@ use gospel_vm::gospel_type::{GospelPlatformConfigProperty, GospelValueType};
 use gospel_vm::writer::{GospelContainerWriter, GospelSourceFunctionDefinition, GospelSourceFunctionReference, GospelSourceLazyValue, GospelSourceSlotBinding, GospelSourceStaticValue};
 use std::str::FromStr;
 
+#[derive(Debug, Clone, PartialEq, Eq, Display)]
+enum AssemblerIdentifier {
+    #[strum(to_string = "{0}")]
+    Local(String),
+    #[strum(to_string = "{container_name}::{local_name}")]
+    Qualified{container_name: String, local_name: String},
+}
+
 #[derive(Logos, Debug, Clone, PartialEq, Display)]
-#[logos(skip r"[ \r\t\n\f]+")]
+#[logos(skip r"[ \r\t\n\f\u{feff}]+")]
 enum AssemblerToken {
     // Attributes
     #[token("hidden")]
@@ -58,15 +66,25 @@ enum AssemblerToken {
     #[strum(to_string = "platform")]
     PlatformConfigOperator,
     // Identifiers and literals
-    #[regex("[A-Za-z_$][A-Za-z0-9_$]*", |lex| lex.slice().to_string())]
+    #[regex("[A-Za-z_$][A-Za-z0-9_$]*(?:::[A-Za-z_$][A-Za-z0-9_$]*)?", parse_identifier)]
     #[strum(to_string = "identifier")]
-    Identifier(String),
+    Identifier(AssemblerIdentifier),
     #[regex("-?(?:0x[A-Za-z0-9]+)|(?:(?:[1-9]+[0-9]*)|0)", parse_decimal_or_hex_integer_literal)]
     #[strum(to_string = "integer literal")]
     IntegerLiteral(i32),
     #[regex("(?:\"(?:[^\"\\\\]|(?:\\\\\")|(?:\\\\\\\\))*\")", parse_string_literal)]
     #[strum(to_string = "string literal")]
     StringLiteral(String),
+}
+fn parse_identifier(lex: &mut Lexer<AssemblerToken>) -> Option<AssemblerIdentifier> {
+    let identifier_slice = lex.slice();
+    if let Some(split_index) = identifier_slice.find("::") {
+        let container_name = identifier_slice[0..split_index].to_string();
+        let local_name = identifier_slice[(split_index + 2)..].to_string();
+        Some(AssemblerIdentifier::Qualified {container_name, local_name})
+    } else {
+        Some(AssemblerIdentifier::Local(identifier_slice.to_string()))
+    }
 }
 fn parse_string_literal(lex: &mut Lexer<AssemblerToken>) -> Option<String> {
     let raw_literal: &str = lex.slice();
@@ -129,11 +147,19 @@ impl GospelLexerContext<'_> {
             Err(self.fail(format!("Expected {}, got {}", token, next_token)))
         } else { Ok({}) }
     }
-    fn next_identifier(&mut self) -> anyhow::Result<String> {
+    fn next_identifier(&mut self) -> anyhow::Result<AssemblerIdentifier> {
         match self.next_checked()? {
             AssemblerToken::Identifier(value) => Ok(value),
             other => Err(self.fail(format!("Expected identifier, got {}", other)))
         }
+    }
+    fn expect_local_identifier(&mut self, identifier: AssemblerIdentifier) -> anyhow::Result<String> {
+        if let AssemblerIdentifier::Local(local_identifier) = identifier {
+            Ok(local_identifier)
+        } else { Err(self.fail("Expected local identifier, got qualified identifier")) }
+    }
+    fn next_local_identifier(&mut self) -> anyhow::Result<String> {
+        self.next_identifier().and_then(|x| self.expect_local_identifier(x))
     }
 }
 
@@ -188,17 +214,29 @@ impl FunctionCodeAssembler<'_> {
         while current_token != AssemblerToken::StatementSeparator {
             let immediate_value: u32 = match &current_token {
                 AssemblerToken::Identifier(identifier) => {
-                    // Identifier can refer to a local variable, argument, label, or a global variable
-                    if let Some(local_variable_slot_index) = self.local_variable_slots.get(identifier) {
-                        *local_variable_slot_index
-                    } else if let Some(function_argument_index) = self.argument_names.get(identifier) {
-                        self.find_or_add_argument_slot(*function_argument_index)?
-                    } else if let Some(label_instruction_index) = self.label_lookup.get(identifier) {
-                        *label_instruction_index
-                    } else if self.global_variable_names.contains(identifier) {
-                        self.find_or_add_global_slot(identifier.clone())?
-                    } else {
-                        return Err(ctx.fail(format!("Identifier {} does not name a local variable, function argument, label or a global variable", identifier)));
+                    match identifier {
+                        AssemblerIdentifier::Local(local_identifier) => {
+                            // Local identifier can refer to a local variable, argument, label, or a global variable
+                            if let Some(local_variable_slot_index) = self.local_variable_slots.get(local_identifier) {
+                                *local_variable_slot_index
+                            } else if let Some(function_argument_index) = self.argument_names.get(local_identifier) {
+                                self.find_or_add_argument_slot(*function_argument_index)?
+                            } else if let Some(label_instruction_index) = self.label_lookup.get(local_identifier) {
+                                *label_instruction_index
+                            } else if self.global_variable_names.contains(local_identifier) {
+                                self.find_or_add_global_slot(local_identifier.clone())?
+                            } else {
+                                return Err(ctx.fail(format!("Identifier {} does not name a local variable, function argument, label or a global variable", local_identifier)));
+                            }
+                        }
+                        AssemblerIdentifier::Qualified {container_name, local_name} => {
+                            // Qualified identifiers can only refer to functions
+                            let function_pointer = GospelSourceStaticValue::FunctionId(GospelSourceFunctionReference::ExternalFunction {
+                                container_name: container_name.clone(),
+                                function_name: local_name.clone(),
+                            });
+                            self.find_or_add_constant_slot(GospelValueType::FunctionPointer, GospelSourceSlotBinding::StaticValue(function_pointer))?
+                        }
                     }
                 }
                 AssemblerToken::IntegerLiteral(integer_value) => {
@@ -257,7 +295,7 @@ impl FunctionCodeAssembler<'_> {
         // First token could be instruction name or identifier, we cannot tell until we parse the next token
         let label_or_instruction_name = if let AssemblerToken::Identifier(identifier) = current_token {
             current_token = ctx.next_checked()?;
-            identifier
+            ctx.expect_local_identifier(identifier)?
         } else {
             return Err(ctx.fail(format!("Expected identifier, got {}", current_token)))
         };
@@ -267,7 +305,7 @@ impl FunctionCodeAssembler<'_> {
         // If current token is a label separator, first identifier is a label, and next one is the instruction name
         if current_token == AssemblerToken::NameSeparator {
             statement_label_name = Some(label_or_instruction_name);
-            instruction_name = ctx.next_identifier()?;
+            instruction_name = ctx.next_local_identifier()?;
             current_token = ctx.next_checked()?;
         } else {
             statement_label_name = None;
@@ -298,8 +336,10 @@ pub struct GospelAssembler<'a> {
 }
 impl GospelAssembler<'_> {
     fn parse_value_type_token(token: &AssemblerToken) -> Option<GospelValueType> {
-        if let AssemblerToken::Identifier(type_name) = token {
-            GospelValueType::from_str(type_name.as_str()).ok()
+        if let AssemblerToken::Identifier(identifier) = token {
+            if let AssemblerIdentifier::Local(local_name) = identifier {
+                GospelValueType::from_str(local_name.as_str()).ok()
+            } else { None }
         } else { None }
     }
     fn parse_attribute_list(start_token: AssemblerToken, ctx: &mut GospelLexerContext) -> anyhow::Result<(AssemblerAttributeList, AssemblerToken)> {
@@ -315,6 +355,12 @@ impl GospelAssembler<'_> {
         }
         Ok((attribute_list, current_token))
     }
+    fn convert_identifier_to_function_reference(assembler_identifier: AssemblerIdentifier) -> GospelSourceFunctionReference {
+        match assembler_identifier {
+            AssemblerIdentifier::Local(local_name) => GospelSourceFunctionReference::LocalFunction {function_name: local_name},
+            AssemblerIdentifier::Qualified {container_name, local_name} => GospelSourceFunctionReference::ExternalFunction {container_name, function_name: local_name},
+        }
+    }
     fn parse_static_value_constant(start_token: AssemblerToken, ctx: &mut GospelLexerContext) -> anyhow::Result<GospelSourceStaticValue> {
         match &start_token {
             AssemblerToken::IntegerLiteral(integer_value) => {
@@ -323,28 +369,26 @@ impl GospelAssembler<'_> {
             }
             AssemblerToken::PlatformConfigOperator => {
                 // Property from the platform config by the name
-                let platform_config_property_name = ctx.next_identifier()?;
+                let platform_config_property_name = ctx.next_local_identifier()?;
                 let property: GospelPlatformConfigProperty = GospelPlatformConfigProperty::from_str(platform_config_property_name.as_str())?;
                 Ok(GospelSourceStaticValue::PlatformConfigProperty(property))
             }
             AssemblerToken::GlobalVariableSpecifier => {
                 // Global variable specifier, next identifier is a name of a local variable. It also functions as a pre-declaration
-                let global_variable_name = ctx.next_identifier()?;
+                let global_variable_name = ctx.next_local_identifier()?;
                 Ok(GospelSourceStaticValue::GlobalVariableValue(global_variable_name))
             }
             AssemblerToken::FunctionSpecifier => {
                 // Function specifier, next identifier is a function name. It also functions as a pre-declaration
                 let function_name = ctx.next_identifier()?;
-                // TODO: Only local functions can be referenced currently
-                let function_reference = GospelSourceFunctionReference::LocalFunction {function_name};
+                let function_reference = Self::convert_identifier_to_function_reference(function_name);
 
                 Ok(GospelSourceStaticValue::FunctionId(function_reference))
             }
             AssemblerToken::ConstantSpecifier => {
                 // Constant specifiers are syntactic sugar for lazy values with no arguments
                 let constant_name = ctx.next_identifier()?;
-                // TODO: Only local functions can be referenced currently
-                let constant_reference = GospelSourceFunctionReference::LocalFunction {function_name: constant_name};
+                let constant_reference = Self::convert_identifier_to_function_reference(constant_name);
 
                 // Expect return value separator immediately, since constants cannot have arguments
                 ctx.next_expect_token(AssemblerToken::ReturnValueSeparator)?;
@@ -363,8 +407,7 @@ impl GospelAssembler<'_> {
             AssemblerToken::LazyValueSpecifier => {
                 // Lazy value, next identifier is a function name, followed by static arguments, followed by return value type
                 let function_name = ctx.next_identifier()?;
-                // TODO: Only local functions can be referenced currently
-                let function_reference = GospelSourceFunctionReference::LocalFunction {function_name};
+                let function_reference = Self::convert_identifier_to_function_reference(function_name);
 
                 // Parse arguments until we encounter the return value separator
                 let mut arguments: Vec<GospelSourceStaticValue> = Vec::new();
@@ -390,7 +433,7 @@ impl GospelAssembler<'_> {
             return Err(ctx.fail("Function definitions cannot be marked as extern"));
         }
         let is_function_hidden = attributes.intersects(AssemblerAttributeList::Hidden);
-        let function_name = ctx.next_identifier()?;
+        let function_name = ctx.next_local_identifier()?;
 
         let mut function_definition = GospelSourceFunctionDefinition::create(&function_name, is_function_hidden);
         let mut argument_name_map: HashMap<String, u32> = HashMap::new();
@@ -400,7 +443,7 @@ impl GospelAssembler<'_> {
             // This might be a named argument, attempt to parse the token as identifier
             let mut maybe_argument_name: Option<String> = None;
             if let AssemblerToken::Identifier(argument_name) = current_argument_token {
-                maybe_argument_name = Some(argument_name);
+                maybe_argument_name = Some(ctx.expect_local_identifier(argument_name)?);
 
                 // Next token must be a label separator, followed by the argument type
                 ctx.next_expect_token(AssemblerToken::NameSeparator)?;
@@ -461,7 +504,7 @@ impl GospelAssembler<'_> {
         if attributes.intersects(AssemblerAttributeList::Hidden) {
             return Err(ctx.fail("Global variable declarations cannot be marked as hidden"));
         }
-        let global_variable_name = ctx.next_identifier()?;
+        let global_variable_name = ctx.next_local_identifier()?;
         let mut global_default_value: Option<i32> = None;
 
         // If global variable is not marked extern, we should parse a default value
@@ -488,7 +531,7 @@ impl GospelAssembler<'_> {
             return Err(ctx.fail("Constant definitions cannot be marked as extern"));
         }
         let is_constant_hidden = attributes.intersects(AssemblerAttributeList::Hidden);
-        let constant_name = ctx.next_identifier()?;
+        let constant_name = ctx.next_local_identifier()?;
 
         // Constant must always be initialized with a static value
         ctx.next_expect_token(AssemblerToken::AssignmentOperator)?;

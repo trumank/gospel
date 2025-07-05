@@ -1,0 +1,9 @@
+﻿
+function DependentStruct -> TypeLayout {
+    TypeLayoutAllocate "DependentStruct";
+    LoadSlot &function test_assembly::u32;
+    Call 0;
+    TypeLayoutDefineMember "test_member";
+    TypeLayoutFinalize;
+    ReturnValue;
+};
