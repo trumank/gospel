@@ -1,0 +1,20 @@
+global test_global = 5;
+extern global external_global;
+
+hidden function __define_opaque_base_type base_layout: TypeLayout size_and_alignment: Integer -> TypeLayout {
+    LoadSlot base_layout;
+    LoadSlot size_and_alignment;
+    TypeLayoutAlign;
+    LoadSlot size_and_alignment;
+    TypeLayoutPad;
+    TypeLayoutFinalize;
+    ReturnValue;
+};
+
+function usize -> TypeLayout {
+    LoadSlot &platform AddressSize;
+    TypeLayoutAllocate "usize";
+    LoadSlot &function __define_opaque_base_type;
+    Call 2;
+    ReturnValue;
+};
