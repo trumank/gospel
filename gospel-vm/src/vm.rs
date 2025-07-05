@@ -22,6 +22,8 @@ pub struct GospelBaseClassLayout {
 pub struct GospelMemberLayout {
     pub name: String,
     pub offset: usize,
+    /// If this is a statically sized array, size of the array
+    pub array_size: Option<usize>,
     pub actual_size: usize,
     pub layout: GospelTypeLayout,
 }
@@ -71,6 +73,7 @@ impl GospelTypeLayout {
                 return Some(GospelMemberLayout{
                     name: base_member.name,
                     offset: base_class.offset + base_member.offset,
+                    array_size: base_member.array_size,
                     actual_size: base_member.actual_size,
                     layout: base_member.layout,
                 }) // indirect member, add offset of our direct base to the given offset
@@ -604,6 +607,31 @@ impl GospelVMExecutionState<'_> {
                     layout_builder.members.push(GospelMemberLayout{
                         name: member_name,
                         offset: layout_builder.unaligned_size,
+                        array_size: None,
+                        actual_size,
+                        layout: member_layout,
+                    });
+                    layout_builder.unaligned_size += actual_size;
+                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
+                }
+                GospelOpcode::TypeLayoutDefineArrayMember => {
+                    let member_name_index = Self::immediate_value_checked(instruction, 0)? as usize;
+                    let member_name = state.copy_referenced_string_checked(member_name_index)?;
+
+                    let array_size = Self::unwrap_value_as_int_checked(state.pop_stack_check_underflow()?)? as usize;
+                    let member_layout = Self::unwrap_value_as_complete_type_layout_checked(state.pop_stack_check_underflow()?)?;
+                    let mut layout_builder = Self::unwrap_value_as_partial_type_layout_checked(state.pop_stack_check_underflow()?)?;
+
+                    // Make sure the alignment requirement is met for the member
+                    layout_builder.alignment = max(layout_builder.alignment, member_layout.alignment);
+                    layout_builder.unaligned_size = Self::align_value(layout_builder.unaligned_size, member_layout.alignment);
+
+                    let actual_size = member_layout.size * array_size;
+                    let array_member_name = format!("{}[{}]", member_name, array_size);
+                    layout_builder.members.push(GospelMemberLayout{
+                        name: array_member_name,
+                        offset: layout_builder.unaligned_size,
+                        array_size: Some(array_size),
                         actual_size,
                         layout: member_layout,
                     });

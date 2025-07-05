@@ -93,6 +93,8 @@ pub enum GospelOpcode {
     TypeLayoutDefineMember = 0x74, // <imm>; [pop stack] [pop stack] -> [push stack]
     #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
     TypeLayoutFinalize = 0x75, // [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "3", stack_out_count = "1"))]
+    TypeLayoutDefineArrayMember = 0x76, // <imm>; [pop stack] [pop stack] [pop stack] -> [push stack]
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]

@@ -56,3 +56,13 @@ function InvokerType invoke: FunctionPointer -> TypeLayout {
     Call 0;
     ReturnValue;
 };
+
+function StaticArrayType array_size: Integer -> TypeLayout {
+    TypeLayoutAllocate "StaticArrayType";
+    LoadSlot &function u32;
+    Call 0;
+    LoadSlot array_size;
+    TypeLayoutDefineArrayMember "data";
+    TypeLayoutFinalize;
+    ReturnValue;
+};
