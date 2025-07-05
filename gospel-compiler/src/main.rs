@@ -130,6 +130,8 @@ fn do_action_eval(action: ActionEvalFunction) -> anyhow::Result<()> {
         .map_err(|x| anyhow!("Failed to execute function: {}", x.to_string()))?;
     // Print the result now
     println!("{}", function_result);
+    // Added because RustRover does not let you scroll to the end of a really long line newline at the end
+    println!();
     Ok({})
 }
 
