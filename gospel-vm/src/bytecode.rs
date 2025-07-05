@@ -1,4 +1,5 @@
 ﻿use std::io::{Read, Write};
+use std::str::FromStr;
 use strum_macros::{Display, EnumProperty, EnumString, FromRepr};
 use crate::ser::{ReadExt, Readable, WriteExt, Writeable};
 use std::string::ToString;
@@ -120,9 +121,9 @@ impl GospelInstructionEncoding {
     }
     pub fn from_opcode(opcode: GospelOpcode) -> GospelInstructionEncoding {
         Self::from_components(
-            opcode.get_int("immediate_count").unwrap_or(0) as usize,
-            opcode.get_int("stack_in_count").unwrap_or(0) as usize,
-            opcode.get_int("stack_out_count").unwrap_or(0) as usize,
+            opcode.get_str("immediate_count").map(|x| usize::from_str(x).unwrap()).unwrap_or(0),
+            opcode.get_str("stack_in_count").map(|x| usize::from_str(x).unwrap()).unwrap_or(0),
+            opcode.get_str("stack_out_count").map(|x| usize::from_str(x).unwrap()).unwrap_or(0),
         )
     }
 
@@ -170,14 +171,22 @@ impl GospelInstruction {
             bail!("Operand count mismatch for opcode {}: expected {} immediate operands, but {} operands were provided",
                    opcode.to_string(), instruction_encoding.immediate_count(), immediate_operands.len());
         }
-        Ok(Self{raw_opcode: opcode as u8, instruction_encoding, immediate_operands: immediate_operands.try_into()? })
+        let mut result_immediate_operands: [u32; GospelInstructionEncoding::MAX_IMMEDIATE_COUNT] = [0; GospelInstructionEncoding::MAX_IMMEDIATE_COUNT];
+        for index in 0..immediate_operands.len() {
+            result_immediate_operands[index] = immediate_operands[index];
+        }
+        Ok(Self{raw_opcode: opcode as u8, instruction_encoding, immediate_operands: result_immediate_operands })
     }
     pub fn create_raw(raw_opcode: u8, encoding: GospelInstructionEncoding, immediate_operands: &[u32]) -> anyhow::Result<GospelInstruction> {
         if encoding.immediate_count() != immediate_operands.len() {
             bail!("Operand count mismatch: expected {} immediate operands, but {} operands were provided",
                 encoding.immediate_count(), immediate_operands.len());
         }
-        Ok(Self{raw_opcode, instruction_encoding: encoding, immediate_operands: immediate_operands.try_into().unwrap() })
+        let mut result_immediate_operands: [u32; GospelInstructionEncoding::MAX_IMMEDIATE_COUNT] = [0; GospelInstructionEncoding::MAX_IMMEDIATE_COUNT];
+        for index in 0..immediate_operands.len() {
+            result_immediate_operands[index] = immediate_operands[index];
+        }
+        Ok(Self{raw_opcode, instruction_encoding: encoding, immediate_operands: result_immediate_operands })
     }
 }
 

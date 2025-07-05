@@ -9,14 +9,14 @@ use gospel_vm::writer::{GospelContainerWriter, GospelSourceFunctionDefinition, G
 use std::str::FromStr;
 
 #[derive(Logos, Debug, Clone, PartialEq, Display)]
-#[logos(skip r"[ \t\n\f]+")]
+#[logos(skip r"[ \r\t\n\f]+")]
 enum AssemblerToken {
     // Attributes
     #[token("hidden")]
-    #[strum(to_string = ".hidden")]
+    #[strum(to_string = "hidden")]
     AttributeHidden,
     #[token("extern")]
-    #[strum(to_string = ".extern")]
+    #[strum(to_string = "extern")]
     AttributeExtern,
     // Top level specifiers
     #[token("function")]
@@ -104,7 +104,7 @@ impl GospelLexerContext<'_> {
         let start_offset = self.lex.span().start;
         let (line_number, line_offset) = Self::get_line_number_and_offset_from_index(self.lex.source(), start_offset);
         let file_name = self.file_name.to_string();
-        anyhow!("error: {} (file: {} line: {} at: {})", error.as_ref(), file_name, line_number + 1, line_offset)
+        anyhow!("{} (file: {} line {} offset {})", error.as_ref(), file_name, line_number + 1, line_offset)
     }
     fn next_or_eof(&mut self) -> anyhow::Result<Option<AssemblerToken>> {
         if let Some(wrapped_token) = self.lex.next() {
@@ -218,7 +218,9 @@ impl FunctionCodeAssembler<'_> {
         }
 
         // Add the resulting instruction with the immediate values
-        Ok(self.function_definition.add_instruction_internal(GospelInstruction::create(instruction_opcode, &instruction_immediate_operands)?))
+        let result_instruction = GospelInstruction::create(instruction_opcode, &instruction_immediate_operands)
+            .map_err(|x| ctx.fail(x.to_string()))?;
+        Ok(self.function_definition.add_instruction_internal(result_instruction))
     }
     fn parse_slot_directive(&mut self, start_token: AssemblerToken, ctx: &mut GospelLexerContext) -> anyhow::Result<u32> {
         // Parse type of the slot as the first token
@@ -460,6 +462,3 @@ impl GospelAssembler<'_> {
         Self::parse_static_value_constant(start_token, &mut lex_context)
     }
 }
-
-
-

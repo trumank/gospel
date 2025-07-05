@@ -2,7 +2,7 @@ use std::fs::{read, read_to_string, write};
 use std::path::PathBuf;
 use std::process::exit;
 use std::rc::Rc;
-use anyhow::{anyhow, bail};
+use anyhow::{anyhow};
 use clap::Parser;
 use gospel_vm::container::GospelContainer;
 use gospel_vm::vm::{GospelVMContainer, GospelVMState, GospelVMTargetTriplet, GospelVMValue};
@@ -60,30 +60,17 @@ struct Args {
 
 fn do_action_assemble(action: ActionAssembleContainer) -> anyhow::Result<()> {
     let mut container_writer = GospelContainerWriter::create(action.container_name.as_str());
-    let mut failed_to_compile_files = false;
     
     let mut assembler = GospelAssembler::create(&mut container_writer);
     for source_file_name in &action.files {
-        let file_read_result = read_to_string(source_file_name);
-        if file_read_result.is_err() {
-            eprintln!("Failed to open source file {}: {}", source_file_name.to_string_lossy(), file_read_result.unwrap_err().to_string());
-            failed_to_compile_files = true;
-            continue;
-        }
-        let file_contents = file_read_result.unwrap();
+        let file_contents = read_to_string(source_file_name)
+            .map_err(|x| anyhow!("Failed to open source file {}: {}", source_file_name.to_string_lossy(), x.to_string()))?;
         let file_name = source_file_name.file_name()
             .map(|x| x.to_string_lossy().to_string())
             .unwrap_or(String::from("<unknown>"));
-        let assembler_result = assembler.assemble_file_contents(file_name.as_str(), file_contents.as_str());
-        if assembler_result.is_err() {
-            eprintln!("Failed to assemble source file {}: {}", source_file_name.to_string_lossy(), assembler_result.unwrap_err().to_string());
-            failed_to_compile_files = true;
-        }
+        assembler.assemble_file_contents(file_name.as_str(), file_contents.as_str())?;
     }
-    
-    if failed_to_compile_files {
-        bail!("Not writing container because one or more source files failed to compile");
-    }
+
     let result_container = container_writer.build();
     let output_file_name = action.output.unwrap_or_else(|| PathBuf::from(format!("{}.gso", action.container_name)));
     let container_serialized_data = result_container.write()
