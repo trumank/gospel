@@ -1,11 +1,13 @@
-﻿use std::collections::{HashMap, HashSet};
+﻿use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use anyhow::{anyhow};
 use bitflags::{bitflags};
 use logos::{Lexer, Logos};
 use strum_macros::Display;
 use gospel_vm::bytecode::{GospelInstruction, GospelOpcode};
 use gospel_vm::gospel_type::{GospelPlatformConfigProperty, GospelValueType};
-use gospel_vm::writer::{GospelContainerWriter, GospelSourceFunctionDefinition, GospelSourceFunctionReference, GospelSourceLazyValue, GospelSourceSlotBinding, GospelSourceStaticValue};
+use gospel_vm::writer::{GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceFunctionReference, GospelSourceLazyValue, GospelSourceSlotBinding, GospelSourceStaticValue};
 use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq, Display)]
@@ -197,7 +199,7 @@ impl FunctionCodeAssembler<'_> {
         Ok(new_slot_index)
     }
     fn find_or_add_argument_slot(&mut self, argument_index: u32) -> anyhow::Result<u32> {
-        let argument_type = self.function_definition.get_argument_type_at_index(argument_index)
+        let argument_type = self.function_definition.declaration.get_argument_type_at_index(argument_index)
             .ok_or_else(|| anyhow!("Invalid argument index #{}", argument_index))?;
         self.find_or_add_constant_slot(argument_type, GospelSourceSlotBinding::ArgumentValue(argument_index))
     }
@@ -329,12 +331,11 @@ impl FunctionCodeAssembler<'_> {
     }
 }
 
-#[derive(Debug)]
-pub struct GospelAssembler<'a> {
-    writer: &'a mut GospelContainerWriter,
+pub struct GospelAssembler {
+    visitor: Rc<RefCell<dyn GospelModuleVisitor>>,
     global_variable_names: HashSet<String>,
 }
-impl GospelAssembler<'_> {
+impl GospelAssembler {
     fn parse_value_type_token(token: &AssemblerToken) -> Option<GospelValueType> {
         if let AssemblerToken::Identifier(identifier) = token {
             if let AssemblerIdentifier::Local(local_name) = identifier {
@@ -435,7 +436,7 @@ impl GospelAssembler<'_> {
         let is_function_hidden = attributes.intersects(AssemblerAttributeList::Hidden);
         let function_name = ctx.next_local_identifier()?;
 
-        let mut function_definition = GospelSourceFunctionDefinition::create(&function_name, is_function_hidden);
+        let mut function_declaration = GospelSourceFunctionDeclaration::create(&function_name, is_function_hidden);
         let mut argument_name_map: HashMap<String, u32> = HashMap::new();
 
         let mut current_argument_token = ctx.next_checked()?;
@@ -463,7 +464,7 @@ impl GospelAssembler<'_> {
                 argument_default_value = Some(default_value);
                 current_argument_token = ctx.next_checked()?;
             }
-            let argument_index = function_definition.add_function_argument(argument_type, argument_default_value)?;
+            let argument_index = function_declaration.add_function_argument(argument_type, argument_default_value)?;
             if let Some(argument_name) = maybe_argument_name {
                 argument_name_map.insert(argument_name, argument_index);
             }
@@ -473,11 +474,20 @@ impl GospelAssembler<'_> {
         let return_value_token = ctx.next_checked()?;
         let return_value_type = Self::parse_value_type_token(&return_value_token)
             .ok_or_else(|| ctx.fail(format!("Expected value type, got {}", return_value_token)))?;
-        function_definition.set_return_value_type(return_value_type);
+        function_declaration.set_return_value_type(return_value_type);
+        
+        // Next token will be either a terminator (in this case, this is a function declaration, or interface definition), or a scope enter
+        // (in that case, this is a full function definition, and we need to assemble the function body)
+        let scope_enter_or_terminator_token = ctx.next_checked()?;
+        if scope_enter_or_terminator_token == AssemblerToken::StatementSeparator {
+            return self.visitor.borrow_mut().declare_function(function_declaration)
+                .map_err(|x| ctx.fail(x.to_string()))
+        } else if scope_enter_or_terminator_token != AssemblerToken::EnterScope {
+            return Err(ctx.fail(format!("Expected ; or {{, got {}", scope_enter_or_terminator_token)))
+        }
 
-        // Entering the function implementation scope
-        ctx.next_expect_token(AssemblerToken::EnterScope)?;
-
+        // This is a function definition, parse the function body now
+        let mut function_definition = GospelSourceFunctionDefinition::create(function_declaration);
         let mut function_assembler = FunctionCodeAssembler{
             global_variable_names: self.global_variable_names.clone(),
             function_definition: &mut function_definition,
@@ -497,7 +507,7 @@ impl GospelAssembler<'_> {
         ctx.next_expect_token(AssemblerToken::StatementSeparator)?;
 
         // Define the function finally
-        self.writer.define_function(function_definition)
+        self.visitor.borrow_mut().define_function(function_definition)
             .map_err(|x| ctx.fail(x.to_string()))
     }
     fn parse_global_declaration(&mut self, ctx: &mut GospelLexerContext, attributes: AssemblerAttributeList) -> anyhow::Result<()> {
@@ -521,10 +531,16 @@ impl GospelAssembler<'_> {
         }
         // Should end with a statement terminator
         ctx.next_expect_token(AssemblerToken::StatementSeparator)?;
-
         self.global_variable_names.insert(global_variable_name.clone());
-        self.writer.define_global(&global_variable_name, global_default_value)
-            .map_err(|x| ctx.fail(x.to_string()))
+
+        // If this declaration is marked extern, treat it as declaration, otherwise, treat it as definition
+        if attributes.intersects(AssemblerAttributeList::Extern) {
+            self.visitor.borrow_mut().declare_global(&global_variable_name)
+                .map_err(|x| ctx.fail(x.to_string()))
+        } else {
+            self.visitor.borrow_mut().define_global(&global_variable_name, global_default_value.unwrap())
+                .map_err(|x| ctx.fail(x.to_string()))
+        }
     }
     fn parse_constant_definition(&mut self, ctx: &mut GospelLexerContext, attributes: AssemblerAttributeList) -> anyhow::Result<()> {
         if attributes.intersects(AssemblerAttributeList::Extern) {
@@ -542,15 +558,16 @@ impl GospelAssembler<'_> {
         // Should end with a statement terminator
         ctx.next_expect_token(AssemblerToken::StatementSeparator)?;
 
-        let mut constant_definition = GospelSourceFunctionDefinition::create(constant_name.as_str(), is_constant_hidden);
-        constant_definition.set_return_value_type(return_value_type);
+        let mut constant_declaration = GospelSourceFunctionDeclaration::create(constant_name.as_str(), is_constant_hidden);
+        constant_declaration.set_return_value_type(return_value_type);
 
         // Constants are simple syntactic sugar for declaring functions with no arguments that return a static value
+        let mut constant_definition = GospelSourceFunctionDefinition::create(constant_declaration);
         let constant_slot_index = constant_definition.add_slot(return_value_type, GospelSourceSlotBinding::StaticValue(constant_value)).map_err(|x| ctx.fail(x.to_string()))?;
         constant_definition.add_slot_instruction(GospelOpcode::LoadSlot, constant_slot_index).map_err(|x| ctx.fail(x.to_string()))?;
         constant_definition.add_simple_instruction(GospelOpcode::ReturnValue).map_err(|x| ctx.fail(x.to_string()))?;
 
-        self.writer.define_function(constant_definition)
+        self.visitor.borrow_mut().define_function(constant_definition)
             .map_err(|x| ctx.fail(x.to_string()))
     }
     fn parse_top_level_statement(&mut self, start_token: AssemblerToken, ctx: &mut GospelLexerContext) -> anyhow::Result<()> {
@@ -562,9 +579,9 @@ impl GospelAssembler<'_> {
             _ => Err(ctx.fail(format!("Expected top level statement (function), got {}", top_level_token)))
         }
     }
-    /// Creates an assembler instance that will assemble the files and write the results to the given writer
-    pub fn create(writer: &mut GospelContainerWriter) -> GospelAssembler<'_> {
-        GospelAssembler{writer, global_variable_names: HashSet::new()}
+    /// Creates an assembler instance that will assemble the files and forward the results to the provided visitor
+    pub fn create(visitor: Rc<RefCell<dyn GospelModuleVisitor>>) -> Self {
+        GospelAssembler{visitor, global_variable_names: HashSet::new()}
     }
     /// Assembles the provided source assembly file and writes results to the underlying writer
     pub fn assemble_file_contents(&mut self, file_name: &str, contents: &str) -> anyhow::Result<()> {

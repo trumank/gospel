@@ -10,6 +10,7 @@ use crate::container::GospelContainer;
 use crate::gospel_type::{GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelTargetArch, GospelTargetEnv, GospelTargetOS, GospelFunctionDefinition, GospelFunctionIndex, GospelValueType};
 use crate::writer::{GospelSourceFunctionReference, GospelSourceLazyValue, GospelSourceStaticValue};
 use std::str::FromStr;
+use crate::reflection::{GospelModuleReflectable, GospelModuleReflector};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GospelBaseClassLayout {
@@ -832,6 +833,11 @@ impl GospelVMContainer {
         GospelVMExecutionState::run(&mut vm_state)
     }
 }
+impl GospelModuleReflectable for GospelVMContainer {
+    fn reflect(self: &Rc<Self>) -> anyhow::Result<Box<dyn GospelModuleReflector>> {
+        self.container.reflect()
+    }
+}
 
 /// VM state for the Gospel VM
 /// Containers can be injected into the VM to register type definitions
@@ -897,6 +903,16 @@ impl GospelVMState {
         self.containers_by_name.insert(container_name, wrapped_vm_container.clone());
 
         Ok(wrapped_vm_container)
+    }
+
+    /// Returns the target triplet being used by this VM instance
+    pub fn get_platform_config(&self) -> GospelVMTargetTriplet {
+        self.target_triplet.clone()
+    }
+
+    /// Returns a list of modules currently loaded into this VM instance
+    pub fn enumerate_modules(&self) -> Vec<Rc<GospelVMContainer>> {
+        self.containers.clone()
     }
 
     /// Reads the current value of a global variable by name, returns None if variable does not exist or is not currently assigned

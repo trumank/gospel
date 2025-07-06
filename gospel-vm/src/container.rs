@@ -1,7 +1,7 @@
 ﻿use std::io::{Cursor, Read, Write};
 use anyhow::{anyhow, bail};
-use strum_macros::FromRepr;
-use crate::gospel_type::{GospelExternalFunctionReference, GospelFunctionDefinition, GospelFunctionNamePair, GospelLazyValue};
+use strum_macros::{Display, FromRepr};
+use crate::gospel_type::{GospelExternalFunctionReference, GospelFunctionDeclaration, GospelFunctionDefinition, GospelFunctionNamePair, GospelGlobalDeclaration, GospelLazyValue};
 use crate::ser::{ReadExt, Readable, WriteExt, Writeable};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default, FromRepr)]
@@ -110,6 +110,75 @@ impl Writeable for GospelContainerImport {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromRepr, Display)]
+#[repr(u32)]
+pub enum GospelCommonFileType {
+    Container = 0x0,
+    RefContainer = 0x1,
+}
+impl Readable for GospelCommonFileType {
+    fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
+        GospelCommonFileType::from_repr(stream.de()?).ok_or_else(|| anyhow!("Unknown common file type"))
+    }
+}
+impl Writeable for GospelCommonFileType {
+    fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
+        stream.ser(&(*self as u32))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GospelCommonFileHeader {
+    pub file_magic: u32,
+    pub header_version: u32,
+    pub file_type: GospelCommonFileType,
+}
+impl Readable for GospelCommonFileHeader {
+    fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
+        let file_magic: u32 = stream.de()?;
+        if file_magic != Self::FILE_MAGIC {
+            bail!("Invalid file magic: expected {:x}, got {:x}", GospelCommonFileHeader::FILE_MAGIC, file_magic);
+        }
+        let header_version: u32 = stream.de()?;
+        if header_version != Self::HEADER_VERSION_INITIAL {
+            bail!("Incompatible header version, expected {}, got {}", Self::HEADER_VERSION_INITIAL, header_version);
+        }
+        let file_type: GospelCommonFileType = stream.de()?;
+        Ok(Self{file_magic, header_version, file_type})
+    }
+}
+impl Writeable for GospelCommonFileHeader {
+    fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
+        stream.ser(&self.file_magic)?;
+        stream.ser(&self.header_version)?;
+        stream.ser(&self.file_type)?;
+        Ok({})
+    }
+}
+impl GospelCommonFileHeader {
+    pub const FILE_MAGIC: u32 = 0x4C505347;
+    pub const HEADER_VERSION_INITIAL: u32 = 1;
+
+    fn create(file_type: GospelCommonFileType) -> GospelCommonFileHeader {
+        GospelCommonFileHeader{
+            file_magic: Self::FILE_MAGIC,
+            header_version: Self::HEADER_VERSION_INITIAL,
+            file_type,
+        }
+    }
+    fn expect_file_type(&self, file_type: GospelCommonFileType) -> anyhow::Result<()> {
+        if self.file_type != file_type {
+            bail!("This file is a {}. Attempt to read contents as {}", self.file_type, file_type);
+        }
+        Ok({})
+    }
+
+    /// Attempts to read the file header as gospel file header
+    pub fn try_read_file_header(data: &[u8]) -> anyhow::Result<GospelCommonFileHeader> {
+        let mut reader = Cursor::new(data);
+        Ok(reader.de()?)
+    }
+}
 
 
 #[derive(Debug, Clone, Default)]
@@ -128,14 +197,18 @@ impl GospelContainer {
         self.strings.get(self.header.container_name)
     }
     /// Reads the container from the provided data buffer
-    pub fn read(data: &[u8]) -> anyhow::Result<GospelContainer> {
+    pub fn read(data: &[u8]) -> anyhow::Result<Self> {
         let mut reader = Cursor::new(data);
+        let common_header: GospelCommonFileHeader = reader.de()?;
+        common_header.expect_file_type(GospelCommonFileType::Container)?;
         Ok(reader.de()?)
     }
     /// Serializes the container to a data buffer
     pub fn write(&self) -> anyhow::Result<Vec<u8>> {
         let mut data: Vec<u8> = Vec::new();
         let mut writer = Cursor::new(&mut data);
+        let common_header = GospelCommonFileHeader::create(GospelCommonFileType::Container);
+        writer.ser(&common_header)?;
         writer.ser(self)?;
         Ok(data)
     }
@@ -164,6 +237,55 @@ impl Writeable for GospelContainer {
         stream.ser(&self.function_names)?;
         stream.ser(&self.external_functions)?;
         stream.ser(&self.lazy_values)?;
+        stream.ser(&self.strings)?;
+        Ok({})
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GospelRefContainer {
+    pub(crate) header: GospelContainerHeader,
+    pub(crate) globals: Vec<GospelGlobalDeclaration>,
+    pub(crate) functions: Vec<GospelFunctionDeclaration>,
+    pub(crate) strings: GospelStringTable,
+}
+impl GospelRefContainer {
+    pub fn container_name(&self) -> anyhow::Result<&str> {
+        self.strings.get(self.header.container_name)
+    }
+    /// Reads the reference container from the provided data buffer
+    pub fn read(data: &[u8]) -> anyhow::Result<Self> {
+        let mut reader = Cursor::new(data);
+        let common_header: GospelCommonFileHeader = reader.de()?;
+        common_header.expect_file_type(GospelCommonFileType::RefContainer)?;
+        Ok(reader.de()?)
+    }
+    /// Serializes the reference container to a data buffer
+    pub fn write(&self) -> anyhow::Result<Vec<u8>> {
+        let mut data: Vec<u8> = Vec::new();
+        let mut writer = Cursor::new(&mut data);
+        let common_header = GospelCommonFileHeader::create(GospelCommonFileType::RefContainer);
+        writer.ser(&common_header)?;
+        writer.ser(self)?;
+        Ok(data)
+    }
+}
+
+impl Readable for GospelRefContainer {
+    fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
+        Ok(Self{
+            header: stream.de()?,
+            globals: stream.de()?,
+            functions: stream.de()?,
+            strings: stream.de()?,
+        })
+    }
+}
+impl Writeable for GospelRefContainer {
+    fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
+        stream.ser(&self.header)?;
+        stream.ser(&self.globals)?;
+        stream.ser(&self.functions)?;
         stream.ser(&self.strings)?;
         Ok({})
     }

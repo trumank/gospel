@@ -338,3 +338,66 @@ impl Writeable for GospelExternalFunctionReference {
         Ok({})
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GospelGlobalDeclaration {
+    pub name: u32, // name of the global, index to the string table
+}
+impl Readable for GospelGlobalDeclaration {
+    fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self>  {
+        Ok(Self{
+            name: stream.de()?,
+        })
+    }
+}
+impl Writeable for GospelGlobalDeclaration {
+    fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
+        stream.ser(&self.name)?;
+        Ok({})
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GospelFunctionArgumentDeclaration {
+    pub(crate) argument_type: GospelValueType, // type of the argument
+    pub(crate) has_default_value: bool, // true if the argument has default value
+}
+impl Readable for GospelFunctionArgumentDeclaration {
+    fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self>  {
+        Ok(Self{
+            argument_type: stream.de()?,
+            has_default_value: stream.de()?,
+        })
+    }
+}
+impl Writeable for GospelFunctionArgumentDeclaration {
+    fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
+        stream.ser(&self.argument_type)?;
+        stream.ser(&self.has_default_value)?;
+        Ok({})
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GospelFunctionDeclaration {
+    pub(crate) name: u32, // name of the function, index to the string table
+    pub(crate) return_value_type: GospelValueType, // type of the function return value
+    pub(crate) arguments: Vec<GospelFunctionArgumentDeclaration>, // function argument declarations
+}
+impl Readable for GospelFunctionDeclaration {
+    fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self>  {
+        Ok(Self{
+            name: stream.de()?,
+            return_value_type: stream.de()?,
+            arguments: stream.de()?,
+        })
+    }
+}
+impl Writeable for GospelFunctionDeclaration {
+    fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
+        stream.ser(&self.name)?;
+        stream.ser(&self.return_value_type)?;
+        stream.ser(&self.arguments)?;
+        Ok({})
+    }
+}

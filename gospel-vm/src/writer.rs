@@ -1,9 +1,11 @@
-﻿use std::collections::HashMap;
+﻿use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 use anyhow::{anyhow, bail};
 use strum_macros::Display;
 use crate::bytecode::{GospelInstruction, GospelOpcode};
-use crate::container::{GospelContainer, GospelContainerImport, GospelContainerVersion, GospelGlobalDefinition};
-use crate::gospel_type::{GospelExternalFunctionReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelFunctionArgument, GospelFunctionDefinition, GospelFunctionIndex, GospelValueType, GospelLazyValue, GospelFunctionNamePair};
+use crate::container::{GospelContainer, GospelContainerImport, GospelContainerVersion, GospelGlobalDefinition, GospelRefContainer};
+use crate::gospel_type::{GospelExternalFunctionReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelFunctionArgument, GospelFunctionDefinition, GospelFunctionIndex, GospelValueType, GospelLazyValue, GospelFunctionNamePair, GospelGlobalDeclaration, GospelFunctionDeclaration, GospelFunctionArgumentDeclaration};
 
 /// Represents a reference to a function
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Display)]
@@ -73,25 +75,21 @@ struct GospelSourceFunctionArgument {
     default_value: Option<GospelSourceStaticValue>,
 }
 
-/// Allows building definitions of functions to be added to the container writer later
+/// Allows building declarations of functions to be added to the container writer later
 #[derive(Debug, Clone, Default)]
-pub struct GospelSourceFunctionDefinition {
+pub struct GospelSourceFunctionDeclaration {
     function_name: String,
     hidden: bool,
     arguments: Vec<GospelSourceFunctionArgument>,
-    slots: Vec<GospelSourceSlotDefinition>,
-    code: Vec<GospelInstruction>,
-    referenced_strings: Vec<String>,
-    referenced_string_lookup: HashMap<String, u32>,
     return_value_type: Option<GospelValueType>,
 }
-impl GospelSourceFunctionDefinition {
-    /// Creates a named function. When hidden is true, the function will not be visible outside the current container by name
+impl GospelSourceFunctionDeclaration {
+    /// Creates a function declaration. When hidden is true, the function will not be visible outside the current container by name
     pub fn create(function_name: &str, hidden: bool) -> Self {
         Self{
             function_name: function_name.to_string(),
             hidden,
-            ..GospelSourceFunctionDefinition::default()
+            ..GospelSourceFunctionDeclaration::default()
         }
     }
     pub fn set_return_value_type(&mut self, return_value_type: GospelValueType) {
@@ -113,6 +111,25 @@ impl GospelSourceFunctionDefinition {
         });
         Ok(new_argument_index)
     }
+}
+
+/// Allows building definitions of functions to be added to the container writer later
+#[derive(Debug, Clone, Default)]
+pub struct GospelSourceFunctionDefinition {
+    pub declaration: GospelSourceFunctionDeclaration,
+    slots: Vec<GospelSourceSlotDefinition>,
+    code: Vec<GospelInstruction>,
+    referenced_strings: Vec<String>,
+    referenced_string_lookup: HashMap<String, u32>,
+}
+impl GospelSourceFunctionDefinition {
+    /// Creates a named function from a declaration
+    pub fn create(declaration: GospelSourceFunctionDeclaration) -> Self {
+        Self{
+            declaration,
+            ..GospelSourceFunctionDefinition::default()
+        }
+    }
     pub fn add_slot(&mut self, value_type: GospelValueType, binding: GospelSourceSlotBinding) -> anyhow::Result<u32> {
         if let GospelSourceSlotBinding::StaticValue(static_value) = &binding {
             if static_value.value_type() != value_type {
@@ -120,10 +137,10 @@ impl GospelSourceFunctionDefinition {
             }
         }
         if let GospelSourceSlotBinding::ArgumentValue(argument_index) = &binding {
-            if *argument_index as usize >= self.arguments.len() {
-                bail!("Invalid argument index #{} out of bounds (number of function arguments: {})", argument_index, self.arguments.len());
+            if *argument_index as usize >= self.declaration.arguments.len() {
+                bail!("Invalid argument index #{} out of bounds (number of function arguments: {})", argument_index, self.declaration.arguments.len());
             }
-            if self.arguments[*argument_index as usize].argument_type != value_type {
+            if self.declaration.arguments[*argument_index as usize].argument_type != value_type {
                 bail!("Incompatible argument type at index #{} for slot definition", argument_index);
             }
         }
@@ -188,9 +205,63 @@ impl GospelSourceFunctionDefinition {
     }
 }
 
-/// Base class used for the creation of containers
+/// Generic sink for building gospel modules (into containers or reference containers)
+pub trait GospelModuleVisitor {
+    fn declare_global(&mut self, name: &str) -> anyhow::Result<()>;
+    fn define_global(&mut self, name: &str, value: i32) -> anyhow::Result<()>;
+    fn declare_function(&mut self, source: GospelSourceFunctionDeclaration) -> anyhow::Result<()>;
+    fn define_function(&mut self, source: GospelSourceFunctionDefinition) -> anyhow::Result<()>;
+}
+
+/// A frontend for plugging multiple container visitors into a single object
+#[derive(Default)]
+pub struct GospelMultiContainerVisitor {
+    pub visitors: Vec<Rc<RefCell<dyn GospelModuleVisitor>>>,
+}
+impl GospelMultiContainerVisitor {
+    pub fn create() -> Self {
+        Self::default()
+    }
+    pub fn add_visitor(&mut self, visitor: Rc<RefCell<dyn GospelModuleVisitor>>) {
+        self.visitors.push(visitor);
+    }
+}
+impl GospelModuleVisitor for GospelMultiContainerVisitor {
+    fn declare_global(&mut self, name: &str) -> anyhow::Result<()> {
+        for visitor in &mut self.visitors {
+            visitor.borrow_mut().declare_global(name)?;
+        }
+        Ok({})
+    }
+    fn define_global(&mut self, name: &str, value: i32) -> anyhow::Result<()> {
+        for visitor in &mut self.visitors {
+            visitor.borrow_mut().define_global(name, value)?;
+        }
+        Ok({})
+    }
+    fn declare_function(&mut self, source: GospelSourceFunctionDeclaration) -> anyhow::Result<()> {
+        for visitor in &mut self.visitors {
+            visitor.borrow_mut().declare_function(source.clone())?
+        }
+        Ok({})
+    }
+    fn define_function(&mut self, source: GospelSourceFunctionDefinition) -> anyhow::Result<()> {
+        for visitor in &mut self.visitors {
+            visitor.borrow_mut().define_function(source.clone())?
+        }
+        Ok({})
+    }
+}
+
+/// Interface implemented by visitors that allow building modules from source
+pub trait GospelModuleBuilder<T> : GospelModuleVisitor {
+    /// Converts the builder into the build result
+    fn build(&mut self) -> T;
+}
+
+/// Implementation of visitor that produces GospelContainers
 #[derive(Debug, Clone, Default)]
-pub struct GospelContainerWriter {
+struct GospelContainerWriter {
     container: GospelContainer,
     container_name: String,
     string_lookup: HashMap<String, u32>,
@@ -201,61 +272,12 @@ pub struct GospelContainerWriter {
     lazy_value_lookup: HashMap<GospelLazyValue, u32>,
 }
 impl GospelContainerWriter {
-    pub fn create(container_name: &str) -> GospelContainerWriter {
-        let mut writer = GospelContainerWriter::default();
+    fn create(container_name: &str) -> Self {
+        let mut writer = Self::default();
         writer.container_name = container_name.to_string();
         writer.container.header.container_name = writer.store_string(container_name);
         writer.container.header.version = GospelContainerVersion::current_version();
         writer
-    }
-    pub fn define_global(&mut self, name: &str, default_value: Option<i32>) -> anyhow::Result<()> {
-        self.find_or_define_global(name, default_value).map(|_| {})
-    }
-    pub fn define_function(&mut self, source: GospelSourceFunctionDefinition) -> anyhow::Result<()> {
-        if self.function_lookup.contains_key(source.function_name.as_str()) {
-            bail!("Function with name {} is already defined in this container", source.function_name);
-        }
-        if source.return_value_type.is_none() {
-            bail!("Function does not have a valid return value type; all functions must return a value");
-        }
-        let mut arguments: Vec<GospelFunctionArgument> = Vec::with_capacity(source.arguments.len());
-        for argument in &source.arguments {
-            let default_value = if argument.default_value.is_some() {
-                Some(self.convert_static_value(argument.default_value.as_ref().unwrap())?)
-            } else { None };
-
-            arguments.push(GospelFunctionArgument {
-                argument_type: argument.argument_type,
-                default_value,
-            })
-        }
-
-        let mut slots: Vec<GospelSlotDefinition> = Vec::with_capacity(source.slots.len());
-        for slot in &source.slots {
-            let slot_definition = self.convert_slot_binding(slot.slot_type, &slot.slot_biding)?;
-            slots.push(slot_definition);
-        }
-        let referenced_strings: Vec<u32> = source.referenced_strings.iter().map(|x| {
-            self.store_string(x.as_str())
-        }).collect();
-
-        let function_index = self.container.functions.len() as u32;
-        let function_name_string = source.function_name.clone();
-        if !source.hidden {
-            let function_name = self.store_string(source.function_name.as_str());
-            self.container.function_names.push(GospelFunctionNamePair{ function_index, function_name });
-        }
-        self.container.functions.push(GospelFunctionDefinition {
-            arguments, slots,
-            return_value_type: source.return_value_type.unwrap(),
-            code: source.code,
-            referenced_strings,
-        });
-        self.function_lookup.insert(function_name_string, function_index);
-        Ok({})
-    }
-    pub fn build(self) -> GospelContainer {
-        self.container
     }
     fn store_string(&mut self, string: &str) -> u32 {
         if let Some(index) = self.string_lookup.get(string) {
@@ -406,5 +428,184 @@ impl GospelContainerWriter {
                 })
             }
         }
+    }
+}
+impl GospelModuleVisitor for GospelContainerWriter {
+    fn declare_global(&mut self, name: &str) -> anyhow::Result<()> {
+        self.find_or_define_global(name, None).map(|_| {})
+    }
+    fn define_global(&mut self, name: &str, value: i32) -> anyhow::Result<()> {
+        self.find_or_define_global(name, Some(value)).map(|_| {})
+    }
+    fn declare_function(&mut self, _source: GospelSourceFunctionDeclaration) -> anyhow::Result<()> {
+        bail!("Function declarations are only allowed when writing reference containers");
+    }
+    fn define_function(&mut self, source: GospelSourceFunctionDefinition) -> anyhow::Result<()> {
+        if self.function_lookup.contains_key(source.declaration.function_name.as_str()) {
+            bail!("Function with name {} is already defined in this container", source.declaration.function_name);
+        }
+        if source.declaration.return_value_type.is_none() {
+            bail!("Function does not have a valid return value type; all functions must return a value");
+        }
+        let mut arguments: Vec<GospelFunctionArgument> = Vec::with_capacity(source.declaration.arguments.len());
+        for argument in &source.declaration.arguments {
+            let default_value = if argument.default_value.is_some() {
+                Some(self.convert_static_value(argument.default_value.as_ref().unwrap())?)
+            } else { None };
+
+            arguments.push(GospelFunctionArgument {
+                argument_type: argument.argument_type,
+                default_value,
+            })
+        }
+
+        let mut slots: Vec<GospelSlotDefinition> = Vec::with_capacity(source.slots.len());
+        for slot in &source.slots {
+            let slot_definition = self.convert_slot_binding(slot.slot_type, &slot.slot_biding)?;
+            slots.push(slot_definition);
+        }
+        let referenced_strings: Vec<u32> = source.referenced_strings.iter().map(|x| {
+            self.store_string(x.as_str())
+        }).collect();
+
+        let function_index = self.container.functions.len() as u32;
+        let function_name_string = source.declaration.function_name.clone();
+        if !source.declaration.hidden {
+            let function_name = self.store_string(source.declaration.function_name.as_str());
+            self.container.function_names.push(GospelFunctionNamePair{ function_index, function_name });
+        }
+        self.container.functions.push(GospelFunctionDefinition {
+            arguments, slots,
+            return_value_type: source.declaration.return_value_type.unwrap(),
+            code: source.code,
+            referenced_strings,
+        });
+        self.function_lookup.insert(function_name_string, function_index);
+        Ok({})
+    }
+}
+impl GospelModuleBuilder<GospelContainer> for GospelContainerWriter {
+    fn build(&mut self) -> GospelContainer {
+        std::mem::take(&mut self.container)
+    }
+}
+
+/// Implementation of the visitor that writes reference containers
+#[derive(Debug, Clone, Default)]
+struct GospelReferenceContainerWriter {
+    container: GospelRefContainer,
+    container_name: String,
+    string_lookup: HashMap<String, u32>,
+    globals_lookup: HashMap<String, u32>,
+    function_lookup: HashMap<String, u32>,
+}
+impl GospelReferenceContainerWriter {
+    fn create(container_name: &str) -> Self {
+        let mut writer = Self::default();
+        writer.container_name = container_name.to_string();
+        writer.container.header.container_name = writer.store_string(container_name);
+        writer.container.header.version = GospelContainerVersion::current_version();
+        writer
+    }
+    fn store_string(&mut self, string: &str) -> u32 {
+        if let Some(index) = self.string_lookup.get(string) {
+            return *index
+        }
+        let new_index = self.container.strings.store(string.to_string());
+        self.string_lookup.insert(string.to_string(), new_index);
+        new_index
+    }
+    fn find_or_declare_global(&mut self, name: &str) -> anyhow::Result<u32> {
+        if let Some(existing_index) = self.globals_lookup.get(name) {
+            Ok(*existing_index)
+        } else {
+            let name_index = self.store_string(name);
+            let new_global_index = self.container.globals.len() as u32;
+            self.container.globals.push(GospelGlobalDeclaration{
+                name: name_index,
+            });
+            self.globals_lookup.insert(name.to_string(), new_global_index);
+            Ok(new_global_index)
+        }
+    }
+    fn find_or_declare_function(&mut self, declaration: GospelSourceFunctionDeclaration) -> anyhow::Result<u32> {
+        if let Some(existing_function_index) = self.function_lookup.get(declaration.function_name.as_str()) {
+            let existing_declaration = self.container.functions[*existing_function_index as usize].clone();
+
+            // Make sure return value type is consistent across all function declarations
+            if existing_declaration.return_value_type != declaration.return_value_type.unwrap() {
+                bail!("Function {} has been previously declared with a different return value type ({}). Attempting to re-declare with return value type {}",
+                    declaration.function_name.as_str(), existing_declaration.return_value_type, declaration.return_value_type.unwrap());
+            }
+            // Make sure the number of arguments is consistent across all function declarations
+            if existing_declaration.arguments.len() != declaration.arguments.len() {
+                bail!("Function {} has been previously declared with a different number of arguments ({}). Attempting to re-declare with {} arguments",
+                    declaration.function_name.as_str(), existing_declaration.arguments.len(), declaration.arguments.len());
+            }
+            // Make sure the types of arguments are consistent across all function declarations
+            for argument_index in 0..existing_declaration.arguments.len() {
+                if existing_declaration.arguments[argument_index].argument_type != declaration.arguments[argument_index].argument_type {
+                    bail!("Function {} argument #{} has been previously declared with a different type ({}). Attempting to re-declare with type {}",
+                        declaration.function_name.as_str(), argument_index, existing_declaration.arguments[argument_index].argument_type,
+                        declaration.arguments[argument_index].argument_type);
+                }
+                // Whenever the argument has a default value or not might be different across declarations, but we are lenient with default values here
+            }
+            // New declaration is compatible with the existing declaration
+            Ok(*existing_function_index)
+        } else {
+            let name_index = self.store_string(declaration.function_name.as_str());
+            let new_function_index = self.container.functions.len() as u32;
+            let converted_arguments: Vec<GospelFunctionArgumentDeclaration> = declaration.arguments.iter().map(|x| GospelFunctionArgumentDeclaration{
+                argument_type: x.argument_type,
+                has_default_value: x.default_value.is_some(),
+            }).collect();
+            self.container.functions.push(GospelFunctionDeclaration{
+                name: name_index,
+                return_value_type: declaration.return_value_type.unwrap(),
+                arguments: converted_arguments,
+            });
+            self.function_lookup.insert(declaration.function_name.to_string(), new_function_index);
+            Ok(new_function_index)
+        }
+    }
+}
+impl GospelModuleVisitor for GospelReferenceContainerWriter {
+    fn declare_global(&mut self, name: &str) -> anyhow::Result<()> {
+        self.find_or_declare_global(name).map(|_| {})
+    }
+    fn define_global(&mut self, name: &str, _value: i32) -> anyhow::Result<()> {
+        // Definitions are treated as declarations for reference containers
+        self.declare_global(name)
+    }
+    fn declare_function(&mut self, source: GospelSourceFunctionDeclaration) -> anyhow::Result<()> {
+        if source.return_value_type.is_none() {
+            bail!("Function does not have a valid return value type; all functions must return a value");
+        }
+        self.find_or_declare_function(source).map(|_| {})
+    }
+    fn define_function(&mut self, source: GospelSourceFunctionDefinition) -> anyhow::Result<()> {
+        // Definitions are treated as declarations for reference containers
+        self.declare_function(source.declaration)
+    }
+}
+impl GospelModuleBuilder<GospelRefContainer> for GospelReferenceContainerWriter {
+    fn build(&mut self) -> GospelRefContainer {
+        std::mem::take(&mut self.container)
+    }
+}
+
+/// Allows building objects of this type from module source
+pub trait GospelBuildFromModuleSource {
+    fn make_builder(module_name: &str) -> Rc<RefCell<dyn GospelModuleBuilder<Self>>>;
+}
+impl GospelBuildFromModuleSource for GospelContainer {
+    fn make_builder(module_name: &str) -> Rc<RefCell<dyn GospelModuleBuilder<Self>>> {
+        Rc::new(RefCell::new(GospelContainerWriter::create(module_name)))
+    }
+}
+impl GospelBuildFromModuleSource for GospelRefContainer {
+    fn make_builder(module_name: &str) -> Rc<RefCell<dyn GospelModuleBuilder<Self>>> {
+        Rc::new(RefCell::new(GospelReferenceContainerWriter::create(module_name)))
     }
 }
