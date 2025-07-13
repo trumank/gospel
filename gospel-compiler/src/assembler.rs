@@ -224,7 +224,7 @@ impl FunctionCodeAssembler<'_> {
                                 container_name: container_name.clone(),
                                 function_name: local_name.clone(),
                             });
-                            self.find_or_add_constant_slot(GospelValueType::FunctionPointer, GospelSourceSlotBinding::StaticValue(function_pointer))?
+                            self.find_or_add_constant_slot(GospelValueType::Closure, GospelSourceSlotBinding::StaticValue(function_pointer))?
                         }
                     }
                 }

@@ -151,23 +151,27 @@ impl GospelVMTargetTriplet {
 
 /// Represents reference to a function located in a particular container
 #[derive(Debug, Clone)]
-pub struct GospelVMFunctionPointer {
+pub struct GospelVMClosure {
     container: Rc<GospelVMContainer>,
     function_index: u32,
+    arguments: Vec<GospelVMValue>,
 }
-impl GospelVMFunctionPointer {
-    pub fn pointer_equal(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.container, &other.container) && self.function_index == other.function_index
+impl PartialEq for GospelVMClosure {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.container, &other.container) &&
+            self.function_index == other.function_index &&
+            self.arguments == other.arguments
     }
 }
-impl Display for GospelVMFunctionPointer {
+impl Eq for GospelVMClosure {}
+impl Display for GospelVMClosure {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let container_name = self.container.container_name().unwrap_or("<unknown>");
         let function_name = self.function_name().unwrap_or("<unknown>");
         write!(f, "{}:{}", container_name, function_name)
     }
 }
-impl Serialize for GospelVMFunctionPointer {
+impl Serialize for GospelVMClosure {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
         let mut s = serializer.serialize_struct("GospelVMFunctionPointer", 3)?;
         s.serialize_field("module", &self.source_container().container_name().unwrap_or("<unknown>"))?;
@@ -175,18 +179,29 @@ impl Serialize for GospelVMFunctionPointer {
         s.end()
     }
 }
-impl GospelVMFunctionPointer {
+impl GospelVMClosure {
     /// Returns the type container which defines this type
     pub fn source_container(&self) -> Rc<GospelVMContainer> {
         self.container.clone()
     }
-    /// Returns the name of the function
+    /// Returns the name of the function this closure is created from
     pub fn function_name(&self) -> Option<&str> {
         self.container.get_function_name(self.function_index)
     }
-    /// Attempts to execute this function and returns the result
-    pub fn execute(&self, args: &Vec<GospelVMValue>) -> anyhow::Result<GospelVMValue> {
-        self.container.execute_function_internal(self.function_index, args, 0)
+    /// Attempts to execute this closure and returns the result
+    pub fn execute(&self, args: Vec<GospelVMValue>) -> anyhow::Result<GospelVMValue> {
+        self.execute_internal(args, 0)
+    }
+    fn execute_internal(&self, args: Vec<GospelVMValue>, recursion_counter: usize) -> anyhow::Result<GospelVMValue> {
+        if self.arguments.is_empty() {
+            self.container.execute_function_internal(self.function_index, &args, recursion_counter)
+        } else if args.is_empty() {
+            self.container.execute_function_internal(self.function_index, &self.arguments, recursion_counter)
+        } else {
+            let mut concat_args = self.arguments.clone();
+            concat_args.extend(args.into_iter());
+            self.container.execute_function_internal(self.function_index, &concat_args, recursion_counter)
+        }
     }
 }
 
@@ -194,12 +209,12 @@ impl GospelVMFunctionPointer {
 /// Currently supported value types are integers, function pointers and type layouts
 /// Function pointers can be called to yield their return value
 /// Values can be compared for equality, but values of certain types might never be equivalent (for example, unnamed type layouts are never equivalent, even to themselves)
-#[derive(Debug, Clone, Display, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Display, Serialize)]
 pub enum GospelVMValue {
     #[strum(to_string = "Integer({0})")]
     Integer(i32), // signed 32-bit integer value
-    #[strum(to_string = "FunctionPointer({0})")]
-    FunctionPointer(GospelVMFunctionPointer), // definition of a type with no template arguments
+    #[strum(to_string = "Closure({0})")]
+    Closure(GospelVMClosure), // pointer to a function with some number (or no) arguments captured with it
     #[strum(to_string = "TypeLayout({0:#?})")]
     TypeLayout(GospelTypeLayout), // pre-computed type layout
 }
@@ -207,26 +222,8 @@ impl GospelVMValue {
     pub fn value_type(&self) -> GospelValueType {
         match self {
             GospelVMValue::Integer(_) => { GospelValueType::Integer }
-            GospelVMValue::FunctionPointer(_) => { GospelValueType::FunctionPointer }
+            GospelVMValue::Closure(_) => { GospelValueType::Closure }
             GospelVMValue::TypeLayout(_) => { GospelValueType::TypeLayout }
-        }
-    }
-}
-impl PartialEq for GospelVMValue {
-    fn eq(&self, other: &Self) -> bool {
-        match self {
-            GospelVMValue::Integer(a) => match other {
-                GospelVMValue::Integer(b) => { *a == *b }
-                _ => false
-            }
-            GospelVMValue::FunctionPointer(a) => match other {
-                GospelVMValue::FunctionPointer(b) => { a.pointer_equal(b) }
-                _ => false
-            }
-            GospelVMValue::TypeLayout(a) => match other {
-                GospelVMValue::TypeLayout(b) => { a.eq(b) }
-                _ => false
-            }
         }
     }
 }
@@ -323,9 +320,9 @@ impl GospelVMExecutionState<'_> {
             _ => bail!("Expected integer value, got value of different type")
         }
     }
-    fn unwrap_value_as_function_pointer_checked(value: GospelVMValue) -> anyhow::Result<GospelVMFunctionPointer> {
+    fn unwrap_value_as_function_pointer_checked(value: GospelVMValue) -> anyhow::Result<GospelVMClosure> {
         match value {
-            GospelVMValue::FunctionPointer(unwrapped) => { Ok(unwrapped) }
+            GospelVMValue::Closure(unwrapped) => { Ok(unwrapped) }
             _ => bail!("Expected function pointer, got value of different type")
         }
     }
@@ -436,7 +433,7 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::Call => {
                     let number_of_arguments = Self::immediate_value_checked(instruction, 0)? as usize;
-                    let function_pointer = Self::unwrap_value_as_function_pointer_checked(state.pop_stack_check_underflow()?)?;
+                    let closure = Self::unwrap_value_as_function_pointer_checked(state.pop_stack_check_underflow()?)?;
                     let mut function_arguments: Vec<GospelVMValue> = Vec::with_capacity(number_of_arguments);
                     for _ in 0..number_of_arguments {
                         function_arguments.push(state.pop_stack_check_underflow()?);
@@ -444,11 +441,22 @@ impl GospelVMExecutionState<'_> {
                     if state.recursion_counter >= state.max_recursion_depth {
                         bail!("Recursion limit reached");
                     }
-                    let return_value = function_pointer.container.execute_function_internal(function_pointer.function_index, &function_arguments, state.recursion_counter).map_err(|err| {
-                        let function_name = function_pointer.function_name().unwrap_or("<unknown>");
+                    let return_value = closure.execute_internal(function_arguments, state.recursion_counter).map_err(|err| {
+                        let function_name = closure.function_name().unwrap_or("<unknown>");
                         anyhow!("Failed to call function {}: {}", function_name.to_string(), err.to_string())
                     })?;
                     state.push_stack_check_overflow(return_value)?;
+                }
+                GospelOpcode::BindClosure => {
+                    let number_of_arguments = Self::immediate_value_checked(instruction, 0)? as usize;
+                    let mut closure = Self::unwrap_value_as_function_pointer_checked(state.pop_stack_check_underflow()?)?;
+                    for _ in 0..number_of_arguments {
+                        closure.arguments.push(state.pop_stack_check_underflow()?);
+                    }
+                    if closure.arguments.len() >= state.max_stack_size {
+                        bail!("Closure captured argument number limit reached");
+                    }
+                    state.push_stack_check_overflow(GospelVMValue::Closure(closure))?;
                 }
                 // Logical opcodes
                 GospelOpcode::And => { state.do_bitwise_op(|a, b| a & b)?; }
@@ -692,15 +700,15 @@ impl GospelVMContainer {
         self.container.container_name()
     }
     /// Attempts to find a function with the given name in this container and returns a reference to it
-    pub fn find_named_function(self: &Rc<Self>, name: &str) -> Option<GospelVMFunctionPointer> {
-        self.function_lookup_by_name.get(name).map(|type_index| GospelVMFunctionPointer {
-            container: self.clone(), function_index: *type_index })
+    pub fn find_named_function(self: &Rc<Self>, name: &str) -> Option<GospelVMClosure> {
+        self.function_lookup_by_name.get(name).map(|type_index| GospelVMClosure {
+            container: self.clone(), function_index: *type_index, arguments: Vec::new() })
     }
     fn get_function_name(&self, function_index: u32) -> Option<&str> {
         self.name_lookup_by_function.get(&function_index)
             .and_then(|x| self.container.strings.get(*x).ok())
     }
-    fn resolve_function_index(self: &Rc<Self>, function_index: GospelFunctionIndex) -> anyhow::Result<GospelVMFunctionPointer> {
+    fn resolve_function_index(self: &Rc<Self>, function_index: GospelFunctionIndex) -> anyhow::Result<GospelVMClosure> {
         if function_index.is_external() {
             if function_index.index() as usize >= self.container.external_functions.len() {
                 bail!("Invalid external function index #{} out of bounds (num external function references in container: {})", function_index.index(), self.container.external_functions.len());
@@ -714,7 +722,7 @@ impl GospelVMContainer {
             return source_container.find_named_function(type_name)
                 .ok_or_else(|| { anyhow!("Imported named function {} does not exist in container {}", self.container_name().unwrap(), type_name.to_string()) });
         }
-        Ok(GospelVMFunctionPointer { container: self.clone(), function_index: function_index.index() })
+        Ok(GospelVMClosure { container: self.clone(), function_index: function_index.index(), arguments: Vec::new() })
     }
     fn resolve_lazy_value(self: &Rc<Self>, index: u32, recursion_counter: usize) -> anyhow::Result<GospelVMValue> {
         if index as usize >= self.container.lazy_values.len() {
@@ -733,12 +741,12 @@ impl GospelVMContainer {
                 Ok(GospelVMValue::Integer(value.data as i32))
             }
             GospelStaticValueType::FunctionIndex => {
-                if value.value_type != GospelValueType::FunctionPointer {
-                    bail!("Incompatible function index static initializer with a value type that is not a function pointer");
+                if value.value_type != GospelValueType::Closure {
+                    bail!("Incompatible function index static initializer with a value type that is not a closure");
                 }
                 let function_index = GospelFunctionIndex::create_raw(value.data);
                 let reference = self.resolve_function_index(function_index)?;
-                Ok(GospelVMValue::FunctionPointer(reference))
+                Ok(GospelVMValue::Closure(reference))
             }
             GospelStaticValueType::LazyValue => {
                 let resolved_value = self.resolve_lazy_value(value.data, recursion_counter)?;
@@ -898,6 +906,7 @@ impl GospelVMState {
         for function_name_pair in &wrapped_container.function_names {
             let function_name = wrapped_container.strings.get(function_name_pair.function_name)?;
             vm_container.function_lookup_by_name.insert(function_name.to_string(), function_name_pair.function_index);
+            vm_container.name_lookup_by_function.insert(function_name_pair.function_index, function_name_pair.function_name);
         }
         for global_index in 0..wrapped_container.globals.len() {
             let global_name = wrapped_container.strings.get(wrapped_container.globals[global_index].name)?;
@@ -949,7 +958,7 @@ impl GospelVMState {
 
     /// Attempts to find a function definition by its fully qualified name (container name combined with function name)
     /// Providing the container context allows resolving local function references as well
-    pub fn find_function_by_reference(&self, reference: &GospelSourceFunctionReference, context: &Option<Rc<GospelVMContainer>>) -> Option<GospelVMFunctionPointer> {
+    pub fn find_function_by_reference(&self, reference: &GospelSourceFunctionReference, context: &Option<Rc<GospelVMContainer>>) -> Option<GospelVMClosure> {
         match reference {
             GospelSourceFunctionReference::LocalFunction{function_name} => {
                 context.as_ref().and_then(|container| container.find_named_function(function_name.as_str()))
@@ -965,7 +974,7 @@ impl GospelVMState {
         match value {
             GospelSourceStaticValue::FunctionId(function_reference) => {
                 self.find_function_by_reference(&function_reference, context)
-                    .map(|function_pointer| GospelVMValue::FunctionPointer(function_pointer))
+                    .map(|function_pointer| GospelVMValue::Closure(function_pointer))
                     .ok_or_else(|| anyhow!("Failed to find function by function reference {}", function_reference))
             }
             GospelSourceStaticValue::GlobalVariableValue(global_variable_name) => {
@@ -995,7 +1004,7 @@ impl GospelVMState {
             let argument_value = self.eval_source_value(source_argument, context)?;
             compiled_function_arguments.push(argument_value);
         }
-        let eval_result = function_pointer.execute(&compiled_function_arguments)?;
+        let eval_result = function_pointer.execute(compiled_function_arguments)?;
         if eval_result.value_type() != value.return_value_type {
             bail!("Function returned value of incompatible type {} (expected: {})", eval_result.value_type(), value.return_value_type);
         }

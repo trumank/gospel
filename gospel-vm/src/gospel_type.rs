@@ -71,7 +71,7 @@ pub enum GospelTargetEnv {
 #[repr(u8)]
 pub enum GospelValueType {
     Integer = 0x00,
-    FunctionPointer = 0x01,
+    Closure = 0x01,
     TypeLayout = 0x02,
 }
 impl Readable for GospelValueType {
@@ -100,7 +100,7 @@ pub enum GospelPlatformConfigProperty {
 #[repr(u8)]
 pub(crate) enum GospelStaticValueType {
     Integer = 0x00, // value is signed integer, interpret data as literal i32 value
-    FunctionIndex = 0x01, // value is a function pointer, data is an ID of the function
+    FunctionIndex = 0x01, // value is a closure with no arguments captured, data is an ID of the function to create a closure from
     LazyValue = 0x02, // data is an ID of a lazy value, value is returned by evaluation of the value expression
     PlatformConfigProperty = 0x03, // platform config property value, interpret data as GospelPlatformConfigProperty
     GlobalVariableValue = 0x04, // global variable value by name, interpret data as name index

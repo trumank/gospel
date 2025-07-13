@@ -196,7 +196,7 @@ fn do_action_eval(action: ActionCallFunction) -> anyhow::Result<()> {
     }
 
     // Evaluate the function
-    let function_result = result_function_pointer.execute(&function_arguments)
+    let function_result = result_function_pointer.execute(function_arguments)
         .map_err(|x| anyhow!("Failed to execute function: {}", x.to_string()))?;
 
     // Print the result now

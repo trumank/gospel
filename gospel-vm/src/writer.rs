@@ -36,7 +36,7 @@ impl GospelSourceStaticValue {
     pub fn value_type(&self) -> GospelValueType {
         match self {
             GospelSourceStaticValue::Integer(_) => GospelValueType::Integer,
-            GospelSourceStaticValue::FunctionId(_) => GospelValueType::FunctionPointer,
+            GospelSourceStaticValue::FunctionId(_) => GospelValueType::Closure,
             GospelSourceStaticValue::LazyValue(value) => value.return_value_type,
             GospelSourceStaticValue::PlatformConfigProperty(_) => GospelValueType::Integer,
             GospelSourceStaticValue::GlobalVariableValue(_) => GospelValueType::Integer,
@@ -393,7 +393,7 @@ impl GospelContainerWriter {
             }
             GospelSourceStaticValue::FunctionId(type_reference) => {
                 Ok(GospelStaticValue{
-                    value_type: GospelValueType::FunctionPointer,
+                    value_type: GospelValueType::Closure,
                     static_type: GospelStaticValueType::FunctionIndex,
                     data: self.convert_function_reference(type_reference)?.raw_value(),
                 })

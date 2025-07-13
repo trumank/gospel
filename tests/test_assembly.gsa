@@ -61,7 +61,7 @@ function ChildStruct -> TypeLayout {
     ReturnValue;
 };
 
-function InvokerType invoke: FunctionPointer -> TypeLayout {
+function InvokerType invoke: Closure -> TypeLayout {
     LoadSlot invoke;
     Call 0;
     ReturnValue;
@@ -74,5 +74,24 @@ function StaticArrayType array_size: Integer -> TypeLayout {
     LoadSlot array_size;
     TypeLayoutDefineArrayMember "data";
     TypeLayoutFinalize;
+    ReturnValue;
+};
+
+function ClosureCallFunction first: Integer second: Integer -> Integer {
+    LoadSlot first;
+    LoadSlot second;
+    Add;
+    ReturnValue;
+};
+
+function ClosureTest -> Integer {
+    IntConstant 5;
+    LoadSlot &function ClosureCallFunction;
+    BindClosure 1;
+A:  Slot Closure;
+    StoreSlot A;
+    IntConstant 7;
+    LoadSlot A;
+    Call 1;
     ReturnValue;
 };
