@@ -1,0 +1,1585 @@
+{
+  "declarations": [
+    {
+      "ImportStatement": {
+        "QualifiedImport": {
+          "path": [
+            "core",
+            "uint8"
+          ]
+        }
+      }
+    },
+    {
+      "ImportStatement": {
+        "QualifiedImport": {
+          "path": [
+            "core",
+            "uint32"
+          ]
+        }
+      }
+    },
+    {
+      "ImportStatement": {
+        "CompositeImport": {
+          "namespace": {
+            "path": [
+              "core"
+            ]
+          },
+          "imported_names": [
+            "float",
+            "double"
+          ]
+        }
+      }
+    },
+    {
+      "ImportStatement": {
+        "NamespaceImport": {
+          "path": [
+            "core"
+          ]
+        }
+      }
+    },
+    {
+      "ExternStatement": {
+        "global_name": "UE_VERSION_MAJOR",
+        "value_type": "Int"
+      }
+    },
+    {
+      "ExternStatement": {
+        "global_name": "UE_WITH_CASE_PRESERVING_NAME",
+        "value_type": "Int"
+      }
+    },
+    {
+      "ExternStatement": {
+        "global_name": "UE_NAME_OUTLINE_NUMBER",
+        "value_type": "Int"
+      }
+    },
+    {
+      "DataStatement": {
+        "template_declaration": null,
+        "value_type": "Typename",
+        "name": "FReal",
+        "initializer": {
+          "ConditionalExpression": {
+            "condition_expression": {
+              "BinaryExpression": {
+                "left_expression": {
+                  "IdentifierExpression": {
+                    "path": [
+                      "UE_VERSION_MAJOR"
+                    ]
+                  }
+                },
+                "operator": "Equals",
+                "right_expression": {
+                  "IntegerConstantExpression": 5
+                }
+              }
+            },
+            "true_expression": {
+              "IdentifierExpression": {
+                "path": [
+                  "double"
+                ]
+              }
+            },
+            "false_expression": {
+              "IdentifierExpression": {
+                "path": [
+                  "float"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "DataStatement": {
+        "template_declaration": null,
+        "value_type": "Typename",
+        "name": "FPartialIdentifierTest",
+        "initializer": {
+          "IdentifierExpression": {
+            "path": [
+              "core",
+              "float"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "StructStatement": {
+        "template_declaration": null,
+        "alignment_expression": null,
+        "name": "FNoncopyable",
+        "base_class_expressions": [],
+        "declarations": []
+      }
+    },
+    {
+      "StructStatement": {
+        "template_declaration": null,
+        "alignment_expression": null,
+        "name": "FNameEntryId",
+        "base_class_expressions": [],
+        "declarations": [
+          {
+            "MemberDeclaration": {
+              "alignment_expression": null,
+              "member_type_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "uint32"
+                  ]
+                }
+              },
+              "name": "Value",
+              "array_size_expression": null,
+              "bitfield_width_expression": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "StructStatement": {
+        "template_declaration": null,
+        "alignment_expression": null,
+        "name": "FName",
+        "base_class_expressions": [],
+        "declarations": [
+          {
+            "MemberDeclaration": {
+              "alignment_expression": null,
+              "member_type_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "FNameEntryId"
+                  ]
+                }
+              },
+              "name": "ComparisonIndex",
+              "array_size_expression": null,
+              "bitfield_width_expression": null
+            }
+          },
+          {
+            "ConditionalDeclaration": {
+              "condition_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "UE_WITH_CASE_PRESERVING_NAME"
+                  ]
+                }
+              },
+              "then_branch": {
+                "BlockDeclaration": {
+                  "declarations": [
+                    {
+                      "MemberDeclaration": {
+                        "alignment_expression": null,
+                        "member_type_expression": {
+                          "IdentifierExpression": {
+                            "path": [
+                              "FNameEntryId"
+                            ]
+                          }
+                        },
+                        "name": "DisplayIndex",
+                        "array_size_expression": null,
+                        "bitfield_width_expression": null
+                      }
+                    }
+                  ]
+                }
+              },
+              "else_branch": null
+            }
+          },
+          {
+            "ConditionalDeclaration": {
+              "condition_expression": {
+                "UnaryExpression": {
+                  "operator": "BoolNegate",
+                  "expression": {
+                    "IdentifierExpression": {
+                      "path": [
+                        "UE_NAME_OUTLINE_NUMBER"
+                      ]
+                    }
+                  }
+                }
+              },
+              "then_branch": {
+                "BlockDeclaration": {
+                  "declarations": [
+                    {
+                      "MemberDeclaration": {
+                        "alignment_expression": null,
+                        "member_type_expression": {
+                          "IdentifierExpression": {
+                            "path": [
+                              "uint32"
+                            ]
+                          }
+                        },
+                        "name": "Number",
+                        "array_size_expression": null,
+                        "bitfield_width_expression": null
+                      }
+                    }
+                  ]
+                }
+              },
+              "else_branch": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "StructStatement": {
+        "template_declaration": {
+          "arguments": [
+            {
+              "name": "KeyType",
+              "value_type": "Typename",
+              "default_value": null
+            },
+            {
+              "name": "ValueType",
+              "value_type": "Typename",
+              "default_value": null
+            }
+          ]
+        },
+        "alignment_expression": null,
+        "name": "TPair",
+        "base_class_expressions": [],
+        "declarations": [
+          {
+            "MemberDeclaration": {
+              "alignment_expression": null,
+              "member_type_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "KeyType"
+                  ]
+                }
+              },
+              "name": "Key",
+              "array_size_expression": null,
+              "bitfield_width_expression": null
+            }
+          },
+          {
+            "MemberDeclaration": {
+              "alignment_expression": null,
+              "member_type_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "ValueType"
+                  ]
+                }
+              },
+              "name": "Value",
+              "array_size_expression": null,
+              "bitfield_width_expression": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "StructStatement": {
+        "template_declaration": {
+          "arguments": [
+            {
+              "name": "T",
+              "value_type": "Typename",
+              "default_value": null
+            }
+          ]
+        },
+        "alignment_expression": null,
+        "name": "TVector",
+        "base_class_expressions": [],
+        "declarations": [
+          {
+            "DataDeclaration": {
+              "template_declaration": null,
+              "value_type": "Typename",
+              "name": "ElementType",
+              "initializer": {
+                "IdentifierExpression": {
+                  "path": [
+                    "T"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "MemberDeclaration": {
+              "alignment_expression": null,
+              "member_type_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "T"
+                  ]
+                }
+              },
+              "name": "X",
+              "array_size_expression": null,
+              "bitfield_width_expression": null
+            }
+          },
+          {
+            "MemberDeclaration": {
+              "alignment_expression": null,
+              "member_type_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "T"
+                  ]
+                }
+              },
+              "name": "Y",
+              "array_size_expression": null,
+              "bitfield_width_expression": null
+            }
+          },
+          {
+            "MemberDeclaration": {
+              "alignment_expression": null,
+              "member_type_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "T"
+                  ]
+                }
+              },
+              "name": "Z",
+              "array_size_expression": null,
+              "bitfield_width_expression": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "DataStatement": {
+        "template_declaration": null,
+        "value_type": "Typename",
+        "name": "FVector",
+        "initializer": {
+          "TemplateInstantiationExpression": {
+            "template_name": {
+              "path": [
+                "TVector"
+              ]
+            },
+            "argument_expressions": [
+              {
+                "IdentifierExpression": {
+                  "path": [
+                    "FReal"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "DataStatement": {
+        "template_declaration": null,
+        "value_type": "Typename",
+        "name": "TestMemberAccessOperator1",
+        "initializer": {
+          "MemberAccessExpression": {
+            "type_expression": {
+              "IdentifierExpression": {
+                "path": [
+                  "FVector"
+                ]
+              }
+            },
+            "member_type": "Typename",
+            "member_name": "ElementType"
+          }
+        }
+      }
+    },
+    {
+      "DataStatement": {
+        "template_declaration": null,
+        "value_type": "Typename",
+        "name": "TestMemberAccessOperator2",
+        "initializer": {
+          "MemberAccessExpression": {
+            "type_expression": {
+              "IdentifierExpression": {
+                "path": [
+                  "FVector"
+                ]
+              }
+            },
+            "member_type": "Typename",
+            "member_name": "X"
+          }
+        }
+      }
+    },
+    {
+      "StructStatement": {
+        "template_declaration": null,
+        "alignment_expression": null,
+        "name": "FConditionalStructTest",
+        "base_class_expressions": [
+          {
+            "ConditionalExpression": {
+              "condition_expression": {
+                "BinaryExpression": {
+                  "left_expression": {
+                    "IdentifierExpression": {
+                      "path": [
+                        "UE_VERSION_MAJOR"
+                      ]
+                    }
+                  },
+                  "operator": "Equals",
+                  "right_expression": {
+                    "IntegerConstantExpression": 5
+                  }
+                }
+              },
+              "true_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "AInfo"
+                  ]
+                }
+              },
+              "false_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "AActor"
+                  ]
+                }
+              }
+            }
+          }
+        ],
+        "declarations": [
+          {
+            "ConditionalDeclaration": {
+              "condition_expression": {
+                "BinaryExpression": {
+                  "left_expression": {
+                    "IdentifierExpression": {
+                      "path": [
+                        "UE_VERSION_MAJOR"
+                      ]
+                    }
+                  },
+                  "operator": "NotEquals",
+                  "right_expression": {
+                    "IntegerConstantExpression": 5
+                  }
+                }
+              },
+              "then_branch": {
+                "BlockDeclaration": {
+                  "declarations": [
+                    {
+                      "MemberDeclaration": {
+                        "alignment_expression": null,
+                        "member_type_expression": {
+                          "IdentifierExpression": {
+                            "path": [
+                              "uint32"
+                            ]
+                          }
+                        },
+                        "name": "Test",
+                        "array_size_expression": null,
+                        "bitfield_width_expression": {
+                          "IntegerConstantExpression": 5
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "else_branch": {
+                "ConditionalDeclaration": {
+                  "condition_expression": {
+                    "BinaryExpression": {
+                      "left_expression": {
+                        "IdentifierExpression": {
+                          "path": [
+                            "UE_VERSION_MINOR"
+                          ]
+                        }
+                      },
+                      "operator": "Equals",
+                      "right_expression": {
+                        "IntegerConstantExpression": 26
+                      }
+                    }
+                  },
+                  "then_branch": {
+                    "BlockDeclaration": {
+                      "declarations": [
+                        {
+                          "MemberDeclaration": {
+                            "alignment_expression": null,
+                            "member_type_expression": {
+                              "IdentifierExpression": {
+                                "path": [
+                                  "uint16"
+                                ]
+                              }
+                            },
+                            "name": "Test",
+                            "array_size_expression": {
+                              "IntegerConstantExpression": 5
+                            },
+                            "bitfield_width_expression": null
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  "else_branch": {
+                    "BlockDeclaration": {
+                      "declarations": [
+                        {
+                          "MemberDeclaration": {
+                            "alignment_expression": null,
+                            "member_type_expression": {
+                              "IdentifierExpression": {
+                                "path": [
+                                  "uint8"
+                                ]
+                              }
+                            },
+                            "name": "Test",
+                            "array_size_expression": null,
+                            "bitfield_width_expression": null
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "ConditionalDeclaration": {
+              "condition_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "UE_WITH_CASE_PRESERVING_NAME"
+                  ]
+                }
+              },
+              "then_branch": {
+                "BlockDeclaration": {
+                  "declarations": [
+                    {
+                      "MemberDeclaration": {
+                        "alignment_expression": null,
+                        "member_type_expression": {
+                          "IdentifierExpression": {
+                            "path": [
+                              "FName"
+                            ]
+                          }
+                        },
+                        "name": "Name",
+                        "array_size_expression": null,
+                        "bitfield_width_expression": null
+                      }
+                    }
+                  ]
+                }
+              },
+              "else_branch": {
+                "ConditionalDeclaration": {
+                  "condition_expression": {
+                    "UnaryExpression": {
+                      "operator": "BoolNegate",
+                      "expression": {
+                        "IdentifierExpression": {
+                          "path": [
+                            "UE_NAME_OUTLINE_NUMBER"
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "then_branch": {
+                    "BlockDeclaration": {
+                      "declarations": [
+                        {
+                          "MemberDeclaration": {
+                            "alignment_expression": null,
+                            "member_type_expression": {
+                              "IdentifierExpression": {
+                                "path": [
+                                  "uint32"
+                                ]
+                              }
+                            },
+                            "name": "Number",
+                            "array_size_expression": null,
+                            "bitfield_width_expression": null
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  "else_branch": null
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "DataStatement": {
+        "template_declaration": null,
+        "value_type": "Typename",
+        "name": "DynamicTemplateInstantiationTest",
+        "initializer": {
+          "TemplateInstantiationByPointerExpression": {
+            "template_pointer_expression": {
+              "TemplatePointerConstantExpression": {
+                "path": [
+                  "TVector"
+                ]
+              }
+            },
+            "argument_expressions": [
+              {
+                "IdentifierExpression": {
+                  "path": [
+                    "float"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "DataStatement": {
+        "template_declaration": null,
+        "value_type": "Int",
+        "name": "ComplexExpressionTest",
+        "initializer": {
+          "BlockExpression": {
+            "statements": [
+              {
+                "DeclarationStatement": {
+                  "value_type": "Int",
+                  "name": "LocalVariable",
+                  "initializer": {
+                    "IdentifierExpression": {
+                      "path": [
+                        "UE_VERSION_MINOR"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "AssignmentStatement": {
+                  "left_hand_expression": {
+                    "IdentifierExpression": {
+                      "path": [
+                        "LocalVariable"
+                      ]
+                    }
+                  },
+                  "assignment_operator": "ArithmeticAdd",
+                  "assignment_expression": {
+                    "IntegerConstantExpression": 5
+                  }
+                }
+              },
+              {
+                "AssignmentStatement": {
+                  "left_hand_expression": {
+                    "IdentifierExpression": {
+                      "path": [
+                        "LocalVariable"
+                      ]
+                    }
+                  },
+                  "assignment_operator": null,
+                  "assignment_expression": {
+                    "BinaryExpression": {
+                      "left_expression": {
+                        "IdentifierExpression": {
+                          "path": [
+                            "LocalVariable"
+                          ]
+                        }
+                      },
+                      "operator": "ArithmeticDivide",
+                      "right_expression": {
+                        "IntegerConstantExpression": 1
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "DeclarationStatement": {
+                  "value_type": "Int",
+                  "name": "Result",
+                  "initializer": {
+                    "IntegerConstantExpression": 3
+                  }
+                }
+              },
+              {
+                "ConditionalStatement": {
+                  "condition_expression": {
+                    "BinaryExpression": {
+                      "left_expression": {
+                        "IdentifierExpression": {
+                          "path": [
+                            "LocalVariable"
+                          ]
+                        }
+                      },
+                      "operator": "Equals",
+                      "right_expression": {
+                        "IntegerConstantExpression": 4
+                      }
+                    }
+                  },
+                  "then_statement": {
+                    "BlockStatement": {
+                      "statements": [
+                        {
+                          "AssignmentStatement": {
+                            "left_hand_expression": {
+                              "IdentifierExpression": {
+                                "path": [
+                                  "Result"
+                                ]
+                              }
+                            },
+                            "assignment_operator": null,
+                            "assignment_expression": {
+                              "UnaryExpression": {
+                                "operator": "StructSizeOf",
+                                "expression": {
+                                  "IdentifierExpression": {
+                                    "path": [
+                                      "FVector"
+                                    ]
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  "else_statement": null
+                }
+              },
+              {
+                "WhileLoopStatement": {
+                  "condition_expression": {
+                    "BinaryExpression": {
+                      "left_expression": {
+                        "IdentifierExpression": {
+                          "path": [
+                            "LocalVariable"
+                          ]
+                        }
+                      },
+                      "operator": "LogicalLess",
+                      "right_expression": {
+                        "IntegerConstantExpression": 100
+                      }
+                    }
+                  },
+                  "loop_body_statement": {
+                    "BlockStatement": {
+                      "statements": [
+                        {
+                          "AssignmentStatement": {
+                            "left_hand_expression": {
+                              "IdentifierExpression": {
+                                "path": [
+                                  "LocalVariable"
+                                ]
+                              }
+                            },
+                            "assignment_operator": "ArithmeticAdd",
+                            "assignment_expression": {
+                              "IntegerConstantExpression": 1
+                            }
+                          }
+                        },
+                        "ContinueLoopStatement",
+                        "BreakLoopStatement",
+                        "EmptyStatement"
+                      ]
+                    }
+                  }
+                }
+              }
+            ],
+            "return_value_expression": {
+              "MemberAccessExpression": {
+                "type_expression": {
+                  "ArrayIndexExpression": {
+                    "array_expression": {
+                      "IdentifierExpression": {
+                        "path": [
+                          "Result"
+                        ]
+                      }
+                    },
+                    "index_expression": {
+                      "IntegerConstantExpression": 10
+                    }
+                  }
+                },
+                "member_type": "Int",
+                "member_name": "Variable"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "DataStatement": {
+        "template_declaration": null,
+        "value_type": "Int",
+        "name": "SizeOfVector",
+        "initializer": {
+          "UnaryExpression": {
+            "operator": "StructSizeOf",
+            "expression": {
+              "IdentifierExpression": {
+                "path": [
+                  "FVector"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "DataStatement": {
+        "template_declaration": null,
+        "value_type": "Int",
+        "name": "AlignmentOfVector",
+        "initializer": {
+          "UnaryExpression": {
+            "operator": "StructAlignOf",
+            "expression": {
+              "IdentifierExpression": {
+                "path": [
+                  "FVector"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "StructStatement": {
+        "template_declaration": {
+          "arguments": [
+            {
+              "name": "T",
+              "value_type": "Typename",
+              "default_value": null
+            }
+          ]
+        },
+        "alignment_expression": null,
+        "name": "TTypeCompatibleBytes",
+        "base_class_expressions": [],
+        "declarations": [
+          {
+            "MemberDeclaration": {
+              "alignment_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "T"
+                  ]
+                }
+              },
+              "member_type_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "char"
+                  ]
+                }
+              },
+              "name": "Pad",
+              "array_size_expression": {
+                "UnaryExpression": {
+                  "operator": "StructSizeOf",
+                  "expression": {
+                    "IdentifierExpression": {
+                      "path": [
+                        "T"
+                      ]
+                    }
+                  }
+                }
+              },
+              "bitfield_width_expression": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "StructStatement": {
+        "template_declaration": {
+          "arguments": [
+            {
+              "name": "ElementType",
+              "value_type": "Typename",
+              "default_value": null
+            }
+          ]
+        },
+        "alignment_expression": null,
+        "name": "THeapAllocator",
+        "base_class_expressions": [],
+        "declarations": [
+          {
+            "MemberDeclaration": {
+              "alignment_expression": null,
+              "member_type_expression": {
+                "UnaryExpression": {
+                  "operator": "StructMakePointer",
+                  "expression": {
+                    "IdentifierExpression": {
+                      "path": [
+                        "ElementType"
+                      ]
+                    }
+                  }
+                }
+              },
+              "name": "Data",
+              "array_size_expression": null,
+              "bitfield_width_expression": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "StructStatement": {
+        "template_declaration": {
+          "arguments": [
+            {
+              "name": "ElementType",
+              "value_type": "Typename",
+              "default_value": null
+            },
+            {
+              "name": "InlineElementCount",
+              "value_type": "Int",
+              "default_value": null
+            },
+            {
+              "name": "SecondaryAllocator",
+              "value_type": "Typename",
+              "default_value": {
+                "TemplateInstantiationExpression": {
+                  "template_name": {
+                    "path": [
+                      "THeapAllocator"
+                    ]
+                  },
+                  "argument_expressions": [
+                    {
+                      "IdentifierExpression": {
+                        "path": [
+                          "ElementType"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "alignment_expression": null,
+        "name": "TInlineAllocator",
+        "base_class_expressions": [],
+        "declarations": [
+          {
+            "MemberDeclaration": {
+              "alignment_expression": null,
+              "member_type_expression": {
+                "TemplateInstantiationExpression": {
+                  "template_name": {
+                    "path": [
+                      "TTypeCompatibleBytes"
+                    ]
+                  },
+                  "argument_expressions": [
+                    {
+                      "IdentifierExpression": {
+                        "path": [
+                          "ElementType"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              },
+              "name": "InlineData",
+              "array_size_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "InlineElementCount"
+                  ]
+                }
+              },
+              "bitfield_width_expression": null
+            }
+          },
+          {
+            "MemberDeclaration": {
+              "alignment_expression": null,
+              "member_type_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "SecondaryAllocator"
+                  ]
+                }
+              },
+              "name": "SecondaryData",
+              "array_size_expression": null,
+              "bitfield_width_expression": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "StructStatement": {
+        "template_declaration": {
+          "arguments": [
+            {
+              "name": "ElementType",
+              "value_type": "Typename",
+              "default_value": null
+            },
+            {
+              "name": "AllocatorType",
+              "value_type": "Typename",
+              "default_value": {
+                "TemplateInstantiationExpression": {
+                  "template_name": {
+                    "path": [
+                      "THeapAllocator"
+                    ]
+                  },
+                  "argument_expressions": [
+                    {
+                      "IdentifierExpression": {
+                        "path": [
+                          "ElementType"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "alignment_expression": null,
+        "name": "TArray",
+        "base_class_expressions": [],
+        "declarations": [
+          {
+            "MemberDeclaration": {
+              "alignment_expression": null,
+              "member_type_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "AllocatorType"
+                  ]
+                }
+              },
+              "name": "AllocatorInstance",
+              "array_size_expression": null,
+              "bitfield_width_expression": null
+            }
+          },
+          {
+            "MemberDeclaration": {
+              "alignment_expression": null,
+              "member_type_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "int32"
+                  ]
+                }
+              },
+              "name": "ArrayNum",
+              "array_size_expression": null,
+              "bitfield_width_expression": null
+            }
+          },
+          {
+            "MemberDeclaration": {
+              "alignment_expression": null,
+              "member_type_expression": {
+                "IdentifierExpression": {
+                  "path": [
+                    "int32"
+                  ]
+                }
+              },
+              "name": "ArrayMax",
+              "array_size_expression": null,
+              "bitfield_width_expression": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "DataStatement": {
+        "template_declaration": null,
+        "value_type": "Typename",
+        "name": "FByteArray",
+        "initializer": {
+          "TemplateInstantiationExpression": {
+            "template_name": {
+              "path": [
+                "TArray"
+              ]
+            },
+            "argument_expressions": [
+              {
+                "IdentifierExpression": {
+                  "path": [
+                    "uint8"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "DataStatement": {
+        "template_declaration": null,
+        "value_type": "Int",
+        "name": "BinaryOperatorPrecedenceTest",
+        "initializer": {
+          "BinaryExpression": {
+            "left_expression": {
+              "BinaryExpression": {
+                "left_expression": {
+                  "BinaryExpression": {
+                    "left_expression": {
+                      "IdentifierExpression": {
+                        "path": [
+                          "A"
+                        ]
+                      }
+                    },
+                    "operator": "BitwiseOr",
+                    "right_expression": {
+                      "BinaryExpression": {
+                        "left_expression": {
+                          "IdentifierExpression": {
+                            "path": [
+                              "B"
+                            ]
+                          }
+                        },
+                        "operator": "BitwiseXor",
+                        "right_expression": {
+                          "BinaryExpression": {
+                            "left_expression": {
+                              "IdentifierExpression": {
+                                "path": [
+                                  "C"
+                                ]
+                              }
+                            },
+                            "operator": "BitwiseAnd",
+                            "right_expression": {
+                              "BinaryExpression": {
+                                "left_expression": {
+                                  "BinaryExpression": {
+                                    "left_expression": {
+                                      "BinaryExpression": {
+                                        "left_expression": {
+                                          "BinaryExpression": {
+                                            "left_expression": {
+                                              "BinaryExpression": {
+                                                "left_expression": {
+                                                  "BinaryExpression": {
+                                                    "left_expression": {
+                                                      "IdentifierExpression": {
+                                                        "path": [
+                                                          "D"
+                                                        ]
+                                                      }
+                                                    },
+                                                    "operator": "BitwiseShiftRight",
+                                                    "right_expression": {
+                                                      "IdentifierExpression": {
+                                                        "path": [
+                                                          "E"
+                                                        ]
+                                                      }
+                                                    }
+                                                  }
+                                                },
+                                                "operator": "BitwiseShiftLeft",
+                                                "right_expression": {
+                                                  "BinaryExpression": {
+                                                    "left_expression": {
+                                                      "BinaryExpression": {
+                                                        "left_expression": {
+                                                          "IdentifierExpression": {
+                                                            "path": [
+                                                              "F"
+                                                            ]
+                                                          }
+                                                        },
+                                                        "operator": "ArithmeticAdd",
+                                                        "right_expression": {
+                                                          "IdentifierExpression": {
+                                                            "path": [
+                                                              "G"
+                                                            ]
+                                                          }
+                                                        }
+                                                      }
+                                                    },
+                                                    "operator": "ArithmeticSubtract",
+                                                    "right_expression": {
+                                                      "BinaryExpression": {
+                                                        "left_expression": {
+                                                          "BinaryExpression": {
+                                                            "left_expression": {
+                                                              "BinaryExpression": {
+                                                                "left_expression": {
+                                                                  "IdentifierExpression": {
+                                                                    "path": [
+                                                                      "H"
+                                                                    ]
+                                                                  }
+                                                                },
+                                                                "operator": "ArithmeticMultiply",
+                                                                "right_expression": {
+                                                                  "ArrayIndexExpression": {
+                                                                    "array_expression": {
+                                                                      "IdentifierExpression": {
+                                                                        "path": [
+                                                                          "I"
+                                                                        ]
+                                                                      }
+                                                                    },
+                                                                    "index_expression": {
+                                                                      "BinaryExpression": {
+                                                                        "left_expression": {
+                                                                          "IdentifierExpression": {
+                                                                            "path": [
+                                                                              "A"
+                                                                            ]
+                                                                          }
+                                                                        },
+                                                                        "operator": "ArithmeticAdd",
+                                                                        "right_expression": {
+                                                                          "IdentifierExpression": {
+                                                                            "path": [
+                                                                              "B"
+                                                                            ]
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            },
+                                                            "operator": "ArithmeticDivide",
+                                                            "right_expression": {
+                                                              "IdentifierExpression": {
+                                                                "path": [
+                                                                  "J"
+                                                                ]
+                                                              }
+                                                            }
+                                                          }
+                                                        },
+                                                        "operator": "ArithmeticRemainder",
+                                                        "right_expression": {
+                                                          "IdentifierExpression": {
+                                                            "path": [
+                                                              "K"
+                                                            ]
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            "operator": "LogicalMore",
+                                            "right_expression": {
+                                              "IdentifierExpression": {
+                                                "path": [
+                                                  "L"
+                                                ]
+                                              }
+                                            }
+                                          }
+                                        },
+                                        "operator": "LogicalLess",
+                                        "right_expression": {
+                                          "IdentifierExpression": {
+                                            "path": [
+                                              "M"
+                                            ]
+                                          }
+                                        }
+                                      }
+                                    },
+                                    "operator": "LogicalMoreEquals",
+                                    "right_expression": {
+                                      "IdentifierExpression": {
+                                        "path": [
+                                          "N"
+                                        ]
+                                      }
+                                    }
+                                  }
+                                },
+                                "operator": "LogicalLessEquals",
+                                "right_expression": {
+                                  "IdentifierExpression": {
+                                    "path": [
+                                      "O"
+                                    ]
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "operator": "LogicalAnd",
+                "right_expression": {
+                  "IdentifierExpression": {
+                    "path": [
+                      "P"
+                    ]
+                  }
+                }
+              }
+            },
+            "operator": "LogicalOr",
+            "right_expression": {
+              "BinaryExpression": {
+                "left_expression": {
+                  "BinaryExpression": {
+                    "left_expression": {
+                      "IdentifierExpression": {
+                        "path": [
+                          "Q"
+                        ]
+                      }
+                    },
+                    "operator": "Equals",
+                    "right_expression": {
+                      "IdentifierExpression": {
+                        "path": [
+                          "R"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "operator": "NotEquals",
+                "right_expression": {
+                  "IdentifierExpression": {
+                    "path": [
+                      "S"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "DataStatement": {
+        "template_declaration": null,
+        "value_type": "Int",
+        "name": "UnaryOperatorTest",
+        "initializer": {
+          "BinaryExpression": {
+            "left_expression": {
+              "BinaryExpression": {
+                "left_expression": {
+                  "BinaryExpression": {
+                    "left_expression": {
+                      "BinaryExpression": {
+                        "left_expression": {
+                          "UnaryExpression": {
+                            "operator": "StructSizeOf",
+                            "expression": {
+                              "UnaryExpression": {
+                                "operator": "StructMakePointer",
+                                "expression": {
+                                  "IdentifierExpression": {
+                                    "path": [
+                                      "A"
+                                    ]
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "operator": "ArithmeticAdd",
+                        "right_expression": {
+                          "UnaryExpression": {
+                            "operator": "StructAlignOf",
+                            "expression": {
+                              "UnaryExpression": {
+                                "operator": "StructMakePointer",
+                                "expression": {
+                                  "IdentifierExpression": {
+                                    "path": [
+                                      "B"
+                                    ]
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "operator": "ArithmeticAdd",
+                    "right_expression": {
+                      "UnaryExpression": {
+                        "operator": "BitwiseInverse",
+                        "expression": {
+                          "IdentifierExpression": {
+                            "path": [
+                              "C"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "operator": "ArithmeticAdd",
+                "right_expression": {
+                  "UnaryExpression": {
+                    "operator": "ArithmeticNegate",
+                    "expression": {
+                      "IdentifierExpression": {
+                        "path": [
+                          "D"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "operator": "ArithmeticAdd",
+            "right_expression": {
+              "BinaryExpression": {
+                "left_expression": {
+                  "UnaryExpression": {
+                    "operator": "BoolNegate",
+                    "expression": {
+                      "IdentifierExpression": {
+                        "path": [
+                          "E"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "operator": "ArithmeticMultiply",
+                "right_expression": {
+                  "BinaryExpression": {
+                    "left_expression": {
+                      "IdentifierExpression": {
+                        "path": [
+                          "F"
+                        ]
+                      }
+                    },
+                    "operator": "ArithmeticAdd",
+                    "right_expression": {
+                      "IdentifierExpression": {
+                        "path": [
+                          "G"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "EmptyStatement"
+  ]
+}

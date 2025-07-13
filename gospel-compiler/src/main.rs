@@ -1,3 +1,5 @@
+#![feature(breakpoint)]
+
 use std::cell::RefCell;
 use std::fs::{read, read_to_string, write};
 use std::path::PathBuf;
@@ -10,8 +12,12 @@ use gospel_vm::reflection::GospelModuleReflectable;
 use gospel_vm::vm::{GospelVMContainer, GospelVMState, GospelVMTargetTriplet, GospelVMValue};
 use gospel_vm::writer::{GospelBuildFromModuleSource, GospelModuleBuilder, GospelModuleVisitor, GospelMultiContainerVisitor};
 use crate::assembler::GospelAssembler;
+use crate::parser::parse_source_file;
 
 pub mod assembler;
+pub mod ast;
+pub mod parser;
+mod lex_util;
 
 #[derive(Parser, Debug)]
 struct ActionAssembleModule {
@@ -35,7 +41,7 @@ struct ActionAssembleModule {
 }
 
 #[derive(Parser, Debug)]
-struct ActionEvalFunction {
+struct ActionCallFunction {
     /// Container files to load to the VM before evaluation of the expression
     #[arg(long, short)]
     input: Vec<PathBuf>,
@@ -61,13 +67,25 @@ struct ActionReflectModule {
 }
 
 #[derive(Parser, Debug)]
+struct ActionParseSourceFile {
+    /// Path to the source file to parse
+    #[arg(index = 1)]
+    input: PathBuf,
+    /// Output to write the result JSON to. If not provided, result is written to stdout
+    #[arg(long, short)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Parser, Debug)]
 enum Action {
     /// Assembles low level gospel assembly source files to a module container
     Assemble(ActionAssembleModule),
-    /// Eval a named function with the provided arguments
-    Eval(ActionEvalFunction),
+    /// Call a named function with the provided arguments
+    Call(ActionCallFunction),
     /// Prints information about the public interface of the given module. Note that this will not print any private module definitions or data
     Reflect(ActionReflectModule),
+    /// Parses the source file to an AST and dumps it to the standard output as JSON
+    Parse(ActionParseSourceFile),
 }
 
 #[derive(Parser, Debug)]
@@ -131,7 +149,7 @@ fn do_action_assemble(action: ActionAssembleModule) -> anyhow::Result<()> {
     Ok({})
 }
 
-fn do_action_eval(action: ActionEvalFunction) -> anyhow::Result<()> {
+fn do_action_eval(action: ActionCallFunction) -> anyhow::Result<()> {
     // Parse target triplet
     let target_triplet = if let Some(target_triplet_name) = &action.target {
         GospelVMTargetTriplet::parse(target_triplet_name.as_str())
@@ -180,10 +198,10 @@ fn do_action_eval(action: ActionEvalFunction) -> anyhow::Result<()> {
     // Evaluate the function
     let function_result = result_function_pointer.execute(&function_arguments)
         .map_err(|x| anyhow!("Failed to execute function: {}", x.to_string()))?;
+
     // Print the result now
-    println!("{}", function_result);
-    // Added because RustRover does not let you scroll to the end of a really long line newline at the end
-    println!();
+    let serialized_result = serde_json::to_string_pretty(&function_result)?;
+    println!("{}", serialized_result);
     Ok({})
 }
 
@@ -234,15 +252,34 @@ fn do_action_reflect(action: ActionReflectModule) -> anyhow::Result<()> {
     Ok({})
 }
 
+fn do_action_parse(action: ActionParseSourceFile) -> anyhow::Result<()> {
+    let file_name = action.input.to_string_lossy().to_string();
+    let file_contents = read_to_string(action.input.clone())
+        .map_err(|x| anyhow!("Failed to read file {}: {}", action.input.to_string_lossy(), x.to_string()))?;
+
+    let result_module = parse_source_file(file_name.as_str(), file_contents.as_str())?;
+    let serialized_module = serde_json::to_string_pretty(&result_module)?;
+
+    if let Some(output_file_path) = action.output {
+        write(output_file_path, serialized_module.as_bytes())?;
+    } else {
+        println!("{}", serialized_module);
+    }
+    Ok({})
+}
+
 fn main() {
     let args = Args::parse();
     let result = match args.action {
         Action::Assemble(assemble_action) => do_action_assemble(assemble_action),
-        Action::Eval(eval_action) => do_action_eval(eval_action),
+        Action::Call(eval_action) => do_action_eval(eval_action),
         Action::Reflect(reflect_action) => do_action_reflect(reflect_action),
+        Action::Parse(parse_action) => do_action_parse(parse_action),
     };
     if let Err(error) = result {
-        eprintln!("error: {}", error.to_string());
+        error.to_string().lines().for_each(|x| {
+            eprintln!("error: {}", x);
+        });
         exit(1);
     }
 }

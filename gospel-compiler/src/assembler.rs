@@ -9,6 +9,7 @@ use gospel_vm::bytecode::{GospelInstruction, GospelOpcode};
 use gospel_vm::gospel_type::{GospelPlatformConfigProperty, GospelValueType};
 use gospel_vm::writer::{GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceFunctionReference, GospelSourceLazyValue, GospelSourceSlotBinding, GospelSourceStaticValue};
 use std::str::FromStr;
+use crate::lex_util::get_line_number_and_offset_from_index;
 
 #[derive(Debug, Clone, PartialEq, Eq, Display)]
 enum AssemblerIdentifier {
@@ -112,23 +113,9 @@ struct GospelLexerContext<'a> {
     lex: Lexer<'a, AssemblerToken>,
 }
 impl GospelLexerContext<'_> {
-    fn get_line_number_and_offset_from_index(contents: &str, char_index: usize) -> (usize, usize) {
-        let mut current_index: usize = 0;
-        let mut current_line_number: usize = 0;
-        let mut current_line_start_index: usize = 0;
-
-        while current_index < contents.len() && current_index <= char_index {
-            if contents.as_bytes()[current_index] == '\n' as u8 {
-                current_line_start_index = current_index;
-                current_line_number += 1;
-            }
-            current_index += 1;
-        }
-        (current_line_number, char_index - current_line_start_index)
-    }
     fn fail<T: AsRef<str>>(&mut self, error: T) -> anyhow::Error {
         let start_offset = self.lex.span().start;
-        let (line_number, line_offset) = Self::get_line_number_and_offset_from_index(self.lex.source(), start_offset);
+        let (line_number, line_offset) = get_line_number_and_offset_from_index(self.lex.source(), start_offset);
         let file_name = self.file_name.to_string();
         anyhow!("{} (file: {} line {} offset {})", error.as_ref(), file_name, line_number + 1, line_offset)
     }

@@ -10,16 +10,18 @@ use crate::container::GospelContainer;
 use crate::gospel_type::{GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelTargetArch, GospelTargetEnv, GospelTargetOS, GospelFunctionDefinition, GospelFunctionIndex, GospelValueType};
 use crate::writer::{GospelSourceFunctionReference, GospelSourceLazyValue, GospelSourceStaticValue};
 use std::str::FromStr;
+use serde::{Deserialize, Serialize, Serializer};
+use serde::ser::SerializeStruct;
 use crate::reflection::{GospelModuleReflectable, GospelModuleReflector};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GospelBaseClassLayout {
     pub offset: usize,
     pub actual_size: usize,
     pub layout: GospelTypeLayout,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GospelMemberLayout {
     pub name: String,
     pub offset: usize,
@@ -32,7 +34,7 @@ pub struct GospelMemberLayout {
 /// Represents a fully resolved layout of a particular type
 /// This exposes information such as the size of the type, its alignment, unaligned size,
 /// and offsets, sizes and full type layouts of its members
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct GospelTypeLayout {
     pub name: String,
     pub alignment: usize,
@@ -165,6 +167,14 @@ impl Display for GospelVMFunctionPointer {
         write!(f, "{}:{}", container_name, function_name)
     }
 }
+impl Serialize for GospelVMFunctionPointer {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
+        let mut s = serializer.serialize_struct("GospelVMFunctionPointer", 3)?;
+        s.serialize_field("module", &self.source_container().container_name().unwrap_or("<unknown>"))?;
+        s.serialize_field("function", &self.function_name().unwrap_or("<unnamed>"))?;
+        s.end()
+    }
+}
 impl GospelVMFunctionPointer {
     /// Returns the type container which defines this type
     pub fn source_container(&self) -> Rc<GospelVMContainer> {
@@ -184,7 +194,7 @@ impl GospelVMFunctionPointer {
 /// Currently supported value types are integers, function pointers and type layouts
 /// Function pointers can be called to yield their return value
 /// Values can be compared for equality, but values of certain types might never be equivalent (for example, unnamed type layouts are never equivalent, even to themselves)
-#[derive(Debug, Clone, Display)]
+#[derive(Debug, Clone, Display, Serialize)]
 pub enum GospelVMValue {
     #[strum(to_string = "Integer({0})")]
     Integer(i32), // signed 32-bit integer value

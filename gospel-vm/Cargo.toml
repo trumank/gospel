@@ -13,3 +13,4 @@ byteorder = "1.5.0"
 strum = "0.26.3"
 strum_macros = "0.26.3"
 bitflags = "2.6.0"
+serde = { version = "1.0.219", features = ["derive"] }
