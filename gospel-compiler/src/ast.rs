@@ -254,6 +254,21 @@ pub struct StructStatement {
     pub declarations: Vec<StructInnerDeclaration>,
 }
 
+/// Declaration in a namespace. Namespaces can contain data and struct statements, as well as nested namespaces
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NamespaceLevelDeclaration {
+    DataStatement(DataStatement),
+    StructStatement(StructStatement),
+    EmptyStatement,
+    NamespaceStatement(NamespaceStatement),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamespaceStatement {
+    pub name: PartialIdentifier,
+    pub declarations: Vec<NamespaceLevelDeclaration>,
+}
+
 /// Represents a top level declaration in the module source file
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ModuleTopLevelDeclaration {
@@ -262,6 +277,7 @@ pub enum ModuleTopLevelDeclaration {
     DataStatement(DataStatement),
     StructStatement(StructStatement),
     EmptyStatement,
+    NamespaceStatement(NamespaceStatement),
 }
 
 /// Represents a source file for a module

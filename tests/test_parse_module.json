@@ -118,12 +118,35 @@
       }
     },
     {
-      "StructStatement": {
-        "template_declaration": null,
-        "alignment_expression": null,
-        "name": "FNoncopyable",
-        "base_class_expressions": [],
-        "declarations": []
+      "NamespaceStatement": {
+        "name": {
+          "path": [
+            "A",
+            "B"
+          ]
+        },
+        "declarations": [
+          {
+            "NamespaceStatement": {
+              "name": {
+                "path": [
+                  "C"
+                ]
+              },
+              "declarations": [
+                {
+                  "StructStatement": {
+                    "template_declaration": null,
+                    "alignment_expression": null,
+                    "name": "FNoncopyable",
+                    "base_class_expressions": [],
+                    "declarations": []
+                  }
+                }
+              ]
+            }
+          }
+        ]
       }
     },
     {

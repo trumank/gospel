@@ -1,4 +1,4 @@
-﻿use crate::ast::{ArrayIndexExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, DynamicTemplateInstantiationExpression, Expression, ExpressionValueType, ExternStatement, LocalVarDeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ModuleImportStatement, ModuleSourceFile, ModuleTopLevelDeclaration, PartialIdentifier, Statement, StructDeclarationExpression, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, TemplateInstantiationExpression, UnaryExpression, UnaryOperator, WhileLoopStatement};
+﻿use crate::ast::{ArrayIndexExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, DynamicTemplateInstantiationExpression, Expression, ExpressionValueType, ExternStatement, LocalVarDeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ModuleImportStatement, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, Statement, StructDeclarationExpression, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, TemplateInstantiationExpression, UnaryExpression, UnaryOperator, WhileLoopStatement};
 use crate::lex_util::get_line_number_and_offset_from_index;
 use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
@@ -68,6 +68,9 @@ enum CompilerToken {
     #[token("alignas")]
     #[strum(to_string = "alignas")]
     Alignas,
+    #[token("namespace")]
+    #[strum(to_string = "namespace")]
+    Namespace,
     #[token("~")]
     #[strum(to_string = "~")]
     BitwiseInverse,
@@ -154,7 +157,7 @@ enum CompilerToken {
     Terminator,
     #[token("::")]
     #[strum(to_string = "::")]
-    Namespace,
+    ScopeDelimiter,
     #[token(":")]
     #[strum(to_string = ":")]
     BaseClass,
@@ -341,6 +344,7 @@ type ExactExpressionCase<'a> = ExactParseCase<'a, Expression>;
 type ExactStatementCase<'a> = ExactParseCase<'a, Statement>;
 type ExactStructInnerDeclarationCase<'a> = ExactParseCase<'a, StructInnerDeclaration>;
 type ExactModuleTopLevelDeclarationCase<'a> = ExactParseCase<'a, ModuleTopLevelDeclaration>;
+type ExactNamespaceLevelDeclarationCase<'a> = ExactParseCase<'a, NamespaceLevelDeclaration>;
 
 #[derive(Clone, PartialEq, Eq)]
 enum AssociativeExpressionGroupOperand {
@@ -379,7 +383,7 @@ impl<'a> CompilerParserInstance<'a> {
             // Check if we have a namespace separator followed by identifier next. We have to use a lookahead parser because namespace separator is ambiguous with member access operator (A::B vs A::struct B)
             let next_namespace_token = lookahead_parser.ctx.next_or_eof()?;
             let next_identifier_token = lookahead_parser.ctx.peek_or_eof()?;
-            if next_namespace_token != Some(CompilerToken::Namespace) || !next_identifier_token.is_some() || lookahead_parser.ctx.check_identifier(next_identifier_token.unwrap()).is_err()  {
+            if next_namespace_token != Some(CompilerToken::ScopeDelimiter) || !next_identifier_token.is_some() || lookahead_parser.ctx.check_identifier(next_identifier_token.unwrap()).is_err()  {
                 break;
             }
             self.ctx.discard_next()?;
@@ -901,7 +905,7 @@ impl<'a> CompilerParserInstance<'a> {
     fn parse_expression_affinity_higher(self) -> anyhow::Result<AmbiguousExpression<'a>> {
         self.parse_expression_affinity_highest()?
         .flat_map_result(|mut parser, mut current_expression| {
-            while parser.ctx.peek_or_eof()? == Some(CompilerToken::Namespace) {
+            while parser.ctx.peek_or_eof()? == Some(CompilerToken::ScopeDelimiter) {
                 parser.ctx.discard_next()?;
 
                 let member_type_token = parser.ctx.next()?;
@@ -1068,7 +1072,7 @@ impl<'a> CompilerParserInstance<'a> {
                 break;
             }
             self.ctx.discard_next()?;
-            self.ctx.check_token(next_peek_token, CompilerToken::Namespace)?;
+            self.ctx.check_token(next_peek_token, CompilerToken::ScopeDelimiter)?;
         }
 
         let current_token = self.ctx.next()?;
@@ -1327,6 +1331,35 @@ impl<'a> CompilerParserInstance<'a> {
             Ok(AmbiguousParsingResult::unambiguous(current_parser, result_statement))
         })?.disambiguate()
     }
+    fn parse_templated_namespace_level_statement(self) -> anyhow::Result<ExactNamespaceLevelDeclarationCase<'a>> {
+        self.parse_template_declaration()?.flat_map_result(|mut parser, template_declaration| {
+            let template_statement_token = parser.ctx.peek()?;
+            Ok(match template_statement_token {
+                CompilerToken::Int => Ok(parser.parse_data_statement(ExpressionValueType::Int, Some(template_declaration))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+                CompilerToken::Using => Ok(parser.parse_data_statement(ExpressionValueType::Typename, Some(template_declaration))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+                CompilerToken::Struct => Ok(parser.parse_struct_statement(Some(template_declaration))?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
+                CompilerToken::Template => Ok(parser.parse_data_statement(ExpressionValueType::Template, Some(template_declaration))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+                _ => Err(parser.ctx.fail(format!("Expected namespace level statement, got {}", template_statement_token))),
+            }?.to_parse_result())
+        })?.disambiguate()
+    }
+    fn parse_empty_namespace_level_statement(mut self) -> anyhow::Result<ExactNamespaceLevelDeclarationCase<'a>> {
+        let statement_token = self.ctx.next()?;
+        self.ctx.check_token(statement_token, CompilerToken::Terminator)?;
+        Ok(ExactNamespaceLevelDeclarationCase::create(self, NamespaceLevelDeclaration::EmptyStatement))
+    }
+    fn parse_namespace_level_statement(mut self) -> anyhow::Result<ExactNamespaceLevelDeclarationCase<'a>> {
+        let statement_token = self.ctx.peek()?;
+        match statement_token {
+            CompilerToken::Template => self.parse_templated_namespace_level_statement(),
+            CompilerToken::Int => Ok(self.parse_data_statement(ExpressionValueType::Int, None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+            CompilerToken::Using => Ok(self.parse_data_statement(ExpressionValueType::Typename, None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+            CompilerToken::Struct => Ok(self.parse_struct_statement(None)?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
+            CompilerToken::Namespace => Ok(self.parse_namespace_statement()?.map_data(|x| NamespaceLevelDeclaration::NamespaceStatement(x))),
+            CompilerToken::Terminator => self.parse_empty_namespace_level_statement(),
+            _ => Err(self.ctx.fail(format!("Expected namespace level statement, got {}", statement_token))),
+        }
+    }
     fn parse_templated_top_level_statement(self) -> anyhow::Result<ExactModuleTopLevelDeclarationCase<'a>> {
         self.parse_template_declaration()?.flat_map_result(|mut parser, template_declaration| {
             let template_statement_token = parser.ctx.peek()?;
@@ -1338,6 +1371,29 @@ impl<'a> CompilerParserInstance<'a> {
                 _ => Err(parser.ctx.fail(format!("Expected top level statement, got {}", template_statement_token))),
             }?.to_parse_result())
         })?.disambiguate()
+    }
+    fn parse_namespace_statement(mut self) -> anyhow::Result<ExactParseCase<'a, NamespaceStatement>> {
+        let namespace_statement_token = self.ctx.next()?;
+        self.ctx.check_token(namespace_statement_token, CompilerToken::Namespace)?;
+        let name = self.parse_partial_identifier()?;
+
+        let scope_enter_token = self.ctx.next()?;
+        self.ctx.check_token(scope_enter_token, CompilerToken::ScopeStart)?;
+
+        let mut declarations: Vec<NamespaceLevelDeclaration> = Vec::new();
+        let mut current_parser = self;
+        while current_parser.ctx.peek()? != CompilerToken::ScopeEnd {
+            let declaration = current_parser.parse_namespace_level_statement()?;
+            declarations.push(declaration.data);
+            current_parser = declaration.parser;
+        }
+        current_parser.ctx.discard_next()?;
+
+        let terminator_token = current_parser.ctx.next()?;
+        current_parser.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
+
+        let result_statement = NamespaceStatement{ name, declarations };
+        Ok(ExactParseCase::create(current_parser, result_statement))
     }
     fn parse_empty_top_level_statement(mut self) -> anyhow::Result<ExactModuleTopLevelDeclarationCase<'a>> {
         let statement_token = self.ctx.next()?;
@@ -1353,6 +1409,7 @@ impl<'a> CompilerParserInstance<'a> {
             CompilerToken::Int => Ok(self.parse_data_statement(ExpressionValueType::Int, None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
             CompilerToken::Using => Ok(self.parse_data_statement(ExpressionValueType::Typename, None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(None)?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
+            CompilerToken::Namespace => Ok(self.parse_namespace_statement()?.map_data(|x| ModuleTopLevelDeclaration::NamespaceStatement(x))),
             CompilerToken::Terminator => self.parse_empty_top_level_statement(),
             _ => Err(self.ctx.fail(format!("Expected top level statement, got {}", statement_token))),
         }
@@ -1387,7 +1444,6 @@ impl<'a> CompilerParserInstance<'a> {
             }
         })?)
     }
-
     fn unary_operator_to_source_text(operator: UnaryOperator) -> (&'static str, bool, bool, bool) {
         match operator {
             UnaryOperator::StructMakePointer => ("*", true, true, true),
@@ -1743,6 +1799,26 @@ impl<'a> CompilerParserInstance<'a> {
         result_builder.push_str("};");
         result_builder
     }
+    fn namespace_level_declaration_to_source_text(declaration: &NamespaceLevelDeclaration) -> String {
+        match declaration {
+            NamespaceLevelDeclaration::StructStatement(inner_declaration) => Self::struct_statement_to_source_text(inner_declaration),
+            NamespaceLevelDeclaration::DataStatement(inner_declaration) => Self::data_statement_to_source_text(inner_declaration),
+            NamespaceLevelDeclaration::NamespaceStatement(inner_declaration) => Self::namespace_statement_to_source_text(inner_declaration),
+            NamespaceLevelDeclaration::EmptyStatement => ";".to_string(),
+        }
+    }
+    fn namespace_statement_to_source_text(statement: &NamespaceStatement) -> String {
+        let mut result_builder = String::with_capacity(50);
+        result_builder.push_str("namespace ");
+        result_builder.push_str(Self::partial_identifier_to_source_text(&statement.name).as_str());
+        result_builder.push_str(" {\n");
+        for declaration in &statement.declarations {
+            result_builder.push_str(Self::namespace_level_declaration_to_source_text(declaration).as_str());
+            result_builder.push_str("\n");
+        }
+        result_builder.push_str("};");
+        result_builder
+    }
     fn extern_statement_to_source_text(statement: &ExternStatement) -> String {
         let mut result_builder = String::with_capacity(20);
         result_builder.push_str("extern ");
@@ -1778,6 +1854,7 @@ impl<'a> CompilerParserInstance<'a> {
             ModuleTopLevelDeclaration::DataStatement(inner_declaration) => Self::data_statement_to_source_text(inner_declaration),
             ModuleTopLevelDeclaration::ExternStatement(inner_declaration) => Self::extern_statement_to_source_text(inner_declaration),
             ModuleTopLevelDeclaration::ImportStatement(inner_declaration) => Self::import_statement_to_source_text(inner_declaration),
+            ModuleTopLevelDeclaration::NamespaceStatement(inner_declaration) => Self::namespace_statement_to_source_text(inner_declaration),
             ModuleTopLevelDeclaration::EmptyStatement => ";".to_string(),
         }
     }
@@ -1837,6 +1914,16 @@ impl Display for DataStatement {
 impl Display for StructStatement {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", CompilerParserInstance::struct_statement_to_source_text(self))
+    }
+}
+impl Display for NamespaceStatement {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", CompilerParserInstance::namespace_statement_to_source_text(self))
+    }
+}
+impl Display for NamespaceLevelDeclaration {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", CompilerParserInstance::namespace_level_declaration_to_source_text(self))
     }
 }
 impl Display for ModuleTopLevelDeclaration {

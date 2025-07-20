@@ -10,7 +10,11 @@ extern int UE_NAME_OUTLINE_NUMBER;
 using FReal = if (UE_VERSION_MAJOR == 5) double else float;
 using FPartialIdentifierTest = core::float;
 
-struct FNoncopyable {
+namespace A::B {
+    namespace C {
+        struct FNoncopyable {
+        };
+    };
 };
 
 struct FNameEntryId {
