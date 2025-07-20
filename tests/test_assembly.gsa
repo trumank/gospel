@@ -95,3 +95,24 @@ A:  Slot Closure;
     Call 1;
     ReturnValue;
 };
+
+function ArrayTest -> Array {
+    ArrayAllocate;
+    IntConstant 3;
+    ArrayReserve;
+    IntConstant 15;
+    ArrayPushItem;
+    IntConstant 0;
+    IntConstant 10;
+    ArrayInsertItem;
+    Dup;
+    Dup;
+    ArrayGetLength;
+    IntConstant 1;
+    Sub;
+    ArrayGetItem;
+    IntConstant 1;
+    Add;
+    ArrayPushItem;
+    ReturnValue;
+};

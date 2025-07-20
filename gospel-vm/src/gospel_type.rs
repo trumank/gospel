@@ -73,6 +73,7 @@ pub enum GospelValueType {
     Integer = 0x00,
     Closure = 0x01,
     TypeLayout = 0x02,
+    Array = 0x03,
 }
 impl Readable for GospelValueType {
     fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {

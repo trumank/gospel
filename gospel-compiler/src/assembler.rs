@@ -194,8 +194,8 @@ impl FunctionCodeAssembler<'_> {
         self.find_or_add_constant_slot(GospelValueType::Integer, GospelSourceSlotBinding::StaticValue(GospelSourceStaticValue::GlobalVariableValue(global_variable_name)))
     }
     fn parse_code_instruction(&mut self, instruction_name: &str, start_token: AssemblerToken, ctx: &mut GospelLexerContext) -> anyhow::Result<u32> {
-        let instruction_opcode: GospelOpcode = GospelOpcode::from_str(instruction_name)?;
-
+        let instruction_opcode: GospelOpcode = GospelOpcode::from_str(instruction_name)
+            .map_err(|_| ctx.fail(format!("Unknown instruction opcode: {}", instruction_name)))?;
         let mut current_token = start_token;
         let mut instruction_immediate_operands: Vec<u32> = Vec::new();
 

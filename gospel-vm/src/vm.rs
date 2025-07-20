@@ -217,6 +217,8 @@ pub enum GospelVMValue {
     Closure(GospelVMClosure), // pointer to a function with some number (or no) arguments captured with it
     #[strum(to_string = "TypeLayout({0:#?})")]
     TypeLayout(GospelTypeLayout), // pre-computed type layout
+    #[strum(to_string = "Array({0:#?})")]
+    Array(Vec<GospelVMValue>), // array of values
 }
 impl GospelVMValue {
     pub fn value_type(&self) -> GospelValueType {
@@ -224,6 +226,7 @@ impl GospelVMValue {
             GospelVMValue::Integer(_) => { GospelValueType::Integer }
             GospelVMValue::Closure(_) => { GospelValueType::Closure }
             GospelVMValue::TypeLayout(_) => { GospelValueType::TypeLayout }
+            GospelVMValue::Array(_) => { GospelValueType::Array }
         }
     }
 }
@@ -356,15 +359,21 @@ impl GospelVMExecutionState<'_> {
             _ => bail!("Expected type layout value, got value of a different type")
         }
     }
+    fn unwrap_value_as_array(value: GospelVMValue) -> anyhow::Result<Vec<GospelVMValue>> {
+        match value {
+            GospelVMValue::Array(unwrapped) => { Ok(unwrapped) }
+            _ => bail!("Expected array value, got value of different type")
+        }
+    }
     fn do_bitwise_op<F: Fn(u32, u32) -> u32>(&mut self, op: F) -> anyhow::Result<()> {
-        let stack_value_a = Self::unwrap_value_as_int_checked(self.pop_stack_check_underflow()?)? as u32;
         let stack_value_b = Self::unwrap_value_as_int_checked(self.pop_stack_check_underflow()?)? as u32;
+        let stack_value_a = Self::unwrap_value_as_int_checked(self.pop_stack_check_underflow()?)? as u32;
         let result = op(stack_value_a, stack_value_b) as i32;
         self.push_stack_check_overflow(GospelVMValue::Integer(result))
     }
     fn do_arithmetic_op_checked<F: Fn(i32, i32) -> anyhow::Result<i32>>(&mut self, op: F) -> anyhow::Result<()> {
-        let stack_value_a = Self::unwrap_value_as_int_checked(self.pop_stack_check_underflow()?)?;
         let stack_value_b = Self::unwrap_value_as_int_checked(self.pop_stack_check_underflow()?)?;
+        let stack_value_a = Self::unwrap_value_as_int_checked(self.pop_stack_check_underflow()?)?;
         let result = op(stack_value_a, stack_value_b)?;
         self.push_stack_check_overflow(GospelVMValue::Integer(result))
     }
@@ -677,6 +686,68 @@ impl GospelVMExecutionState<'_> {
                     }
                     layout_builder.size = Self::align_value(layout_builder.unaligned_size, layout_builder.alignment);
                     state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
+                }
+                // Array opcodes
+                GospelOpcode::ArrayGetLength => {
+                    let array = Self::unwrap_value_as_array(state.pop_stack_check_underflow()?)?;
+                    state.push_stack_check_overflow(GospelVMValue::Integer(array.len() as i32))?;
+                }
+                GospelOpcode::ArrayGetItem => {
+                    let element_index = Self::unwrap_value_as_int_checked(state.pop_stack_check_underflow()?)? as usize;
+                    let mut array = Self::unwrap_value_as_array(state.pop_stack_check_underflow()?)?;
+
+                    if array.len() <= element_index {
+                        bail!("Array element index #{} out of bounds (number of elements: {})", element_index, array.len());
+                    }
+                    state.push_stack_check_overflow(std::mem::replace(&mut array[element_index], GospelVMValue::Integer(0)))?;
+                }
+                GospelOpcode::ArrayAllocate => {
+                    let array = GospelVMValue::Array(Vec::new());
+                    state.push_stack_check_overflow(array)?;
+                }
+                GospelOpcode::ArrayReserve => {
+                    let reserve_amount = Self::unwrap_value_as_int_checked(state.pop_stack_check_underflow()?)? as usize;
+                    let mut array = Self::unwrap_value_as_array(state.pop_stack_check_underflow()?)?;
+
+                    if array.len() + reserve_amount > i32::MAX as usize {
+                        bail!("Array size exceeds maximum allowed size");
+                    }
+                    array.reserve(reserve_amount);
+                    state.push_stack_check_overflow(GospelVMValue::Array(array))?;
+                }
+                GospelOpcode::ArrayPushItem => {
+                    let new_item = state.pop_stack_check_underflow()?;
+                    let mut array = Self::unwrap_value_as_array(state.pop_stack_check_underflow()?)?;
+
+                    if array.len() + 1 > i32::MAX as usize {
+                        bail!("Array size exceeds maximum allowed size");
+                    }
+                    array.push(new_item);
+                    state.push_stack_check_overflow(GospelVMValue::Array(array))?;
+                }
+                GospelOpcode::ArrayInsertItem => {
+                    let new_item = state.pop_stack_check_underflow()?;
+                    let insert_index = Self::unwrap_value_as_int_checked(state.pop_stack_check_underflow()?)? as usize;
+                    let mut array = Self::unwrap_value_as_array(state.pop_stack_check_underflow()?)?;
+
+                    if array.len() + 1 > i32::MAX as usize {
+                        bail!("Array size exceeds maximum allowed size");
+                    }
+                    if array.len() < insert_index {
+                        bail!("Array insert index #{} out of bounds (number of elements: {})", insert_index, array.len());
+                    }
+                    array.insert(insert_index, new_item);
+                    state.push_stack_check_overflow(GospelVMValue::Array(array))?;
+                }
+                GospelOpcode::ArrayRemoveItem => {
+                    let remove_index = Self::unwrap_value_as_int_checked(state.pop_stack_check_underflow()?)? as usize;
+                    let mut array = Self::unwrap_value_as_array(state.pop_stack_check_underflow()?)?;
+
+                    if array.len() <= remove_index {
+                        bail!("Array remove index #{} out of bounds (number of elements: {})", remove_index, array.len());
+                    }
+                    array.remove(remove_index);
+                    state.push_stack_check_overflow(GospelVMValue::Array(array))?;
                 }
             };
         }

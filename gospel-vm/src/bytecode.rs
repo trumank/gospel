@@ -99,6 +99,21 @@ pub enum GospelOpcode {
     TypeLayoutFinalize = 0x75, // [pop stack] -> [push stack]
     #[strum(props(immediate_count = "1", stack_in_count = "3", stack_out_count = "1"))]
     TypeLayoutDefineArrayMember = 0x76, // <imm>; [pop stack] [pop stack] [pop stack] -> [push stack]
+    // Array opcodes
+    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
+    ArrayGetLength = 0x80, // ; [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
+    ArrayGetItem = 0x81, // ; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(stack_out_count = "1"))]
+    ArrayAllocate = 0x82, // ; -> [push stack]
+    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
+    ArrayReserve = 0x83, // ; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
+    ArrayPushItem = 0x84, // ; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "3", stack_out_count = "1"))]
+    ArrayInsertItem = 0x85, // ; [pop stack], [pop stack], [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
+    ArrayRemoveItem = 0x86, // ; [pop stack], [pop stack] -> [push stack]
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
