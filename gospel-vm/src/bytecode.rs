@@ -27,6 +27,8 @@ pub enum GospelOpcode {
     Call = 0x07, // <imm>; [pop stack] [pop stack] x <imm> -> [push stack]
     #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
     BindClosure = 0x08, // <imm>; [pop stack] [pop stack] x <imm> -> [push stack]
+    #[strum(props(immediate_count = "1"))]
+    Abort = 0x09, // <imm>; ->
     // Logical opcodes
     #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
     And = 0x20, // ; [pop stack], [pop stack] -> [push stack]

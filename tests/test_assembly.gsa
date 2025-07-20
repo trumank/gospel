@@ -116,3 +116,7 @@ function ArrayTest -> Array {
     ArrayPushItem;
     ReturnValue;
 };
+
+function AbortTest -> Integer {
+    Abort "abort test";
+};

@@ -467,6 +467,11 @@ impl GospelVMExecutionState<'_> {
                     }
                     state.push_stack_check_overflow(GospelVMValue::Closure(closure))?;
                 }
+                GospelOpcode::Abort => {
+                    let message_index = Self::immediate_value_checked(instruction, 0)? as usize;
+                    let message = state.copy_referenced_string_checked(message_index)?;
+                    bail!("Aborted: {}", message);
+                }
                 // Logical opcodes
                 GospelOpcode::And => { state.do_bitwise_op(|a, b| a & b)?; }
                 GospelOpcode::Or => { state.do_bitwise_op(|a, b| a | b)?; }
