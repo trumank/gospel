@@ -42,6 +42,8 @@ pub struct GospelTypeLayout {
     pub size: usize,
     pub base_classes: Vec<GospelBaseClassLayout>,
     pub members: Vec<GospelMemberLayout>,
+    #[serde(skip_deserializing)]
+    pub metadata: Option<GospelVMStruct>,
 }
 impl GospelTypeLayout {
     /// Creates a new type layout opaque to the VM. Additional members can be added manually if some transparency of the type layout is desired
@@ -842,6 +844,22 @@ impl GospelVMExecutionState<'_> {
                     }
                     layout_builder.size = Self::align_value(layout_builder.unaligned_size, layout_builder.alignment);
                     state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
+                }
+                GospelOpcode::TypeLayoutSetMetadata => {
+                    let metadata_struct = Self::unwrap_value_as_struct_checked(state.pop_stack_check_underflow()?)?;
+                    let mut layout_builder = Self::unwrap_value_as_partial_type_layout_checked(state.pop_stack_check_underflow()?)?;
+
+                    layout_builder.metadata = Some(metadata_struct);
+                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
+                }
+                GospelOpcode::TypeLayoutGetMetadata => {
+                    let struct_index = Self::immediate_value_checked(instruction, 0)? as usize;
+                    let struct_template = state.get_referenced_struct_checked(struct_index)?;
+                    let type_layout = Self::unwrap_value_as_complete_type_layout_checked(state.pop_stack_check_underflow()?)?;
+
+                    let metadata_struct = type_layout.metadata.ok_or_else(|| anyhow!("Type layout metadata not set on type layout"))?;
+                    Self::validate_struct_instance_template(&metadata_struct, &struct_template)?;
+                    state.push_stack_check_overflow(GospelVMValue::Struct(metadata_struct))?;
                 }
                 // Array opcodes
                 GospelOpcode::ArrayGetLength => {

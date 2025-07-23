@@ -101,6 +101,10 @@ pub enum GospelOpcode {
     TypeLayoutFinalize = 0x75, // [pop stack] -> [push stack]
     #[strum(props(immediate_count = "1", stack_in_count = "3", stack_out_count = "1"))]
     TypeLayoutDefineArrayMember = 0x76, // <imm>; [pop stack] [pop stack] [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
+    TypeLayoutSetMetadata = 0x77, // ; [pop stack] [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
+    TypeLayoutGetMetadata = 0x78, // <imm>; [pop stack] -> [push stack]
     // Array opcodes
     #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
     ArrayGetLength = 0x80, // ; [pop stack] -> [push stack]

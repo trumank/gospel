@@ -155,3 +155,22 @@ function LocalStructTest -> Struct {
     StructSetLocalField structure LocalStruct 0;
     ReturnValue;
 };
+
+function SimpleStructWithMetadata -> TypeLayout {
+    TypeLayoutAllocate "MetadataStruct";
+    LoadSlot &function u32;
+    Call 0;
+    TypeLayoutDefineMember "test_member";
+    LoadSlot &function StructTest;
+    Call 0;
+    TypeLayoutSetMetadata;
+    TypeLayoutFinalize;
+    ReturnValue;
+};
+
+function ReadTypeLayoutMetadata -> Struct {
+    LoadSlot &function SimpleStructWithMetadata;
+    Call 0;
+    TypeLayoutGetMetadata TestStruct;
+    ReturnValue;
+};
