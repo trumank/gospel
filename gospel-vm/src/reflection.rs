@@ -53,7 +53,7 @@ impl GospelContainerReflector {
         // Build function name pair lookup
         let mut function_name_pair_name_lookup: HashMap<String, u32> = HashMap::with_capacity(container.function_names.len());
         for function_name_pair_index in 0..container.function_names.len() {
-            let function_name = container.strings.get(container.function_names[function_name_pair_index].function_name)?;
+            let function_name = container.strings.get(container.function_names[function_name_pair_index].object_name)?;
             function_name_pair_name_lookup.insert(function_name.to_string(), function_name_pair_index as u32);
         }
         Ok(Self{container, global_name_lookup, function_name_pair_name_lookup})
@@ -65,8 +65,8 @@ impl GospelContainerReflector {
     }
     fn make_function_info(&self, function_name_pair_index: u32) -> anyhow::Result<GospelReflectedFunctionInfo> {
         let name_pair = &self.container.function_names[function_name_pair_index as usize];
-        let function_descriptor = &self.container.functions[name_pair.function_index as usize];
-        let name = self.container.strings.get(name_pair.function_name)?.to_string();
+        let function_descriptor = &self.container.functions[name_pair.object_index as usize];
+        let name = self.container.strings.get(name_pair.object_name)?.to_string();
         let return_value_type = function_descriptor.return_value_type;
         let arguments: Vec<GospelReflectedFunctionArgumentInfo> = function_descriptor.arguments.iter().map(|x| GospelReflectedFunctionArgumentInfo{
             argument_type: x.argument_type, has_default_value: x.default_value.is_some(),

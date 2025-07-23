@@ -2,13 +2,13 @@
 use std::cmp::max;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::rc::Rc;
+use std::rc::{Rc};
 use anyhow::{anyhow, bail};
 use strum_macros::Display;
 use crate::bytecode::{GospelInstruction, GospelOpcode};
 use crate::container::GospelContainer;
-use crate::gospel_type::{GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelTargetArch, GospelTargetEnv, GospelTargetOS, GospelFunctionDefinition, GospelFunctionIndex, GospelValueType};
-use crate::writer::{GospelSourceFunctionReference, GospelSourceLazyValue, GospelSourceStaticValue};
+use crate::gospel_type::{GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelTargetArch, GospelTargetEnv, GospelTargetOS, GospelFunctionDefinition, GospelObjectIndex, GospelValueType};
+use crate::writer::{GospelSourceObjectReference, GospelSourceLazyValue, GospelSourceStaticValue};
 use std::str::FromStr;
 use serde::{Deserialize, Serialize, Serializer};
 use serde::ser::SerializeStruct;
@@ -167,13 +167,13 @@ impl Eq for GospelVMClosure {}
 impl Display for GospelVMClosure {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let container_name = self.container.container_name().unwrap_or("<unknown>");
-        let function_name = self.function_name().unwrap_or("<unknown>");
+        let function_name = self.function_name().unwrap_or("<unnamed>");
         write!(f, "{}:{}", container_name, function_name)
     }
 }
 impl Serialize for GospelVMClosure {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
-        let mut s = serializer.serialize_struct("GospelVMFunctionPointer", 3)?;
+        let mut s = serializer.serialize_struct("GospelVMFunctionPointer", 2)?;
         s.serialize_field("module", &self.source_container().container_name().unwrap_or("<unknown>"))?;
         s.serialize_field("function", &self.function_name().unwrap_or("<unnamed>"))?;
         s.end()
@@ -205,6 +205,134 @@ impl GospelVMClosure {
     }
 }
 
+/// Represents a type of the struct in the VM
+#[derive(Debug)]
+pub struct GospelVMStructTemplate {
+    name: Option<String>,
+    fields: Vec<GospelValueType>,
+    property_index_lookup: HashMap<String, usize>,
+    property_name_lookup: HashMap<usize, String>,
+    source_container_name: String,
+}
+impl GospelVMStructTemplate {
+    /// Returns the name of the struct this template represents
+    pub fn struct_name(&self) -> Option<&str> {
+        self.name.as_ref().map(|x| x.as_str())
+    }
+    /// Returns the type container which defines this struct type
+    pub fn source_container_name(&self) -> &str {
+        self.source_container_name.as_str()
+    }
+    /// Returns the index of the property by name
+    pub fn find_named_property_index(&self, name: &str) -> Option<usize> {
+        self.property_index_lookup.get(name).cloned()
+    }
+    /// Returns the name of the property by index (if present)
+    pub fn find_property_name(&self, index: usize) -> Option<&str> {
+        self.property_name_lookup.get(&index).map(|x| x.as_str())
+    }
+    /// Allocates a new struct instance using this template
+    pub fn allocate_struct(self: &Rc<Self>) -> GospelVMStruct {
+        let fields: Vec<Option<GospelVMValue>> = vec![None; self.fields.len()];
+        GospelVMStruct{ fields, template: self.clone() }
+    }
+}
+
+/// Represents an instance of a structure in the VM
+#[derive(Debug, Clone)]
+pub struct GospelVMStruct {
+    fields: Vec<Option<GospelVMValue>>,
+    template: Rc<GospelVMStructTemplate>,
+}
+impl PartialEq for GospelVMStruct {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.template, &other.template) && self.fields == other.fields
+    }
+}
+impl Eq for GospelVMStruct {}
+impl Display for GospelVMStruct {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let module_name = self.template.source_container_name();
+        let struct_name = self.template.struct_name().unwrap_or("<unnamed>");
+
+        let named_field_values: Vec<String> = self.fields.iter().enumerate()
+            .filter_map(|(index, maybe_value)|
+                maybe_value.as_ref().map(|x| (index, x.clone())))
+            .map(|(index, value)| (self.template.find_property_name(index)
+               .map(|x| x.to_string()).unwrap_or_else(|| format!("${}", index)), value))
+            .map(|(name, value)| format!("{} = {}", name, value.to_string()))
+            .collect();
+        write!(f, "{}:{}[{}]", module_name, struct_name, named_field_values.join(", "))
+    }
+}
+impl Serialize for GospelVMStruct {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
+        let module_name = self.template.source_container_name();
+        let struct_name = self.template.struct_name().unwrap_or("<unnamed>");
+
+        let named_field_values: HashMap<String, GospelVMValue> = self.fields.iter().enumerate()
+            .filter_map(|(index, maybe_value)|
+                maybe_value.as_ref().map(|x| (index, x.clone())))
+            .map(|(index, value)| (self.template.find_property_name(index)
+               .map(|x| x.to_string()).unwrap_or_else(|| format!("${}", index)), value))
+            .collect();
+
+        let mut s = serializer.serialize_struct("GospelVMStruct", 3)?;
+        s.serialize_field("module", &module_name)?;
+        s.serialize_field("struct", &struct_name)?;
+        s.serialize_field("fields", &named_field_values)?;
+        s.end()
+    }
+}
+impl GospelVMStruct {
+    /// Returns the template from which this struct instance has been created
+    pub fn struct_template(&self) -> Rc<GospelVMStructTemplate> {
+        self.template.clone()
+    }
+    /// Attempts to read the value of the property at given index
+    pub fn get_raw_property(&self, index: usize) -> anyhow::Result<Option<&GospelVMValue>> {
+        if index >= self.fields.len() {
+            bail!("Struct property index #{} out of bounds (number of fields: {})", index, self.fields.len());
+        }
+        Ok(self.fields[index].as_ref())
+    }
+    /// Attempts to borrow the value of the property at given index
+    pub fn take_raw_property(mut self, index: usize) -> anyhow::Result<Option<GospelVMValue>> {
+        if index >= self.fields.len() {
+            bail!("Struct property index #{} out of bounds (number of fields: {})", index, self.fields.len());
+        }
+        Ok(std::mem::take(&mut self.fields[index]))
+    }
+    pub fn set_raw_property(&mut self, index: usize, value: Option<GospelVMValue>) -> anyhow::Result<()> {
+        if index >= self.fields.len() {
+            bail!("Struct property index #{} out of bounds (number of fields: {})", index, self.fields.len());
+        }
+        if value.is_some() && self.template.fields[index] != value.as_ref().unwrap().value_type() {
+            bail!("Incompatible property type for field #{} of type {}", index, self.template.fields[index].to_string());
+        }
+        self.fields[index] = value;
+        Ok({})
+    }
+    /// Attempts to read a value of a struct property by name. Returns an error if property with that name does not exist, an empty option if it is not set, or a value otherwise
+    pub fn get_named_property(&self, name: &str) -> anyhow::Result<Option<&GospelVMValue>> {
+        let property_index = self.template.find_named_property_index( name)
+            .ok_or_else(|| anyhow!("Struct does not have a property with name '{}'", name))?;
+        self.get_raw_property(property_index)
+    }
+    /// Attempts to borrow a value of a struct property by name. Returns an error if property with that name does not exist, an empty option if it is not set, or a value otherwise
+    pub fn take_named_property(self, name: &str) -> anyhow::Result<Option<GospelVMValue>> {
+        let property_index = self.template.find_named_property_index( name)
+            .ok_or_else(|| anyhow!("Struct does not have a property with name '{}'", name))?;
+        self.take_raw_property(property_index)
+    }
+    /// Attempts to write a value of a struct property by name. Returns an error if property with that name does not exist
+    pub fn set_named_property(&mut self, name: &str, value: Option<GospelVMValue>) -> anyhow::Result<()> {
+        let property_index = self.template.find_named_property_index(name)
+            .ok_or_else(|| anyhow!("Struct does not have a property with name '{}'", name))?;
+        self.set_raw_property(property_index, value)
+    }
+}
+
 /// VM Value represents a value that VM bytecode can read and write
 /// Currently supported value types are integers, function pointers and type layouts
 /// Function pointers can be called to yield their return value
@@ -219,6 +347,8 @@ pub enum GospelVMValue {
     TypeLayout(GospelTypeLayout), // pre-computed type layout
     #[strum(to_string = "Array({0:#?})")]
     Array(Vec<GospelVMValue>), // array of values
+    #[strum(to_string = "Struct({0})")]
+    Struct(GospelVMStruct), // user defined struct
 }
 impl GospelVMValue {
     pub fn value_type(&self) -> GospelValueType {
@@ -227,6 +357,7 @@ impl GospelVMValue {
             GospelVMValue::Closure(_) => { GospelValueType::Closure }
             GospelVMValue::TypeLayout(_) => { GospelValueType::TypeLayout }
             GospelVMValue::Array(_) => { GospelValueType::Array }
+            GospelVMValue::Struct(_) => { GospelValueType::Struct }
         }
     }
 }
@@ -246,6 +377,7 @@ struct GospelVMExecutionState<'a> {
     slot_definitions: &'a Vec<GospelSlotDefinition>,
     slots: Vec<Option<GospelVMValue>>,
     referenced_strings: Vec<String>,
+    referenced_structs: Vec<Rc<GospelVMStructTemplate>>,
     stack: Vec<GospelVMValue>,
     current_instruction_index: usize,
     current_loop_jump_count: usize,
@@ -317,6 +449,12 @@ impl GospelVMExecutionState<'_> {
         }
         Ok(self.referenced_strings[index].clone())
     }
+    fn get_referenced_struct_checked(&self, index: usize) -> anyhow::Result<Rc<GospelVMStructTemplate>> {
+        if index >= self.referenced_structs.len() {
+            bail!("Invalid referenced struct index #{} out of bounds (number of referenced structs: {})", index, self.referenced_structs.len());
+        }
+        Ok(self.referenced_structs[index].clone())
+    }
     fn unwrap_value_as_int_checked(value: GospelVMValue) -> anyhow::Result<i32> {
         match value {
             GospelVMValue::Integer(unwrapped) => { Ok(unwrapped) }
@@ -334,6 +472,13 @@ impl GospelVMExecutionState<'_> {
             if type_layout.size == 0 {
                 bail!("Expected a complete type layout value, but got an incomplete type layout. Non-finalized type layouts cannot be read");
             }
+        }
+        Ok({})
+    }
+    fn validate_struct_instance_template(instance: &GospelVMStruct, template: &Rc<GospelVMStructTemplate>) -> anyhow::Result<()> {
+        if !Rc::ptr_eq(&instance.template, template) {
+            bail!("Expected a struct value of type {}, got struct value of type {}",
+                template.struct_name().unwrap_or("<unnamed>"), instance.template.struct_name().unwrap_or("<unnamed>"));
         }
         Ok({})
     }
@@ -359,10 +504,16 @@ impl GospelVMExecutionState<'_> {
             _ => bail!("Expected type layout value, got value of a different type")
         }
     }
-    fn unwrap_value_as_array(value: GospelVMValue) -> anyhow::Result<Vec<GospelVMValue>> {
+    fn unwrap_value_as_array_checked(value: GospelVMValue) -> anyhow::Result<Vec<GospelVMValue>> {
         match value {
             GospelVMValue::Array(unwrapped) => { Ok(unwrapped) }
             _ => bail!("Expected array value, got value of different type")
+        }
+    }
+    fn unwrap_value_as_struct_checked(value: GospelVMValue) -> anyhow::Result<GospelVMStruct> {
+        match value {
+            GospelVMValue::Struct(unwrapped) => { Ok(unwrapped) }
+            _ => bail!("Expected struct value, got value of different type")
         }
     }
     fn do_bitwise_op<F: Fn(u32, u32) -> u32>(&mut self, op: F) -> anyhow::Result<()> {
@@ -694,12 +845,12 @@ impl GospelVMExecutionState<'_> {
                 }
                 // Array opcodes
                 GospelOpcode::ArrayGetLength => {
-                    let array = Self::unwrap_value_as_array(state.pop_stack_check_underflow()?)?;
+                    let array = Self::unwrap_value_as_array_checked(state.pop_stack_check_underflow()?)?;
                     state.push_stack_check_overflow(GospelVMValue::Integer(array.len() as i32))?;
                 }
                 GospelOpcode::ArrayGetItem => {
                     let element_index = Self::unwrap_value_as_int_checked(state.pop_stack_check_underflow()?)? as usize;
-                    let mut array = Self::unwrap_value_as_array(state.pop_stack_check_underflow()?)?;
+                    let mut array = Self::unwrap_value_as_array_checked(state.pop_stack_check_underflow()?)?;
 
                     if array.len() <= element_index {
                         bail!("Array element index #{} out of bounds (number of elements: {})", element_index, array.len());
@@ -712,7 +863,7 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::ArrayReserve => {
                     let reserve_amount = Self::unwrap_value_as_int_checked(state.pop_stack_check_underflow()?)? as usize;
-                    let mut array = Self::unwrap_value_as_array(state.pop_stack_check_underflow()?)?;
+                    let mut array = Self::unwrap_value_as_array_checked(state.pop_stack_check_underflow()?)?;
 
                     if array.len() + reserve_amount > i32::MAX as usize {
                         bail!("Array size exceeds maximum allowed size");
@@ -722,7 +873,7 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::ArrayPushItem => {
                     let new_item = state.pop_stack_check_underflow()?;
-                    let mut array = Self::unwrap_value_as_array(state.pop_stack_check_underflow()?)?;
+                    let mut array = Self::unwrap_value_as_array_checked(state.pop_stack_check_underflow()?)?;
 
                     if array.len() + 1 > i32::MAX as usize {
                         bail!("Array size exceeds maximum allowed size");
@@ -733,7 +884,7 @@ impl GospelVMExecutionState<'_> {
                 GospelOpcode::ArrayInsertItem => {
                     let new_item = state.pop_stack_check_underflow()?;
                     let insert_index = Self::unwrap_value_as_int_checked(state.pop_stack_check_underflow()?)? as usize;
-                    let mut array = Self::unwrap_value_as_array(state.pop_stack_check_underflow()?)?;
+                    let mut array = Self::unwrap_value_as_array_checked(state.pop_stack_check_underflow()?)?;
 
                     if array.len() + 1 > i32::MAX as usize {
                         bail!("Array size exceeds maximum allowed size");
@@ -746,13 +897,73 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::ArrayRemoveItem => {
                     let remove_index = Self::unwrap_value_as_int_checked(state.pop_stack_check_underflow()?)? as usize;
-                    let mut array = Self::unwrap_value_as_array(state.pop_stack_check_underflow()?)?;
+                    let mut array = Self::unwrap_value_as_array_checked(state.pop_stack_check_underflow()?)?;
 
                     if array.len() <= remove_index {
                         bail!("Array remove index #{} out of bounds (number of elements: {})", remove_index, array.len());
                     }
                     array.remove(remove_index);
                     state.push_stack_check_overflow(GospelVMValue::Array(array))?;
+                }
+                // Struct opcodes
+                GospelOpcode::StructAllocate => {
+                    let struct_index = Self::immediate_value_checked(instruction, 0)? as usize;
+                    let struct_template = state.get_referenced_struct_checked(struct_index)?;
+                    state.push_stack_check_overflow(GospelVMValue::Struct(struct_template.allocate_struct()))?;
+                }
+                GospelOpcode::StructGetLocalField => {
+                    let struct_index = Self::immediate_value_checked(instruction, 0)? as usize;
+                    let struct_template = state.get_referenced_struct_checked(struct_index)?;
+
+                    let struct_value = Self::unwrap_value_as_struct_checked(state.pop_stack_check_underflow()?)?;
+                    Self::validate_struct_instance_template(&struct_value, &struct_template)?;
+
+                    let struct_field_index = Self::immediate_value_checked(instruction, 1)? as usize;
+                    let field_value = struct_value.take_raw_property(struct_field_index)?
+                        .ok_or_else(|| anyhow!("Field #{} is not set on struct instance", struct_field_index))?;
+
+                    state.push_stack_check_overflow(field_value)?;
+                }
+                GospelOpcode::StructSetLocalField => {
+                    let struct_index = Self::immediate_value_checked(instruction, 0)? as usize;
+                    let struct_template = state.get_referenced_struct_checked(struct_index)?;
+
+                    let field_value = state.pop_stack_check_underflow()?;
+                    let mut struct_value = Self::unwrap_value_as_struct_checked(state.pop_stack_check_underflow()?)?;
+                    Self::validate_struct_instance_template(&struct_value, &struct_template)?;
+
+                    let struct_field_index = Self::immediate_value_checked(instruction, 1)? as usize;
+                    struct_value.set_raw_property(struct_field_index, Some(field_value))?;
+
+                    state.push_stack_check_overflow(GospelVMValue::Struct(struct_value))?;
+                }
+                GospelOpcode::StructGetNamedField => {
+                    let struct_index = Self::immediate_value_checked(instruction, 0)? as usize;
+                    let struct_template = state.get_referenced_struct_checked(struct_index)?;
+
+                    let struct_value = Self::unwrap_value_as_struct_checked(state.pop_stack_check_underflow()?)?;
+                    Self::validate_struct_instance_template(&struct_value, &struct_template)?;
+
+                    let struct_field_name_index = Self::immediate_value_checked(instruction, 1)? as usize;
+                    let struct_field_name = state.copy_referenced_string_checked(struct_field_name_index)?;
+
+                    let field_value = struct_value.take_named_property(struct_field_name.as_str())?
+                        .ok_or_else(|| anyhow!("Field {} is not set on struct instance", struct_field_name))?;
+                    state.push_stack_check_overflow(field_value)?;
+                }
+                GospelOpcode::StructSetNamedField => {
+                    let struct_index = Self::immediate_value_checked(instruction, 0)? as usize;
+                    let struct_template = state.get_referenced_struct_checked(struct_index)?;
+
+                    let field_value = state.pop_stack_check_underflow()?;
+                    let mut struct_value = Self::unwrap_value_as_struct_checked(state.pop_stack_check_underflow()?)?;
+                    Self::validate_struct_instance_template(&struct_value, &struct_template)?;
+
+                    let struct_field_name_index = Self::immediate_value_checked(instruction, 1)? as usize;
+                    let struct_field_name = state.copy_referenced_string_checked(struct_field_name_index)?;
+
+                    struct_value.set_named_property(struct_field_name.as_str(), Some(field_value))?;
+                    state.push_stack_check_overflow(GospelVMValue::Struct(struct_value))?;
                 }
             };
         }
@@ -768,7 +979,9 @@ pub struct GospelVMContainer {
     external_references: Vec<Rc<GospelVMContainer>>,
     global_lookup_by_id: HashMap<usize, Rc<GospelGlobalStorage>>,
     function_lookup_by_name: HashMap<String, u32>,
+    struct_lookup_by_name: HashMap<String, u32>,
     name_lookup_by_function: HashMap<u32, u32>,
+    struct_templates: Vec<Rc<GospelVMStructTemplate>>,
 }
 impl GospelVMContainer {
     /// Returns the name of this type container
@@ -780,11 +993,15 @@ impl GospelVMContainer {
         self.function_lookup_by_name.get(name).map(|type_index| GospelVMClosure {
             container: self.clone(), function_index: *type_index, arguments: Vec::new() })
     }
+    /// Attempts to find a named struct definition with the given name in this container
+    pub fn find_named_struct(self: &Rc<Self>, name: &str) -> Option<Rc<GospelVMStructTemplate>> {
+        self.struct_lookup_by_name.get(name).map(|struct_index| self.struct_templates[*struct_index as usize].clone())
+    }
     fn get_function_name(&self, function_index: u32) -> Option<&str> {
         self.name_lookup_by_function.get(&function_index)
             .and_then(|x| self.container.strings.get(*x).ok())
     }
-    fn resolve_function_index(self: &Rc<Self>, function_index: GospelFunctionIndex) -> anyhow::Result<GospelVMClosure> {
+    fn resolve_function_index(self: &Rc<Self>, function_index: GospelObjectIndex) -> anyhow::Result<GospelVMClosure> {
         if function_index.is_external() {
             if function_index.index() as usize >= self.container.external_functions.len() {
                 bail!("Invalid external function index #{} out of bounds (num external function references in container: {})", function_index.index(), self.container.external_functions.len());
@@ -794,7 +1011,7 @@ impl GospelVMContainer {
                 bail!("Invalid external container reference index #{} out of bounds (num external container references: {})", external_function.import_index, self.external_references.len());
             }
             let source_container = &self.external_references[external_function.import_index as usize];
-            let type_name = self.container.strings.get(external_function.function_name)?;
+            let type_name = self.container.strings.get(external_function.object_name)?;
             return source_container.find_named_function(type_name)
                 .ok_or_else(|| { anyhow!("Imported named function {} does not exist in container {}", self.container_name().unwrap(), type_name.to_string()) });
         }
@@ -820,7 +1037,7 @@ impl GospelVMContainer {
                 if value.value_type != GospelValueType::Closure {
                     bail!("Incompatible function index static initializer with a value type that is not a closure");
                 }
-                let function_index = GospelFunctionIndex::create_raw(value.data);
+                let function_index = GospelObjectIndex::create_raw(value.data);
                 let reference = self.resolve_function_index(function_index)?;
                 Ok(GospelVMValue::Closure(reference))
             }
@@ -888,6 +1105,25 @@ impl GospelVMContainer {
             }
         }
     }
+    fn resolve_struct_template(self: &Rc<Self>, struct_index: &GospelObjectIndex) -> anyhow::Result<Rc<GospelVMStructTemplate>> {
+        if struct_index.is_external() {
+            if struct_index.index() as usize >= self.container.external_structs.len() {
+                bail!("Invalid external struct index #{} out of bounds (num external struct references in container: {})", struct_index.index(), self.container.external_structs.len());
+            }
+            let external_struct = &self.container.external_structs[struct_index.index() as usize];
+            if external_struct.import_index as usize >= self.external_references.len() {
+                bail!("Invalid external container reference index #{} out of bounds (num external container references: {})", external_struct.import_index, self.external_references.len());
+            }
+            let source_container = &self.external_references[external_struct.import_index as usize];
+            let struct_name = self.container.strings.get(external_struct.object_name)?;
+            return source_container.find_named_struct(struct_name)
+                .ok_or_else(|| { anyhow!("Imported named struct {} does not exist in container {}", self.container_name().unwrap(), struct_name.to_string()) });
+        }
+        if struct_index.index() as usize >= self.struct_templates.len() {
+            bail!("Invalid struct index #{} out of bounds (num structs in container: {})", struct_index.index(), self.struct_templates.len());
+        }
+        Ok(self.struct_templates[struct_index.index() as usize].clone())
+    }
     fn execute_function_internal(self: &Rc<Self>, index: u32, args: &Vec<GospelVMValue>, recursion_counter: usize) -> anyhow::Result<GospelVMValue> {
         if index as usize >= self.container.functions.len() {
             bail!("Invalid function index #{} out of bounds (num functions in container: {})", index, self.container.functions.len());
@@ -902,6 +1138,7 @@ impl GospelVMContainer {
             slot_definitions: &function_definition.slots,
             slots: Vec::with_capacity(function_definition.slots.len()),
             referenced_strings: Vec::with_capacity(function_definition.referenced_strings.len()),
+            referenced_structs: Vec::with_capacity(function_definition.referenced_structs.len()),
             stack: Vec::new(),
             current_instruction_index: 0,
             current_loop_jump_count: 0,
@@ -921,6 +1158,11 @@ impl GospelVMContainer {
         // Populate referenced strings
         for string_index in &function_definition.referenced_strings {
             vm_state.referenced_strings.push(self.container.strings.get(*string_index)?.to_string());
+        }
+
+        // Populate referenced structs
+        for struct_index in &function_definition.referenced_structs {
+            vm_state.referenced_structs.push(self.resolve_struct_template(struct_index)?);
         }
 
         // Run the VM now to calculate the result of the function
@@ -976,13 +1218,15 @@ impl GospelVMState {
             global_lookup_by_id: HashMap::new(),
             function_lookup_by_name: HashMap::new(),
             name_lookup_by_function: HashMap::new(),
+            struct_templates: Vec::new(),
+            struct_lookup_by_name: HashMap::new(),
         };
 
         // Build lookup table for functions by name, and create globals referenced by the container
         for function_name_pair in &wrapped_container.function_names {
-            let function_name = wrapped_container.strings.get(function_name_pair.function_name)?;
-            vm_container.function_lookup_by_name.insert(function_name.to_string(), function_name_pair.function_index);
-            vm_container.name_lookup_by_function.insert(function_name_pair.function_index, function_name_pair.function_name);
+            let function_name = wrapped_container.strings.get(function_name_pair.object_name)?;
+            vm_container.function_lookup_by_name.insert(function_name.to_string(), function_name_pair.object_index);
+            vm_container.name_lookup_by_function.insert(function_name_pair.object_index, function_name_pair.object_name);
         }
         for global_index in 0..wrapped_container.globals.len() {
             let global_name = wrapped_container.strings.get(wrapped_container.globals[global_index].name)?;
@@ -991,6 +1235,35 @@ impl GospelVMState {
             let global_value = self.find_or_create_global(global_name, initial_value)?;
             vm_container.global_lookup_by_id.insert(global_index, global_value);
         }
+        
+        // Build struct templates for structs defined in the container
+        let mut struct_templates: Vec<GospelVMStructTemplate> = Vec::with_capacity(wrapped_container.structs.len());
+        for struct_index in 0..wrapped_container.structs.len() {
+            let struct_definition = &wrapped_container.structs[struct_index];
+            let struct_template = GospelVMStructTemplate{
+                fields: struct_definition.fields.clone(),
+                source_container_name: container_name.clone(),
+                name: None,
+                property_name_lookup: HashMap::new(),
+                property_index_lookup: HashMap::new(),
+            };
+            struct_templates.push(struct_template);
+        }
+        // Add name information to the struct templates that have it
+        for struct_naming_info in &wrapped_container.struct_names {
+            let struct_template = &mut struct_templates[struct_naming_info.struct_index as usize];
+            let struct_name = wrapped_container.strings.get(struct_naming_info.struct_name)?;
+            struct_template.name = Some(struct_name.to_string());
+            
+            for field_name_info in &struct_naming_info.field_names {
+                let field_name = wrapped_container.strings.get(field_name_info.object_name)?;
+                let field_index = field_name_info.object_index as usize;
+                
+                struct_template.property_index_lookup.insert(field_name.to_string(), field_index);
+                struct_template.property_name_lookup.insert(field_index, field_name.to_string());
+            }
+        }
+        vm_container.struct_templates = struct_templates.into_iter().map(|x| Rc::new(x)).collect();
 
         // Finally, add container to the mounted container list
         let wrapped_vm_container = Rc::new(vm_container);
@@ -1034,12 +1307,12 @@ impl GospelVMState {
 
     /// Attempts to find a function definition by its fully qualified name (container name combined with function name)
     /// Providing the container context allows resolving local function references as well
-    pub fn find_function_by_reference(&self, reference: &GospelSourceFunctionReference, context: &Option<Rc<GospelVMContainer>>) -> Option<GospelVMClosure> {
+    pub fn find_function_by_reference(&self, reference: &GospelSourceObjectReference, context: &Option<Rc<GospelVMContainer>>) -> Option<GospelVMClosure> {
         match reference {
-            GospelSourceFunctionReference::LocalFunction{function_name} => {
+            GospelSourceObjectReference::Local { name: function_name } => {
                 context.as_ref().and_then(|container| container.find_named_function(function_name.as_str()))
             }
-            GospelSourceFunctionReference::ExternalFunction {function_name, container_name} => {
+            GospelSourceObjectReference::External { name: function_name, container_name} => {
                 self.find_named_container(container_name.as_str()).and_then(|container| container.find_named_function(function_name.as_str()))
             }
         }

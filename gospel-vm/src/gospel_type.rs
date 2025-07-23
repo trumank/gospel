@@ -74,6 +74,7 @@ pub enum GospelValueType {
     Closure = 0x01,
     TypeLayout = 0x02,
     Array = 0x03,
+    Struct = 0x04,
 }
 impl Readable for GospelValueType {
     fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
@@ -216,6 +217,7 @@ pub(crate) struct GospelFunctionDefinition {
     pub slots: Vec<GospelSlotDefinition>, // slots to bind to the code
     pub code: Vec<GospelInstruction>, // bytecode for the VM
     pub referenced_strings: Vec<u32>, // indices of strings referenced by the bytecode
+    pub referenced_structs: Vec<GospelObjectIndex>, // indices of structures referenced by the bytecode
 }
 impl Readable for GospelFunctionDefinition {
     fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
@@ -224,6 +226,7 @@ impl Readable for GospelFunctionDefinition {
             return_value_type: stream.de()?,
             slots: stream.de()?,
             code: stream.de()?,
+            referenced_structs: stream.de()?,
             referenced_strings: stream.de()?,
         })
     }
@@ -234,14 +237,15 @@ impl Writeable for GospelFunctionDefinition {
         stream.ser(&self.return_value_type)?;
         stream.ser(&self.slots)?;
         stream.ser(&self.code)?;
+        stream.ser(&self.referenced_structs)?;
         stream.ser(&self.referenced_strings)?;
         Ok({})
     }
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub(crate) struct GospelFunctionIndex(u32);
-impl GospelFunctionIndex {
+pub(crate) struct GospelObjectIndex(u32);
+impl GospelObjectIndex {
     const INDEX_SHIFT: u32 = 0;
     const INDEX_MASK: u32 = (1 << 31) - 1;
     const TYPE_SHIFT: u32 = 31;
@@ -265,12 +269,12 @@ impl GospelFunctionIndex {
     }
     pub(crate) fn is_external(self) -> bool { self.kind() == 1 }
 }
-impl Readable for GospelFunctionIndex {
+impl Readable for GospelObjectIndex {
     fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
         Ok(Self(stream.de()?))
     }
 }
-impl Writeable for GospelFunctionIndex {
+impl Writeable for GospelObjectIndex {
     fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
         stream.ser(&self.0)?;
         Ok({})
@@ -279,7 +283,7 @@ impl Writeable for GospelFunctionIndex {
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub(crate) struct GospelLazyValue {
-    pub function_index: GospelFunctionIndex, // index of the function
+    pub function_index: GospelObjectIndex, // index of the function
     pub arguments: Vec<GospelStaticValue>, // argument values for the function invocation
 }
 impl Readable for GospelLazyValue {
@@ -299,43 +303,85 @@ impl Writeable for GospelLazyValue {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub(crate) struct GospelFunctionNamePair {
-    pub(crate) function_index: u32, // index of a local function
-    pub(crate) function_name: u32, // name of the function, index to the string table
+pub(crate) struct GospelObjectIndexNamePair {
+    pub(crate) object_index: u32, // index of an object
+    pub(crate) object_name: u32, // name of the object, index to the string table
 }
-impl Readable for GospelFunctionNamePair {
+impl Readable for GospelObjectIndexNamePair {
     fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
         Ok(Self{
-            function_index: stream.de()?,
-            function_name: stream.de()?,
+            object_index: stream.de()?,
+            object_name: stream.de()?,
         })
     }
 }
-impl Writeable for GospelFunctionNamePair {
+impl Writeable for GospelObjectIndexNamePair {
     fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
-        stream.ser(&self.function_index)?;
-        stream.ser(&self.function_name)?;
+        stream.ser(&self.object_index)?;
+        stream.ser(&self.object_name)?;
         Ok({})
     }
 }
 
 #[derive(Debug, PartialEq, Clone, Hash)]
-pub(crate) struct GospelExternalFunctionReference {
-    pub import_index: u32, // index of the container from imports from which the named type is imported
-    pub function_name: u32, // name of the imported function, index to the string table
+pub(crate) struct GospelExternalObjectReference {
+    pub(crate) import_index: u32, // index of the container from imports from which the named type is imported
+    pub(crate) object_name: u32, // name of the imported object, index to the string table
 }
-impl Readable for GospelExternalFunctionReference {
+impl Readable for GospelExternalObjectReference {
     fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
         Ok(Self{
             import_index: stream.de()?,
-            function_name: stream.de()?,
+            object_name: stream.de()?,
         })
     }
 }
-impl Writeable for GospelExternalFunctionReference {
+impl Writeable for GospelExternalObjectReference {
     fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
         stream.ser(&self.import_index)?;
-        stream.ser(&self.function_name)?;
+        stream.ser(&self.object_name)?;
+        Ok({})
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Hash)]
+pub(crate) struct GospelStructDefinition {
+    pub(crate) fields: Vec<GospelValueType>, // fields of the struct
+}
+impl Readable for GospelStructDefinition {
+    fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
+        Ok(Self{
+            fields: stream.de()?,
+        })
+    }
+}
+impl Writeable for GospelStructDefinition {
+    fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
+        stream.ser(&self.fields)?;
+        Ok({})
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub(crate) struct GospelStructNameInfo {
+    pub(crate) struct_index: u32, // index of the struct in structs
+    pub(crate) struct_name: u32, // name of the struct, index in the string table
+    pub(crate) field_names: Vec<GospelObjectIndexNamePair>, // names of the struct fields
+}
+impl Readable for GospelStructNameInfo {
+    fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
+        Ok(Self{
+            struct_index: stream.de()?,
+            struct_name: stream.de()?,
+            field_names: stream.de()?,
+        })
+    }
+}
+impl Writeable for GospelStructNameInfo {
+    fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
+        stream.ser(&self.struct_index)?;
+        stream.ser(&self.struct_name)?;
+        stream.ser(&self.field_names)?;
         Ok({})
     }
 }

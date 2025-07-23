@@ -120,3 +120,38 @@ function ArrayTest -> Array {
 function AbortTest -> Integer {
     Abort "abort test";
 };
+
+structure TestStruct {
+    named_field: Integer;
+    test_field: Integer;
+    Integer;
+};
+
+hidden structure LocalStruct {
+    Integer;
+};
+
+function StructTest -> Struct {
+    StructAllocate TestStruct;
+    IntConstant 15;
+    StructSetLocalField TestStruct 0;
+    IntConstant 10;
+    StructSetNamedField TestStruct "test_field";
+    Dup;
+    Dup;
+    StructGetLocalField TestStruct 1;
+A:  Slot Integer;
+    StoreSlot A;
+    StructGetNamedField TestStruct "named_field";
+    LoadSlot A;
+    Mul;
+    StructSetLocalField TestStruct 2;
+    ReturnValue;
+};
+
+function LocalStructTest -> Struct {
+    StructAllocate structure LocalStruct;
+    IntConstant 20;
+    StructSetLocalField structure LocalStruct 0;
+    ReturnValue;
+};

@@ -1,7 +1,7 @@
 ﻿use std::io::{Cursor, Read, Write};
 use anyhow::{anyhow, bail};
 use strum_macros::{Display, FromRepr};
-use crate::gospel_type::{GospelExternalFunctionReference, GospelFunctionDeclaration, GospelFunctionDefinition, GospelFunctionNamePair, GospelGlobalDeclaration, GospelLazyValue};
+use crate::gospel_type::{GospelExternalObjectReference, GospelFunctionDeclaration, GospelFunctionDefinition, GospelObjectIndexNamePair, GospelGlobalDeclaration, GospelLazyValue, GospelStructDefinition, GospelStructNameInfo};
 use crate::ser::{ReadExt, Readable, WriteExt, Writeable};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default, FromRepr)]
@@ -187,8 +187,11 @@ pub struct GospelContainer {
     pub(crate) imports: Vec<GospelContainerImport>,
     pub(crate) globals: Vec<GospelGlobalDefinition>,
     pub(crate) functions: Vec<GospelFunctionDefinition>,
-    pub(crate) function_names: Vec<GospelFunctionNamePair>,
-    pub(crate) external_functions: Vec<GospelExternalFunctionReference>,
+    pub(crate) function_names: Vec<GospelObjectIndexNamePair>,
+    pub(crate) structs: Vec<GospelStructDefinition>,
+    pub(crate) struct_names: Vec<GospelStructNameInfo>,
+    pub(crate) external_functions: Vec<GospelExternalObjectReference>,
+    pub(crate) external_structs: Vec<GospelExternalObjectReference>,
     pub(crate) lazy_values: Vec<GospelLazyValue>,
     pub(crate) strings: GospelStringTable,
 }
@@ -222,7 +225,10 @@ impl Readable for GospelContainer {
             globals: stream.de()?,
             functions: stream.de()?,
             function_names: stream.de()?,
+            structs: stream.de()?,
+            struct_names: stream.de()?,
             external_functions: stream.de()?,
+            external_structs: stream.de()?,
             lazy_values: stream.de()?,
             strings: stream.de()?,
         })
@@ -235,7 +241,10 @@ impl Writeable for GospelContainer {
         stream.ser(&self.globals)?;
         stream.ser(&self.functions)?;
         stream.ser(&self.function_names)?;
+        stream.ser(&self.structs)?;
+        stream.ser(&self.struct_names)?;
         stream.ser(&self.external_functions)?;
+        stream.ser(&self.external_structs)?;
         stream.ser(&self.lazy_values)?;
         stream.ser(&self.strings)?;
         Ok({})

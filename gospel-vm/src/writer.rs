@@ -5,17 +5,17 @@ use anyhow::{anyhow, bail};
 use strum_macros::Display;
 use crate::bytecode::{GospelInstruction, GospelOpcode};
 use crate::container::{GospelContainer, GospelContainerImport, GospelContainerVersion, GospelGlobalDefinition, GospelRefContainer};
-use crate::gospel_type::{GospelExternalFunctionReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelFunctionArgument, GospelFunctionDefinition, GospelFunctionIndex, GospelValueType, GospelLazyValue, GospelFunctionNamePair, GospelGlobalDeclaration, GospelFunctionDeclaration, GospelFunctionArgumentDeclaration};
+use crate::gospel_type::{GospelExternalObjectReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelFunctionArgument, GospelFunctionDefinition, GospelObjectIndex, GospelValueType, GospelLazyValue, GospelObjectIndexNamePair, GospelGlobalDeclaration, GospelFunctionDeclaration, GospelFunctionArgumentDeclaration, GospelStructDefinition, GospelStructNameInfo};
 
 /// Represents a reference to a function
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Display)]
-pub enum GospelSourceFunctionReference {
+pub enum GospelSourceObjectReference {
     /// a reference to a function in this container
-    #[strum(to_string = "LocalFunction({function_name})")]
-    LocalFunction{ function_name: String},
+    #[strum(to_string = "Local({name})")]
+    Local{ name: String},
     /// a reference to a function in another container
-    #[strum(to_string = "ExternalFunction({container_name}:{function_name})")]
-    ExternalFunction{container_name: String, function_name: String},
+    #[strum(to_string = "External({container_name}:{name})")]
+    External{container_name: String, name: String},
 }
 
 /// Represents a static value
@@ -24,7 +24,7 @@ pub enum GospelSourceStaticValue {
     /// signed integer literal
     Integer(i32),
     /// pointer to the function with the provided name
-    FunctionId(GospelSourceFunctionReference),
+    FunctionId(GospelSourceObjectReference),
     /// result of the evaluation of function with provided arguments
     LazyValue(GospelSourceLazyValue),
     /// value of the provided platform config property
@@ -47,9 +47,24 @@ impl GospelSourceStaticValue {
 /// Represents a lazily evaluated value created by calling the provided function with the given set of arguments
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GospelSourceLazyValue {
-    pub function_reference: GospelSourceFunctionReference,
+    pub function_reference: GospelSourceObjectReference,
     pub return_value_type: GospelValueType,
     pub arguments: Vec<GospelSourceStaticValue>,
+}
+
+/// Definition of a field in a struct
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GospelSourceStructField {
+    pub field_name: Option<String>,
+    pub field_type: GospelValueType,
+}
+
+/// Definition of a named struct potentially local to the module
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GospelSourceStructDefinition {
+    pub name: String,
+    pub hidden: bool,
+    pub fields: Vec<GospelSourceStructField>,
 }
 
 /// Represents a value with which a slot is populated before type layout calculation occurs
@@ -120,7 +135,9 @@ pub struct GospelSourceFunctionDefinition {
     slots: Vec<GospelSourceSlotDefinition>,
     code: Vec<GospelInstruction>,
     referenced_strings: Vec<String>,
+    referenced_structs: Vec<GospelSourceObjectReference>,
     referenced_string_lookup: HashMap<String, u32>,
+    referenced_structs_lookup: HashMap<GospelSourceObjectReference, u32>,
 }
 impl GospelSourceFunctionDefinition {
     /// Creates a named function from a declaration
@@ -160,6 +177,16 @@ impl GospelSourceFunctionDefinition {
         self.referenced_strings.push(string.to_string());
         self.referenced_string_lookup.insert(string.to_string(), new_string_index);
         new_string_index
+    }
+    /// Note that this function should generally not be used directly, but is public to make extensions easier
+    pub fn add_struct_reference_internal(&mut self, struct_reference: GospelSourceObjectReference) -> u32 {
+        if let Some(existing_index) = self.referenced_structs_lookup.get(&struct_reference) {
+            return *existing_index
+        }
+        let new_struct_index = self.referenced_structs.len() as u32;
+        self.referenced_structs.push(struct_reference.clone());
+        self.referenced_structs_lookup.insert(struct_reference, new_struct_index);
+        new_struct_index
     }
     /// Note that this function should generally not be used, and other forms of add_X_instruction should be used instead
     pub fn add_instruction_internal(&mut self, instruction: GospelInstruction) -> u32 {
@@ -211,6 +238,7 @@ pub trait GospelModuleVisitor {
     fn define_global(&mut self, name: &str, value: i32) -> anyhow::Result<()>;
     fn declare_function(&mut self, source: GospelSourceFunctionDeclaration) -> anyhow::Result<()>;
     fn define_function(&mut self, source: GospelSourceFunctionDefinition) -> anyhow::Result<()>;
+    fn define_struct(&mut self, source: GospelSourceStructDefinition) -> anyhow::Result<()>;
 }
 
 /// A frontend for plugging multiple container visitors into a single object
@@ -251,6 +279,12 @@ impl GospelModuleVisitor for GospelMultiContainerVisitor {
         }
         Ok({})
     }
+    fn define_struct(&mut self, source: GospelSourceStructDefinition) -> anyhow::Result<()> {
+        for visitor in &mut self.visitors {
+            visitor.borrow_mut().define_struct(source.clone())?
+        }
+        Ok({})
+    }
 }
 
 /// Interface implemented by visitors that allow building modules from source
@@ -270,6 +304,8 @@ struct GospelContainerWriter {
     container_lookup: HashMap<String, u32>,
     import_container_function_lookup: Vec<HashMap<String, u32>>,
     lazy_value_lookup: HashMap<GospelLazyValue, u32>,
+    struct_lookup: HashMap<String, u32>,
+    import_container_struct_lookup: Vec<HashMap<String, u32>>,
 }
 impl GospelContainerWriter {
     fn create(container_name: &str) -> Self {
@@ -324,9 +360,8 @@ impl GospelContainerWriter {
         self.globals_lookup.insert(name.to_string(), new_global_index);
         Ok(new_global_index)
     }
-    fn find_or_define_external_function(&mut self, container_name: &str, function_name: &str) -> u32 {
-        // Resolve the index of the container first
-        let container_index = if let Some(existing_container_index) = self.container_lookup.get(container_name) {
+    fn find_or_define_container_import(&mut self, container_name: &str) -> u32 {
+        if let Some(existing_container_index) = self.container_lookup.get(container_name) {
             *existing_container_index
         } else {
             let new_container_index = self.container.imports.len() as u32;
@@ -336,22 +371,27 @@ impl GospelContainerWriter {
             self.import_container_function_lookup.push(HashMap::new());
             self.container_lookup.insert(container_name.to_string(), new_container_index);
             new_container_index
-        };
+        }
+    }
+    fn find_or_define_external_function(&mut self, container_name: &str, function_name: &str) -> u32 {
+        // Resolve the index of the container first
+        let container_index = self.find_or_define_container_import(container_name);
+
         // Referenced container builder cannot be a local variable here because of rust borrowing rules
         if let Some(existing_external_function_index) = self.import_container_function_lookup[container_index as usize].get(function_name) {
             *existing_external_function_index
         } else {
             let new_external_function_index = self.container.external_functions.len() as u32;
             let function_name_index = self.store_string(function_name);
-            self.container.external_functions.push(GospelExternalFunctionReference {
+            self.container.external_functions.push(GospelExternalObjectReference {
                 import_index: container_index,
-                function_name: function_name_index,
+                object_name: function_name_index,
             });
             self.import_container_function_lookup[container_index as usize].insert(function_name.to_string(), new_external_function_index);
             new_external_function_index
         }
     }
-    fn find_or_add_lazy_value(&mut self, function_index: GospelFunctionIndex, arguments: Vec<GospelStaticValue>) -> u32 {
+    fn find_or_add_lazy_value(&mut self, function_index: GospelObjectIndex, arguments: Vec<GospelStaticValue>) -> u32 {
         let lazy_value = GospelLazyValue{ function_index, arguments };
         if let Some(existing_lazy_value_index) = self.lazy_value_lookup.get(&lazy_value) {
             *existing_lazy_value_index
@@ -362,22 +402,22 @@ impl GospelContainerWriter {
             new_lazy_value_index
         }
     }
-    fn find_locally_defined_function_index(&self, function_name: &str) -> anyhow::Result<GospelFunctionIndex> {
+    fn find_locally_defined_function_index(&self, function_name: &str) -> anyhow::Result<GospelObjectIndex> {
         self.function_lookup.get(function_name).map(|function_index| {
-            GospelFunctionIndex::create_local(*function_index)
+            GospelObjectIndex::create_local(*function_index)
         }).ok_or_else(|| anyhow!("Failed to find locally defined function {}", function_name.to_string()))
     }
-    fn convert_function_reference(&mut self, source: &GospelSourceFunctionReference) -> anyhow::Result<GospelFunctionIndex> {
+    fn convert_function_reference(&mut self, source: &GospelSourceObjectReference) -> anyhow::Result<GospelObjectIndex> {
         match source {
-            GospelSourceFunctionReference::LocalFunction {function_name} => {
+            GospelSourceObjectReference::Local { name: function_name } => {
                 self.find_locally_defined_function_index(function_name.as_str())
             }
-            GospelSourceFunctionReference::ExternalFunction {container_name, function_name} => {
+            GospelSourceObjectReference::External {container_name, name: function_name } => {
                 // This could still be a reference to a local function if container name is the name of the container we are building
                 if container_name.as_str() == self.container_name.as_str() {
                     self.find_locally_defined_function_index(function_name.as_str())
                 } else {
-                    Ok(GospelFunctionIndex::create_external(self.find_or_define_external_function(container_name.as_str(), function_name.as_str())))
+                    Ok(GospelObjectIndex::create_external(self.find_or_define_external_function(container_name.as_str(), function_name.as_str())))
                 }
             }
         }
@@ -429,6 +469,42 @@ impl GospelContainerWriter {
             }
         }
     }
+    fn find_locally_defined_struct_index(&self, struct_name: &str) -> anyhow::Result<GospelObjectIndex> {
+        self.struct_lookup.get(struct_name).map(|struct_index| {
+            GospelObjectIndex::create_local(*struct_index)
+        }).ok_or_else(|| anyhow!("Failed to find locally defined struct {}", struct_name.to_string()))
+    }
+    fn find_or_define_external_struct(&mut self, container_name: &str, struct_name: &str) -> u32 {
+        let container_index = self.find_or_define_container_import(container_name);
+
+        if let Some(existing_external_struct_index) = self.import_container_struct_lookup[container_index as usize].get(struct_name) {
+            *existing_external_struct_index
+        } else {
+            let new_external_struct_index = self.container.external_structs.len() as u32;
+            let struct_name_index = self.store_string(struct_name);
+            self.container.external_structs.push(GospelExternalObjectReference {
+                import_index: container_index,
+                object_name: struct_name_index,
+            });
+            self.import_container_struct_lookup[container_index as usize].insert(struct_name.to_string(), new_external_struct_index);
+            new_external_struct_index
+        }
+    }
+    fn convert_struct_reference(&mut self, struct_reference: &GospelSourceObjectReference) -> anyhow::Result<GospelObjectIndex> {
+        match struct_reference {
+            GospelSourceObjectReference::Local { name } => {
+                self.find_locally_defined_struct_index(name.as_str())
+            }
+            GospelSourceObjectReference::External { container_name, name } => {
+                // This could still be a reference to a local struct if container name is the name of the container we are building
+                if container_name.as_str() == self.container_name.as_str() {
+                    self.find_locally_defined_struct_index(name.as_str())
+                } else {
+                    Ok(GospelObjectIndex::create_external(self.find_or_define_external_struct(container_name.as_str(), name.as_str())))
+                }
+            }
+        }
+    }
 }
 impl GospelModuleVisitor for GospelContainerWriter {
     fn declare_global(&mut self, name: &str) -> anyhow::Result<()> {
@@ -467,20 +543,49 @@ impl GospelModuleVisitor for GospelContainerWriter {
         let referenced_strings: Vec<u32> = source.referenced_strings.iter().map(|x| {
             self.store_string(x.as_str())
         }).collect();
+        let referenced_structs = source.referenced_structs.iter()
+            .map(|x| self.convert_struct_reference(x))
+            .collect::<anyhow::Result<Vec<GospelObjectIndex>>>()?;
 
         let function_index = self.container.functions.len() as u32;
         let function_name_string = source.declaration.function_name.clone();
         if !source.declaration.hidden {
             let function_name = self.store_string(source.declaration.function_name.as_str());
-            self.container.function_names.push(GospelFunctionNamePair{ function_index, function_name });
+            self.container.function_names.push(GospelObjectIndexNamePair { object_index: function_index, object_name: function_name });
         }
         self.container.functions.push(GospelFunctionDefinition {
             arguments, slots,
             return_value_type: source.declaration.return_value_type.unwrap(),
             code: source.code,
             referenced_strings,
+            referenced_structs,
         });
         self.function_lookup.insert(function_name_string, function_index);
+        Ok({})
+    }
+    fn define_struct(&mut self, source: GospelSourceStructDefinition) -> anyhow::Result<()> {
+        if self.struct_lookup.contains_key(source.name.as_str()) {
+            bail!("Struct {} is already defined in this container", source.name);
+        }
+        let struct_index = self.container.structs.len() as u32;
+        if !source.hidden {
+            let struct_name = self.store_string(source.name.as_str());
+            let field_names: Vec<GospelObjectIndexNamePair> = source.fields.iter()
+                .enumerate()
+                .filter(|(_, data)| data.field_name.is_some())
+                .map(|(index, data)| (index, self.store_string(data.field_name.as_ref().unwrap())))
+                .map(|(index, name_index)| GospelObjectIndexNamePair{ object_index: index as u32, object_name: name_index })
+                .collect();
+            self.container.struct_names.push(GospelStructNameInfo{
+                struct_index,
+                struct_name,
+                field_names,
+            })
+        }
+        self.container.structs.push(GospelStructDefinition {
+            fields: source.fields.iter().map(|x| x.field_type).collect(),
+        });
+        self.struct_lookup.insert(source.name.clone(), struct_index);
         Ok({})
     }
 }
@@ -587,6 +692,10 @@ impl GospelModuleVisitor for GospelReferenceContainerWriter {
     fn define_function(&mut self, source: GospelSourceFunctionDefinition) -> anyhow::Result<()> {
         // Definitions are treated as declarations for reference containers
         self.declare_function(source.declaration)
+    }
+    fn define_struct(&mut self, _: GospelSourceStructDefinition) -> anyhow::Result<()> {
+        // Reference containers are pending removal
+        Ok({})
     }
 }
 impl GospelModuleBuilder<GospelRefContainer> for GospelReferenceContainerWriter {
