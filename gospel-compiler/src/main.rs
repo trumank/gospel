@@ -7,10 +7,10 @@ use std::process::exit;
 use std::rc::Rc;
 use anyhow::{anyhow};
 use clap::Parser;
-use gospel_vm::container::{GospelCommonFileHeader, GospelCommonFileType, GospelContainer, GospelRefContainer};
-use gospel_vm::reflection::GospelModuleReflectable;
+use gospel_vm::container::{GospelContainer};
+use gospel_vm::reflection::{GospelContainerReflector, GospelModuleReflector};
 use gospel_vm::vm::{GospelVMContainer, GospelVMState, GospelVMTargetTriplet, GospelVMValue};
-use gospel_vm::writer::{GospelBuildFromModuleSource, GospelModuleBuilder, GospelModuleVisitor, GospelMultiContainerVisitor};
+use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter, GospelMultiContainerVisitor, GospelReferenceContainerWriter};
 use crate::assembler::GospelAssembler;
 use crate::parser::parse_source_file;
 
@@ -99,17 +99,17 @@ fn do_action_assemble(action: ActionAssembleModule) -> anyhow::Result<()> {
     let composite_writer = RefCell::new(GospelMultiContainerVisitor::default());
 
     // Add writers for the main module definition container and the public interface container
-    let mut container_writer: Option<Rc<RefCell<dyn GospelModuleBuilder<GospelContainer>>>> = None;
-    let mut reference_container_writer: Option<Rc<RefCell<dyn GospelModuleBuilder<GospelRefContainer>>>> = None;
+    let mut container_writer: Option<Rc<RefCell<dyn GospelContainerBuilder>>> = None;
+    let mut reference_container_writer: Option<Rc<RefCell<dyn GospelContainerBuilder>>> = None;
     if !action.interface {
-        container_writer = Some(GospelContainer::make_builder(action.module_name.as_str()));
-        let container_module_visitor = container_writer.as_ref().unwrap().clone() as Rc<RefCell<dyn GospelModuleVisitor>>;
-        composite_writer.borrow_mut().add_visitor(container_module_visitor);
+        let writer = Rc::new(RefCell::new(GospelContainerWriter::create(action.module_name.as_str())));
+        container_writer = Some(writer.clone());
+        composite_writer.borrow_mut().add_visitor(writer);
     }
     if action.interface || !action.no_ref_container {
-        reference_container_writer = Some(GospelRefContainer::make_builder(action.module_name.as_str()));
-        let ref_container_module_visitor = reference_container_writer.as_ref().unwrap().clone() as Rc<RefCell<dyn GospelModuleVisitor>>;
-        composite_writer.borrow_mut().add_visitor(ref_container_module_visitor);
+        let writer = Rc::new(RefCell::new(GospelReferenceContainerWriter::create(action.module_name.as_str())));
+        reference_container_writer = Some(writer.clone());
+        composite_writer.borrow_mut().add_visitor(writer);
     }
 
     let mut assembler = GospelAssembler::create(Rc::new(composite_writer));
@@ -209,28 +209,14 @@ fn do_action_reflect(action: ActionReflectModule) -> anyhow::Result<()> {
     let file_buffer = read(action.input.clone())
         .map_err(|x| anyhow!("Failed to open container file {}: {}", action.input.to_string_lossy(), x.to_string()))?;
 
-    // Read the common header to determine the type of file we are dealing with
-    let common_file_header = GospelCommonFileHeader::try_read_file_header(&file_buffer)
-        .map_err(|x| anyhow!("Failed to read common module header: {}", x.to_string()))?;
-
     // Parse the module interface based on the file type and create the reflector object
-    let module_reflector = match common_file_header.file_type {
-        GospelCommonFileType::Container => {
-            let parsed_container = GospelContainer::read(&file_buffer)
-                .map_err(|x| anyhow!("Failed to parse module container file: {}", x.to_string()))?;
-            Rc::new(parsed_container).reflect()
-                .map_err(|x| anyhow!("Failed to reflect module container file: {}", x.to_string()))?
-        }
-        GospelCommonFileType::RefContainer => {
-            let parsed_ref_container = GospelRefContainer::read(&file_buffer)
-                .map_err(|x| anyhow!("Failed to parse module reference container file: {}", x.to_string()))?;
-            Rc::new(parsed_ref_container).reflect()
-                .map_err(|x| anyhow!("Failed to reflect module reference container file: {}", x.to_string()))?
-        }
-    };
+    let parsed_container = GospelContainer::read(&file_buffer)
+        .map_err(|x| anyhow!("Failed to parse module container file: {}", x.to_string()))?;
+    let module_reflector = GospelContainerReflector::create(Rc::new(parsed_container))
+        .map_err(|x| anyhow!("Failed to reflect module container file: {}", x.to_string()))?;
 
     // Print the resulting data now
-    println!("Module {} public interface (from {}):", module_reflector.module_name()?, common_file_header.file_type);
+    println!("Module {} public interface:", module_reflector.module_name()?);
     for global_variable in module_reflector.enumerate_globals()? {
         println!(" extern global {};", global_variable.name);
     }

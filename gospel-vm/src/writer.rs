@@ -4,8 +4,8 @@ use std::rc::Rc;
 use anyhow::{anyhow, bail};
 use strum_macros::Display;
 use crate::bytecode::{GospelInstruction, GospelOpcode};
-use crate::container::{GospelContainer, GospelContainerImport, GospelContainerVersion, GospelGlobalDefinition, GospelRefContainer};
-use crate::gospel_type::{GospelExternalObjectReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelFunctionArgument, GospelFunctionDefinition, GospelObjectIndex, GospelValueType, GospelLazyValue, GospelObjectIndexNamePair, GospelGlobalDeclaration, GospelFunctionDeclaration, GospelFunctionArgumentDeclaration, GospelStructDefinition, GospelStructNameInfo};
+use crate::container::{GospelContainer, GospelContainerImport, GospelContainerVersion, GospelGlobalDefinition};
+use crate::gospel_type::{GospelExternalObjectReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelFunctionArgument, GospelFunctionDefinition, GospelObjectIndex, GospelValueType, GospelLazyValue, GospelObjectIndexNamePair, GospelStructDefinition, GospelStructNameInfo};
 
 /// Represents a reference to a function
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Display)]
@@ -215,13 +215,14 @@ impl GospelSourceFunctionDefinition {
         }
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[target_instruction_index])?))
     }
-    pub fn add_named_instruction(&mut self, opcode: GospelOpcode, member_name: &str) -> anyhow::Result<u32> {
+    pub fn add_string_instruction(&mut self, opcode: GospelOpcode, string: &str) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::TypeLayoutDefineMember && opcode != GospelOpcode::TypeLayoutDoesMemberExist &&
             opcode != GospelOpcode::TypeLayoutGetMemberOffset && opcode != GospelOpcode::TypeLayoutGetMemberSize &&
-            opcode != GospelOpcode::TypeLayoutGetMemberTypeLayout && opcode != GospelOpcode::TypeLayoutAllocate {
-            bail!("Invalid opcode for named instruction (TypeLayoutAllocate, TypeLayoutDefineMember, TypeLayoutDoesMemberExist, TypeLayoutGetMemberOffset, TypeLayoutGetMemberSize and TypeLayoutGetMemberTypeLayout are allowed)");
+            opcode != GospelOpcode::TypeLayoutGetMemberTypeLayout && opcode != GospelOpcode::TypeLayoutAllocate &&
+            opcode != GospelOpcode::Abort {
+            bail!("Invalid opcode for named instruction (TypeLayoutAllocate, TypeLayoutDefineMember, TypeLayoutDoesMemberExist, TypeLayoutGetMemberOffset, TypeLayoutGetMemberSize, TypeLayoutGetMemberTypeLayout and Abort are allowed)");
         }
-        let string_index = self.add_string_reference_internal(member_name);
+        let string_index = self.add_string_reference_internal(string);
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[string_index])?))
     }
     pub fn add_variadic_instruction(&mut self, opcode: GospelOpcode, argument_count: u32) -> anyhow::Result<u32> {
@@ -287,15 +288,14 @@ impl GospelModuleVisitor for GospelMultiContainerVisitor {
     }
 }
 
-/// Interface implemented by visitors that allow building modules from source
-pub trait GospelModuleBuilder<T> : GospelModuleVisitor {
-    /// Converts the builder into the build result
-    fn build(&mut self) -> T;
+/// Implemented by all module visitors that build the containers
+pub trait GospelContainerBuilder {
+    fn build(&mut self) -> GospelContainer;
 }
 
 /// Implementation of visitor that produces GospelContainers
 #[derive(Debug, Clone, Default)]
-struct GospelContainerWriter {
+pub struct GospelContainerWriter {
     container: GospelContainer,
     container_name: String,
     string_lookup: HashMap<String, u32>,
@@ -308,7 +308,8 @@ struct GospelContainerWriter {
     import_container_struct_lookup: Vec<HashMap<String, u32>>,
 }
 impl GospelContainerWriter {
-    fn create(container_name: &str) -> Self {
+    /// Creates a new container writer for the container with the given name
+    pub fn create(container_name: &str) -> Self {
         let mut writer = Self::default();
         writer.container_name = container_name.to_string();
         writer.container.header.container_name = writer.store_string(container_name);
@@ -589,132 +590,58 @@ impl GospelModuleVisitor for GospelContainerWriter {
         Ok({})
     }
 }
-impl GospelModuleBuilder<GospelContainer> for GospelContainerWriter {
+impl GospelContainerBuilder for GospelContainerWriter {
     fn build(&mut self) -> GospelContainer {
         std::mem::take(&mut self.container)
     }
 }
 
-/// Implementation of the visitor that writes reference containers
-#[derive(Debug, Clone, Default)]
-struct GospelReferenceContainerWriter {
-    container: GospelRefContainer,
-    container_name: String,
-    string_lookup: HashMap<String, u32>,
-    globals_lookup: HashMap<String, u32>,
-    function_lookup: HashMap<String, u32>,
+/// Implementation of the visitor that writes reference containers. Reference containers do not contain implementations or private types
+#[derive(Debug, Clone)]
+pub struct GospelReferenceContainerWriter {
+    container_writer: GospelContainerWriter,
 }
 impl GospelReferenceContainerWriter {
-    fn create(container_name: &str) -> Self {
-        let mut writer = Self::default();
-        writer.container_name = container_name.to_string();
-        writer.container.header.container_name = writer.store_string(container_name);
-        writer.container.header.version = GospelContainerVersion::current_version();
-        writer
-    }
-    fn store_string(&mut self, string: &str) -> u32 {
-        if let Some(index) = self.string_lookup.get(string) {
-            return *index
-        }
-        let new_index = self.container.strings.store(string.to_string());
-        self.string_lookup.insert(string.to_string(), new_index);
-        new_index
-    }
-    fn find_or_declare_global(&mut self, name: &str) -> anyhow::Result<u32> {
-        if let Some(existing_index) = self.globals_lookup.get(name) {
-            Ok(*existing_index)
-        } else {
-            let name_index = self.store_string(name);
-            let new_global_index = self.container.globals.len() as u32;
-            self.container.globals.push(GospelGlobalDeclaration{
-                name: name_index,
-            });
-            self.globals_lookup.insert(name.to_string(), new_global_index);
-            Ok(new_global_index)
-        }
-    }
-    fn find_or_declare_function(&mut self, declaration: GospelSourceFunctionDeclaration) -> anyhow::Result<u32> {
-        if let Some(existing_function_index) = self.function_lookup.get(declaration.function_name.as_str()) {
-            let existing_declaration = self.container.functions[*existing_function_index as usize].clone();
-
-            // Make sure return value type is consistent across all function declarations
-            if existing_declaration.return_value_type != declaration.return_value_type.unwrap() {
-                bail!("Function {} has been previously declared with a different return value type ({}). Attempting to re-declare with return value type {}",
-                    declaration.function_name.as_str(), existing_declaration.return_value_type, declaration.return_value_type.unwrap());
-            }
-            // Make sure the number of arguments is consistent across all function declarations
-            if existing_declaration.arguments.len() != declaration.arguments.len() {
-                bail!("Function {} has been previously declared with a different number of arguments ({}). Attempting to re-declare with {} arguments",
-                    declaration.function_name.as_str(), existing_declaration.arguments.len(), declaration.arguments.len());
-            }
-            // Make sure the types of arguments are consistent across all function declarations
-            for argument_index in 0..existing_declaration.arguments.len() {
-                if existing_declaration.arguments[argument_index].argument_type != declaration.arguments[argument_index].argument_type {
-                    bail!("Function {} argument #{} has been previously declared with a different type ({}). Attempting to re-declare with type {}",
-                        declaration.function_name.as_str(), argument_index, existing_declaration.arguments[argument_index].argument_type,
-                        declaration.arguments[argument_index].argument_type);
-                }
-                // Whenever the argument has a default value or not might be different across declarations, but we are lenient with default values here
-            }
-            // New declaration is compatible with the existing declaration
-            Ok(*existing_function_index)
-        } else {
-            let name_index = self.store_string(declaration.function_name.as_str());
-            let new_function_index = self.container.functions.len() as u32;
-            let converted_arguments: Vec<GospelFunctionArgumentDeclaration> = declaration.arguments.iter().map(|x| GospelFunctionArgumentDeclaration{
-                argument_type: x.argument_type,
-                has_default_value: x.default_value.is_some(),
-            }).collect();
-            self.container.functions.push(GospelFunctionDeclaration{
-                name: name_index,
-                return_value_type: declaration.return_value_type.unwrap(),
-                arguments: converted_arguments,
-            });
-            self.function_lookup.insert(declaration.function_name.to_string(), new_function_index);
-            Ok(new_function_index)
-        }
+    /// Creates a new reference container writer
+    pub fn create(container_name: &str) -> Self {
+        let mut writer = GospelContainerWriter::create(container_name);
+        writer.container.header.is_reference_container = true;
+        Self{container_writer: writer}
     }
 }
 impl GospelModuleVisitor for GospelReferenceContainerWriter {
     fn declare_global(&mut self, name: &str) -> anyhow::Result<()> {
-        self.find_or_declare_global(name).map(|_| {})
+        self.container_writer.declare_global(name)
     }
     fn define_global(&mut self, name: &str, _value: i32) -> anyhow::Result<()> {
-        // Definitions are treated as declarations for reference containers
-        self.declare_global(name)
+        self.container_writer.declare_global(name)
     }
-    fn declare_function(&mut self, source: GospelSourceFunctionDeclaration) -> anyhow::Result<()> {
+    fn declare_function(&mut self, mut source: GospelSourceFunctionDeclaration) -> anyhow::Result<()> {
         if source.return_value_type.is_none() {
             bail!("Function does not have a valid return value type; all functions must return a value");
         }
-        self.find_or_declare_function(source).map(|_| {})
+        source.arguments.iter_mut().for_each(|argument| {
+            if argument.default_value.is_some() {
+                argument.default_value = Some(GospelSourceStaticValue::Integer(0))
+            }
+        });
+        if !source.hidden {
+            let mut function_definition = GospelSourceFunctionDefinition::create(source);
+            function_definition.add_string_instruction(GospelOpcode::Abort, "Attempting to execute a function stub")?;
+            self.container_writer.define_function(function_definition)
+        } else { Ok({}) }
     }
     fn define_function(&mut self, source: GospelSourceFunctionDefinition) -> anyhow::Result<()> {
-        // Definitions are treated as declarations for reference containers
         self.declare_function(source.declaration)
     }
-    fn define_struct(&mut self, _: GospelSourceStructDefinition) -> anyhow::Result<()> {
-        // Reference containers are pending removal
-        Ok({})
+    fn define_struct(&mut self, source: GospelSourceStructDefinition) -> anyhow::Result<()> {
+        if !source.hidden {
+            self.container_writer.define_struct(source)
+        } else { Ok({}) }
     }
 }
-impl GospelModuleBuilder<GospelRefContainer> for GospelReferenceContainerWriter {
-    fn build(&mut self) -> GospelRefContainer {
-        std::mem::take(&mut self.container)
-    }
-}
-
-/// Allows building objects of this type from module source
-pub trait GospelBuildFromModuleSource {
-    fn make_builder(module_name: &str) -> Rc<RefCell<dyn GospelModuleBuilder<Self>>>;
-}
-impl GospelBuildFromModuleSource for GospelContainer {
-    fn make_builder(module_name: &str) -> Rc<RefCell<dyn GospelModuleBuilder<Self>>> {
-        Rc::new(RefCell::new(GospelContainerWriter::create(module_name)))
-    }
-}
-impl GospelBuildFromModuleSource for GospelRefContainer {
-    fn make_builder(module_name: &str) -> Rc<RefCell<dyn GospelModuleBuilder<Self>>> {
-        Rc::new(RefCell::new(GospelReferenceContainerWriter::create(module_name)))
+impl GospelContainerBuilder for GospelReferenceContainerWriter {
+    fn build(&mut self) -> GospelContainer {
+        self.container_writer.build()
     }
 }

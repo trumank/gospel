@@ -12,7 +12,7 @@ use crate::writer::{GospelSourceObjectReference, GospelSourceLazyValue, GospelSo
 use std::str::FromStr;
 use serde::{Deserialize, Serialize, Serializer};
 use serde::ser::SerializeStruct;
-use crate::reflection::{GospelModuleReflectable, GospelModuleReflector};
+use crate::reflection::{GospelContainerReflector, GospelModuleReflector};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GospelBaseClassLayout {
@@ -1186,10 +1186,9 @@ impl GospelVMContainer {
         // Run the VM now to calculate the result of the function
         GospelVMExecutionState::run(&mut vm_state)
     }
-}
-impl GospelModuleReflectable for GospelVMContainer {
-    fn reflect(self: &Rc<Self>) -> anyhow::Result<Box<dyn GospelModuleReflector>> {
-        self.container.reflect()
+    /// Creates a module reflector from this container
+    pub fn reflect(self: &Rc<Self>) -> anyhow::Result<Box<dyn GospelModuleReflector>> {
+        Ok(Box::new(GospelContainerReflector::create(self.container.clone())?))
     }
 }
 
@@ -1218,6 +1217,9 @@ impl GospelVMState {
         let container_name = wrapped_container.container_name()?.to_string();
         if self.containers_by_name.get(&container_name).is_some() {
             bail!("Container with name {} is already mounted", container_name);
+        }
+        if wrapped_container.header.is_reference_container {
+            bail!("Container {} is a reference container, reference containers cannot be mounted", container_name);
         }
 
         // Resolve imports necessary to construct external types down the line
