@@ -43,9 +43,11 @@ pub enum GospelOpcode {
     #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
     ReverseBits = 0x25, // ; [pop stack] -> [push stack]
     #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
-    Eqz = 0x28, // ; [pop stack] -> [push stack]
+    Ez = 0x27, // ; [pop stack] -> [push stack]
     #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
-    Grz = 0x27, // ; [pop stack] -> [push stack]
+    Lz = 0x28, // ; [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
+    Lez = 0x29, // ; [pop stack] -> [push stack]
     // Arithmetic opcodes
     #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
     Add = 0x30, // ; [pop stack], [pop stack] -> [push stack]
