@@ -12,7 +12,7 @@ use crate::gospel_type::{GospelExternalObjectReference, GospelPlatformConfigProp
 pub enum GospelSourceObjectReference {
     /// a reference to a function in this container
     #[strum(to_string = "Local({name})")]
-    Local{ name: String},
+    Local{name: String},
     /// a reference to a function in another container
     #[strum(to_string = "External({container_name}:{name})")]
     External{container_name: String, name: String},
@@ -93,10 +93,10 @@ struct GospelSourceFunctionArgument {
 /// Allows building declarations of functions to be added to the container writer later
 #[derive(Debug, Clone, Default)]
 pub struct GospelSourceFunctionDeclaration {
-    function_name: String,
-    hidden: bool,
-    arguments: Vec<GospelSourceFunctionArgument>,
-    return_value_type: Option<GospelValueType>,
+    pub function_name: String,
+    pub hidden: bool,
+    pub arguments: Vec<GospelSourceFunctionArgument>,
+    pub return_value_type: Option<GospelValueType>,
 }
 impl GospelSourceFunctionDeclaration {
     /// Creates a function declaration. When hidden is true, the function will not be visible outside the current container by name
@@ -126,6 +126,13 @@ impl GospelSourceFunctionDeclaration {
         });
         Ok(new_argument_index)
     }
+}
+
+/// Represents a fixup that needs to be applied to the control flow instruction
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct GospelJumpLabelFixup {
+    instruction_index: u32,
+    operand_index: u32,
 }
 
 /// Allows building definitions of functions to be added to the container writer later
@@ -188,6 +195,10 @@ impl GospelSourceFunctionDefinition {
         self.referenced_structs_lookup.insert(struct_reference, new_struct_index);
         new_struct_index
     }
+    /// Returns the number of instructions currently in the function body
+    pub fn current_instruction_count(&self) -> u32 {
+        self.code.len() as u32
+    }
     /// Note that this function should generally not be used, and other forms of add_X_instruction should be used instead
     pub fn add_instruction_internal(&mut self, instruction: GospelInstruction) -> u32 {
         let new_instruction_index = self.code.len() as u32;
@@ -209,11 +220,24 @@ impl GospelSourceFunctionDefinition {
     pub fn add_int_constant_instruction(&mut self, value: i32) -> anyhow::Result<u32> {
         Ok(self.add_instruction_internal(GospelInstruction::create(GospelOpcode::IntConstant, &[value as u32])?))
     }
-    pub fn add_control_flow_instruction(&mut self, opcode: GospelOpcode, target_instruction_index: u32) -> anyhow::Result<u32> {
+    pub fn add_control_flow_instruction_no_fixup(&mut self, opcode: GospelOpcode, target_instruction_index: u32) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::Branch && opcode != GospelOpcode::BranchIfNot {
             bail!("Invalid opcode for control flow instruction (Branch and BranchIfNot are allowed)");
         }
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[target_instruction_index])?))
+    }
+    pub fn add_control_flow_instruction(&mut self, opcode: GospelOpcode) -> anyhow::Result<GospelJumpLabelFixup> {
+        if opcode != GospelOpcode::Branch && opcode != GospelOpcode::BranchIfNot {
+            bail!("Invalid opcode for control flow instruction (Branch and BranchIfNot are allowed)");
+        }
+        let jump_instruction = self.add_instruction_internal(GospelInstruction::create(opcode, &[u32::MAX])?);
+        Ok(GospelJumpLabelFixup{instruction_index: jump_instruction, operand_index: 0})
+    }
+    pub fn fixup_control_flow_instruction(&mut self, fixup: GospelJumpLabelFixup, target_instruction_index: u32) -> anyhow::Result<()> {
+        if fixup.instruction_index as usize >= self.code.len() {
+            bail!("Invalid fixup instruction index #{} out of bounds", fixup.instruction_index);
+        }
+        self.code[fixup.instruction_index as usize].set_immediate_operand(fixup.operand_index as usize, target_instruction_index)
     }
     pub fn add_string_instruction(&mut self, opcode: GospelOpcode, string: &str) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::TypeLayoutDefineMember && opcode != GospelOpcode::TypeLayoutDoesMemberExist &&
@@ -235,6 +259,7 @@ impl GospelSourceFunctionDefinition {
 
 /// Generic sink for building gospel modules (into containers or reference containers)
 pub trait GospelModuleVisitor {
+    fn module_name(&self) -> Option<String>;
     fn declare_global(&mut self, name: &str) -> anyhow::Result<()>;
     fn define_global(&mut self, name: &str, value: i32) -> anyhow::Result<()>;
     fn declare_function(&mut self, source: GospelSourceFunctionDeclaration) -> anyhow::Result<()>;
@@ -256,6 +281,9 @@ impl GospelMultiContainerVisitor {
     }
 }
 impl GospelModuleVisitor for GospelMultiContainerVisitor {
+    fn module_name(&self) -> Option<String> {
+        self.visitors.iter().find_map(|x| x.borrow().module_name())
+    }
     fn declare_global(&mut self, name: &str) -> anyhow::Result<()> {
         for visitor in &mut self.visitors {
             visitor.borrow_mut().declare_global(name)?;
@@ -508,6 +536,9 @@ impl GospelContainerWriter {
     }
 }
 impl GospelModuleVisitor for GospelContainerWriter {
+    fn module_name(&self) -> Option<String> {
+        Some(self.container_name.clone())
+    }
     fn declare_global(&mut self, name: &str) -> anyhow::Result<()> {
         self.find_or_define_global(name, None).map(|_| {})
     }
@@ -610,6 +641,9 @@ impl GospelReferenceContainerWriter {
     }
 }
 impl GospelModuleVisitor for GospelReferenceContainerWriter {
+    fn module_name(&self) -> Option<String> {
+        self.container_writer.module_name()
+    }
     fn declare_global(&mut self, name: &str) -> anyhow::Result<()> {
         self.container_writer.declare_global(name)
     }
