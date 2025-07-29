@@ -42,6 +42,7 @@ pub struct GospelTypeLayout {
     pub size: usize,
     pub base_classes: Vec<GospelBaseClassLayout>,
     pub members: Vec<GospelMemberLayout>,
+    pub pointee_type: Option<Box<GospelTypeLayout>>,
     #[serde(skip_deserializing)]
     pub metadata: Option<GospelVMStruct>,
 }
@@ -860,6 +861,32 @@ impl GospelVMExecutionState<'_> {
                     let metadata_struct = type_layout.metadata.ok_or_else(|| anyhow!("Type layout metadata not set on type layout"))?;
                     Self::validate_struct_instance_template(&metadata_struct, &struct_template)?;
                     state.push_stack_check_overflow(GospelVMValue::Struct(metadata_struct))?;
+                }
+                GospelOpcode::TypeLayoutCreatePointer => {
+                    let pointee_type_layout = Self::unwrap_value_as_complete_type_layout_checked(state.pop_stack_check_underflow()?)?;
+                    let pointer_type_layout = GospelTypeLayout{
+                        name: format!("{}*", pointee_type_layout.name.as_str()),
+                        alignment: state.target_triplet.address_size(),
+                        unaligned_size: state.target_triplet.address_size(),
+                        size: state.target_triplet.address_size(),
+                        base_classes: Vec::new(),
+                        members: Vec::new(),
+                        pointee_type: Some(Box::new(pointee_type_layout)),
+                        metadata: None,
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(pointer_type_layout))?;
+                }
+                GospelOpcode::TypeLayoutIsPointer => {
+                    let type_layout = Self::unwrap_value_as_complete_type_layout_checked(state.pop_stack_check_underflow()?)?;
+                    let result = if type_layout.pointee_type.is_some() { 1 } else { 0 };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeLayoutGetPointerPointeeType => {
+                    let type_layout = Self::unwrap_value_as_complete_type_layout_checked(state.pop_stack_check_underflow()?)?;
+                    if type_layout.pointee_type.is_none() {
+                        bail!("Attempt to get pointee type from a non-pointer type");
+                    }
+                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(*type_layout.pointee_type.unwrap()))?;
                 }
                 // Array opcodes
                 GospelOpcode::ArrayGetLength => {

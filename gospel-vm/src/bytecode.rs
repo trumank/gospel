@@ -86,6 +86,12 @@ pub enum GospelOpcode {
     TypeLayoutIsChildOf = 0x68, // [pop stack] [pop stack] -> [push stack]
     #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
     TypeLayoutGetOffsetOfBase = 0x69, // [pop stack] [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
+    TypeLayoutCreatePointer = 0x6A, // ; [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
+    TypeLayoutIsPointer = 0x6B, // ; [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
+    TypeLayoutGetPointerPointeeType = 0x6C, // ; [pop stack] -> [push stack]
     // Type layout modification opcodes
     #[strum(props(immediate_count = "1", stack_out_count = "1"))]
     TypeLayoutAllocate = 0x70, // <imm>; -> [push stack]
@@ -201,8 +207,14 @@ impl GospelInstruction {
     pub fn opcode(&self) -> Option<GospelOpcode> { GospelOpcode::from_repr(self.raw_opcode) }
     pub fn instruction_encoding(&self) -> GospelInstructionEncoding { self.instruction_encoding }
     pub fn immediate_operands(&self) -> &[u32] { &self.immediate_operands[0..self.instruction_encoding.immediate_count()] }
-    pub  fn immediate_operand_at(&self, index: usize) -> Option<u32> { if index < self.instruction_encoding.immediate_count() { Some(self.immediate_operands[index]) } else { None } }
-
+    pub fn immediate_operand_at(&self, index: usize) -> Option<u32> { if index < self.instruction_encoding.immediate_count() { Some(self.immediate_operands[index]) } else { None } }
+    pub fn set_immediate_operand(&mut self, operand_index: usize, new_value: u32) -> anyhow::Result<()> {
+        if operand_index >= self.instruction_encoding.immediate_count() {
+            bail!("Operand index #{} out of bounds (number of operands: {})", operand_index, self.instruction_encoding.immediate_count());
+        }
+        self.immediate_operands[operand_index] = new_value;
+        Ok({})
+    }
     pub fn create(opcode: GospelOpcode, immediate_operands: &[u32]) -> anyhow::Result<GospelInstruction> {
         let instruction_encoding = GospelInstructionEncoding::from_opcode(opcode);
         if instruction_encoding.immediate_count() != immediate_operands.len() {
