@@ -637,6 +637,16 @@ impl GospelVMExecutionState<'_> {
                     let result = stack_value.reverse_bits() as i32;
                     state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
                 }
+                GospelOpcode::Eqz => {
+                    let stack_value = Self::unwrap_value_as_int_checked(state.pop_stack_check_underflow()?)? as u32;
+                    let result = if stack_value == 0 { 1 } else { 0 };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::Grz => {
+                    let stack_value = Self::unwrap_value_as_int_checked(state.pop_stack_check_underflow()?)?;
+                    let result = if stack_value > 0 { 1 } else { 0 };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
                 // Arithmetic opcodes
                 GospelOpcode::Add => { state.do_arithmetic_op_checked(|a, b| Ok(a + b))?; }
                 GospelOpcode::Sub => { state.do_arithmetic_op_checked(|a, b| Ok(a - b))?; }
