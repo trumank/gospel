@@ -221,13 +221,13 @@ impl GospelSourceFunctionDefinition {
         Ok(self.add_instruction_internal(GospelInstruction::create(GospelOpcode::IntConstant, &[value as u32])?))
     }
     pub fn add_control_flow_instruction_no_fixup(&mut self, opcode: GospelOpcode, target_instruction_index: u32) -> anyhow::Result<u32> {
-        if opcode != GospelOpcode::Branch && opcode != GospelOpcode::BranchIfNot {
+        if opcode != GospelOpcode::Branch && opcode != GospelOpcode::Branchz {
             bail!("Invalid opcode for control flow instruction (Branch and BranchIfNot are allowed)");
         }
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[target_instruction_index])?))
     }
     pub fn add_control_flow_instruction(&mut self, opcode: GospelOpcode) -> anyhow::Result<GospelJumpLabelFixup> {
-        if opcode != GospelOpcode::Branch && opcode != GospelOpcode::BranchIfNot {
+        if opcode != GospelOpcode::Branch && opcode != GospelOpcode::Branchz {
             bail!("Invalid opcode for control flow instruction (Branch and BranchIfNot are allowed)");
         }
         let jump_instruction = self.add_instruction_internal(GospelInstruction::create(opcode, &[u32::MAX])?);

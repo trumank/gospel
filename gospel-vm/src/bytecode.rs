@@ -29,6 +29,8 @@ pub enum GospelOpcode {
     BindClosure = 0x08, // <imm>; [pop stack] [pop stack] x <imm> -> [push stack]
     #[strum(props(immediate_count = "1"))]
     Abort = 0x09, // <imm>; ->
+    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
+    Typeof = 0x10, // [pop stack] -> [push stack]
     // Logical opcodes
     #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
     And = 0x20, // ; [pop stack], [pop stack] -> [push stack]
@@ -65,7 +67,7 @@ pub enum GospelOpcode {
     #[strum(props(immediate_count = "1"))]
     Branch = 0x40, // <imm>; ->
     #[strum(props(immediate_count = "1", stack_in_count = "1"))]
-    BranchIfNot = 0x41, // <imm>; [pop stack] ->
+    Branchz = 0x41, // <imm>; [pop stack] ->
     // Data storage opcodes
     #[strum(props(immediate_count = "1", stack_out_count = "1"))]
     LoadSlot = 0x51, // <imm>; -> [push stack]
@@ -143,6 +145,12 @@ pub enum GospelOpcode {
     StructGetNamedField = 0x94, // <imm> <imm>; [pop stack] -> [push stack]
     #[strum(props(immediate_count = "2", stack_in_count = "2", stack_out_count = "1"))]
     StructSetNamedField = 0x95, // <imm> <imm>; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_out_count = "1"))]
+    StructIsStructOfType = 0x96, // <imm>; -> [push stack]
+    #[strum(props(immediate_count = "2", stack_in_count = "1", stack_out_count = "1"))]
+    StructGetNamedTypedField = 0x97, // <imm> <imm>; [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "2", stack_in_count = "2", stack_out_count = "1"))]
+    StructSetNamedTypedField = 0x98, // <imm> <imm>; [pop stack], [pop stack] -> [push stack]
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]

@@ -626,6 +626,11 @@ impl GospelVMExecutionState<'_> {
                     let message = state.copy_referenced_string_checked(message_index)?;
                     bail!("Aborted: {}", message);
                 }
+                GospelOpcode::Typeof => {
+                    let stack_value = state.pop_stack_check_underflow()?;
+                    let result = stack_value.value_type() as i32;
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
                 // Logical opcodes
                 GospelOpcode::And => { state.do_bitwise_op(|a, b| a & b)?; }
                 GospelOpcode::Or => { state.do_bitwise_op(|a, b| a | b)?; }
@@ -676,7 +681,7 @@ impl GospelVMExecutionState<'_> {
                     let target_instruction_index = Self::immediate_value_checked(instruction, 0)? as usize;
                     state.jump_control_flow_checked(target_instruction_index)?;
                 }
-                GospelOpcode::BranchIfNot => {
+                GospelOpcode::Branchz => {
                     let target_instruction_index = Self::immediate_value_checked(instruction, 0)? as usize;
                     let condition_value = Self::unwrap_value_as_int_checked(state.pop_stack_check_underflow()?)? as u32;
                     if condition_value == 0 {
@@ -1023,6 +1028,55 @@ impl GospelVMExecutionState<'_> {
                     let struct_field_name = state.copy_referenced_string_checked(struct_field_name_index)?;
 
                     struct_value.set_named_property(struct_field_name.as_str(), Some(field_value))?;
+                    state.push_stack_check_overflow(GospelVMValue::Struct(struct_value))?;
+                }
+                GospelOpcode::StructIsStructOfType => {
+                    let struct_value = Self::unwrap_value_as_struct_checked(state.pop_stack_check_underflow()?)?;
+
+                    let struct_index = Self::immediate_value_checked(instruction, 0)? as usize;
+                    let struct_template = state.get_referenced_struct_checked(struct_index)?;
+
+                    let result = if Rc::ptr_eq(&struct_value.template, &struct_template) { 1 } else { 0 };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::StructGetNamedTypedField => {
+                    let field_expected_value_type = GospelValueType::from_repr(Self::immediate_value_checked(instruction, 0)? as u8)
+                        .ok_or_else(|| anyhow!("Unknown value type"))?;
+
+                    let struct_value = Self::unwrap_value_as_struct_checked(state.pop_stack_check_underflow()?)?;
+
+                    let struct_field_name_index = Self::immediate_value_checked(instruction, 1)? as usize;
+                    let struct_field_name = state.copy_referenced_string_checked(struct_field_name_index)?;
+
+                    let struct_field_index = struct_value.template.find_named_property_index(&struct_field_name)
+                        .ok_or_else(|| anyhow!("Struct does not have a property with name '{}'", struct_field_name))?;
+                    let struct_field_type = struct_value.template.fields[struct_field_index];
+                    if struct_field_type != field_expected_value_type {
+                        bail!("Expected field {} value to be of type {}, but it was of type {}", struct_field_name, field_expected_value_type, struct_field_type);
+                    }
+
+                    let field_value = struct_value.take_raw_property(struct_field_index)?
+                        .ok_or_else(|| anyhow!("Field {} is not set on struct instance", struct_field_name))?;
+                    state.push_stack_check_overflow(field_value)?;
+                }
+                GospelOpcode::StructSetNamedTypedField => {
+                    let field_expected_value_type = GospelValueType::from_repr(Self::immediate_value_checked(instruction, 0)? as u8)
+                        .ok_or_else(|| anyhow!("Unknown value type"))?;
+
+                    let field_value = state.pop_stack_check_underflow()?;
+                    let mut struct_value = Self::unwrap_value_as_struct_checked(state.pop_stack_check_underflow()?)?;
+
+                    let struct_field_name_index = Self::immediate_value_checked(instruction, 1)? as usize;
+                    let struct_field_name = state.copy_referenced_string_checked(struct_field_name_index)?;
+
+                    let struct_field_index = struct_value.template.find_named_property_index(&struct_field_name)
+                        .ok_or_else(|| anyhow!("Struct does not have a property with name '{}'", struct_field_name))?;
+                    let struct_field_type = struct_value.template.fields[struct_field_index];
+                    if struct_field_type != field_expected_value_type {
+                        bail!("Expected field {} value to be of type {}, but it was of type {}", struct_field_name, field_expected_value_type, struct_field_type);
+                    }
+
+                    struct_value.set_raw_property(struct_field_index, Some(field_value))?;
                     state.push_stack_check_overflow(GospelVMValue::Struct(struct_value))?;
                 }
             };
