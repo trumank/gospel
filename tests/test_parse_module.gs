@@ -1,7 +1,7 @@
 ﻿import core::uint8;
 import core::uint32;
 import core::{float, double};
-import core::*;
+import unreal;
 
 extern int UE_VERSION_MAJOR;
 extern int UE_WITH_CASE_PRESERVING_NAME;

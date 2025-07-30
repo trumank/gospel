@@ -596,13 +596,12 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::Call => {
                     let number_of_arguments = Self::immediate_value_checked(instruction, 0)? as usize;
-                    let closure = Self::unwrap_value_as_function_pointer_checked(state.pop_stack_check_underflow()?)?;
-
                     let mut function_arguments: Vec<GospelVMValue> = vec![GospelVMValue::Integer(0); number_of_arguments];
                     for index in 0..number_of_arguments {
                         let argument_value = state.pop_stack_check_underflow()?;
                         function_arguments[number_of_arguments - index - 1] = argument_value;
                     }
+                    let closure = Self::unwrap_value_as_function_pointer_checked(state.pop_stack_check_underflow()?)?;
                     if state.recursion_counter >= state.max_recursion_depth {
                         bail!("Recursion limit reached");
                     }
@@ -614,13 +613,12 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::BindClosure => {
                     let number_of_arguments = Self::immediate_value_checked(instruction, 0)? as usize;
-                    let mut closure = Self::unwrap_value_as_function_pointer_checked(state.pop_stack_check_underflow()?)?;
-
                     let mut closure_arguments: Vec<GospelVMValue> = vec![GospelVMValue::Integer(0); number_of_arguments];
                     for index in 0..number_of_arguments {
                         let argument_value = state.pop_stack_check_underflow()?;
                         closure_arguments[number_of_arguments - index - 1] = argument_value;
                     }
+                    let mut closure = Self::unwrap_value_as_function_pointer_checked(state.pop_stack_check_underflow()?)?;
                     closure.arguments.append(&mut closure_arguments);
                     if closure.arguments.len() >= state.max_stack_size {
                         bail!("Closure captured argument number limit reached");
