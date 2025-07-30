@@ -249,6 +249,14 @@ impl GospelSourceFunctionDefinition {
         let string_index = self.add_string_reference_internal(string);
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[string_index])?))
     }
+    pub fn add_typed_member_access_instruction(&mut self, opcode: GospelOpcode, field_name: &str, field_type: GospelValueType) -> anyhow::Result<u32> {
+        if opcode != GospelOpcode::StructGetNamedTypedField && opcode != GospelOpcode::StructSetNamedTypedField {
+            bail!("Invalid opcode for typed member access instruction (expected StructGetNamedTypedField or StructSetNamedTypedField)");
+        }
+        let field_type_value = field_type as u32;
+        let member_name_index = self.add_string_reference_internal(field_name);
+        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[field_type_value, member_name_index])?))
+    }
     pub fn add_variadic_instruction(&mut self, opcode: GospelOpcode, argument_count: u32) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::Call {
             bail!("Invalid opcode for variadic instruction (only Call is allowed)");

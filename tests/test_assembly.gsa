@@ -14,16 +14,16 @@ hidden function __define_opaque_base_type base_layout: TypeLayout size_and_align
 };
 
 function usize -> TypeLayout {
-    LoadSlot &platform AddressSize;
     TypeLayoutAllocate "usize";
+    LoadSlot &platform AddressSize;
     LoadSlot &function __define_opaque_base_type;
     Call 2;
     ReturnValue;
 };
 
 function u32 -> TypeLayout {
-    IntConstant 0x4;
     TypeLayoutAllocate "u32";
+    IntConstant 0x4;
     LoadSlot &function __define_opaque_base_type;
     Call 2;
     ReturnValue;
