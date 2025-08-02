@@ -4,6 +4,7 @@ use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
 use std::fmt::{Display, Formatter};
 use strum_macros::Display;
+use fancy_regex::Regex;
 
 #[derive(Logos, Debug, Clone, PartialEq, Display)]
 #[logos(skip r"[ \r\t\n\f\u{feff}]+")]
@@ -374,6 +375,10 @@ struct CompilerParserInstance<'a> {
     ctx: CompilerLexerContext<'a>,
 }
 impl<'a> CompilerParserInstance<'a> {
+    fn preprocess_input_text(input: &str) -> anyhow::Result<String> {
+        let comment_regex = Regex::new(r#"/\*(?:(?!\*/)[\S\s])*\*/|//.*"#).map_err(|x| anyhow!(x.to_string()))?;
+        Ok(comment_regex.replace_all(input, "").to_string())
+    }
     fn take_parse_case(self) -> ExactParseCase<'a, ()> {
         ExactParseCase{ parser: self, data: () }
     }
@@ -1895,19 +1900,22 @@ impl<'a> CompilerParserInstance<'a> {
 
 /// Attempts to parse a source file. Returns a result with a source file AST or an error
 pub fn parse_source_file(file_name: &str, contents: &str) -> anyhow::Result<ModuleSourceFile> {
-    let parser = CompilerParserInstance { ctx: CompilerLexerContext{ file_name, lex: CompilerToken::lexer(contents), buffered_next_token: None } };
+    let processed_input = CompilerParserInstance::preprocess_input_text(contents)?;
+    let parser = CompilerParserInstance { ctx: CompilerLexerContext{ file_name, lex: CompilerToken::lexer(&processed_input), buffered_next_token: None } };
     parser.parse_source_file()
 }
 
 /// Attempts to parse the provided contents as a single expression. This is useful for REPL support
 pub fn parse_expression(file_name: &str, contents: &str) -> anyhow::Result<Expression> {
-    let parser = CompilerParserInstance { ctx: CompilerLexerContext{ file_name, lex: CompilerToken::lexer(contents), buffered_next_token: None } };
+    let processed_input = CompilerParserInstance::preprocess_input_text(contents)?;
+    let parser = CompilerParserInstance { ctx: CompilerLexerContext{ file_name, lex: CompilerToken::lexer(&processed_input), buffered_next_token: None } };
     parser.parse_single_expression()
 }
 
 /// Attempts to parse the provided contents as a single statement. This is useful for REPL support
 pub fn parse_statement(file_name: &str, contents: &str) -> anyhow::Result<Statement> {
-    let parser = CompilerParserInstance { ctx: CompilerLexerContext{ file_name, lex: CompilerToken::lexer(contents), buffered_next_token: None } };
+    let processed_input = CompilerParserInstance::preprocess_input_text(contents)?;
+    let parser = CompilerParserInstance { ctx: CompilerLexerContext{ file_name, lex: CompilerToken::lexer(&processed_input), buffered_next_token: None } };
     parser.parse_single_statement()
 }
 

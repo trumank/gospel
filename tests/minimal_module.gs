@@ -14,8 +14,10 @@ struct alignas(char) uint8_t {};
 struct alignas(2) uint16_t {};
 struct alignas(4) uint32_t {};
 struct alignas(8) uint64_t {};
+/* Test block comment */
 struct alignas(__address_size) uintptr_t {};
 
+// Test single line comment
 template<typename T>
 struct TVector {
     T X;
@@ -23,6 +25,9 @@ struct TVector {
     T Z;
 };
 
+/*
+ * Test multi-line block comment
+ */
 using FVector = TVector<double>;
 
 struct FScriptElement {};
