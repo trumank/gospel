@@ -28,20 +28,20 @@ struct TVector {
 /*
  * Test multi-line block comment
  */
-using FVector = TVector<double>;
+type FVector = TVector<double>;
 
 public struct FScriptElement {};
 
 template<typename InIndexType>
 public struct TSizedHeapAllocator {
-    using IndexType = InIndexType;
+    type IndexType = InIndexType;
     FScriptElement* Data;
 };
 
 template<typename InElementType, typename InAllocator = TSizedHeapAllocator<int32_t>>
 public struct TArray {
-    using ElementType = InElementType;
-    using IndexType = InAllocator::typename IndexType;
+    type ElementType = InElementType;
+    type IndexType = InAllocator::typename IndexType;
 
     InAllocator AllocatorInstance;
     InAllocator::typename IndexType ArrayNum;
@@ -49,11 +49,11 @@ public struct TArray {
 
     if (InElementType == int32_t) {
         template<typename T>
-        local using TemplatedData = T;
+        local type TemplatedData = T;
     }
 };
 
-internal using FArrayOfInt32 = TArray<int32_t>;
+internal type FArrayOfInt32 = TArray<int32_t>;
 
-using Test1 = TArray<int32_t>::typename TemplatedData<char>;
-using Test2 = TArray<float>::typename TemplatedData<char>;
+type Test1 = TArray<int32_t>::typename TemplatedData<char>;
+type Test2 = TArray<float>::typename TemplatedData<char>;

@@ -7,8 +7,8 @@ extern int UE_VERSION_MAJOR;
 extern int UE_WITH_CASE_PRESERVING_NAME;
 extern int UE_NAME_OUTLINE_NUMBER;
 
-using FReal = if (UE_VERSION_MAJOR == 5) double else float;
-using FPartialIdentifierTest = core::float;
+type FReal = if (UE_VERSION_MAJOR == 5) double else float;
+type FPartialIdentifierTest = core::float;
 
 namespace A::B {
     namespace C {
@@ -39,15 +39,15 @@ struct TPair {
 
 template<typename T>
 struct TVector {
-    using ElementType = T;
+    type ElementType = T;
     T X;
     T Y;
     T Z;
 };
-using FVector = TVector<FReal>;
+type FVector = TVector<FReal>;
 
-using TestMemberAccessOperator1 = FVector::typename ElementType;
-using TestMemberAccessOperator2 = FVector::typename X;
+type TestMemberAccessOperator1 = FVector::typename ElementType;
+type TestMemberAccessOperator2 = FVector::typename X;
 
 struct FConditionalStructTest : if (UE_VERSION_MAJOR == 5) AInfo else AActor {
     if (UE_VERSION_MAJOR != 5) {
@@ -67,10 +67,10 @@ struct FConditionalStructTest : if (UE_VERSION_MAJOR == 5) AInfo else AActor {
 template<typename Ignored>
 struct FWrapperStruct {
     template<typename InInnerType>
-    using Inner = InInnerType;
+    type Inner = InInnerType;
 };
 
-using DynamicTemplateInstantiationTest = FWrapperStruct<FVector>::typename Inner<float>;
+type DynamicTemplateInstantiationTest = FWrapperStruct<FVector>::typename Inner<float>;
 
 int ComplexExpressionTest = {
     int LocalVariable = UE_VERSION_MINOR;
@@ -114,7 +114,7 @@ struct TArray {
     int32 ArrayNum;
     int32 ArrayMax;
 };
-using FByteArray = TArray<uint8>;
+type FByteArray = TArray<uint8>;
 
 int BinaryOperatorPrecedenceTest = A | B ^ C & D >> E << F + G - H * I[A + B] / J % K > L < M >= N <= O && P || Q == R != S;
 int UnaryOperatorTest = sizeof(A*) + alignof(B*) + ~C + -D + !E * (F + G);
