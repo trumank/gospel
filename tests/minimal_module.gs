@@ -30,16 +30,16 @@ struct TVector {
  */
 using FVector = TVector<double>;
 
-struct FScriptElement {};
+public struct FScriptElement {};
 
 template<typename InIndexType>
-struct TSizedHeapAllocator {
+public struct TSizedHeapAllocator {
     using IndexType = InIndexType;
     FScriptElement* Data;
 };
 
 template<typename InElementType, typename InAllocator = TSizedHeapAllocator<int32_t>>
-struct TArray {
+public struct TArray {
     using ElementType = InElementType;
     using IndexType = InAllocator::typename IndexType;
 
@@ -49,11 +49,11 @@ struct TArray {
 
     if (InElementType == int32_t) {
         template<typename T>
-        using TemplatedData = T;
+        local using TemplatedData = T;
     }
 };
 
-using FArrayOfInt32 = TArray<int32_t>;
+internal using FArrayOfInt32 = TArray<int32_t>;
 
 using Test1 = TArray<int32_t>::typename TemplatedData<char>;
 using Test2 = TArray<float>::typename TemplatedData<char>;

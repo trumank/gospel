@@ -9,7 +9,7 @@ use strum_macros::Display;
 use gospel_vm::bytecode::GospelOpcode;
 use gospel_vm::gospel_type::{GospelPlatformConfigProperty, GospelValueType};
 use gospel_vm::writer::{GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceObjectReference, GospelSourceSlotBinding, GospelSourceStaticValue, GospelSourceStructDefinition, GospelSourceStructField};
-use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, ExternStatement, DeclarationStatement, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayIndexExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, BuiltinIdentifierExpression, BuiltinIdentifier};
+use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, ExternStatement, DeclarationStatement, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayIndexExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, BuiltinIdentifierExpression, BuiltinIdentifier, DeclarationAccessSpecifier};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CompilerSourceContext {
@@ -1023,7 +1023,7 @@ impl CompilerModuleBuilder {
             ModuleTopLevelDeclaration::EmptyStatement => { Ok({}) }
             ModuleTopLevelDeclaration::ImportStatement(import_statement) => { CompilerInstance::compile_import_statement(&file_scope, import_statement) }
             ModuleTopLevelDeclaration::ExternStatement(extern_statement) => { CompilerInstance::compile_extern_statement(&file_scope, extern_statement) }
-            ModuleTopLevelDeclaration::NamespaceStatement(namespace_statement) => { CompilerInstance::compile_namespace_statement(&file_scope, namespace_statement) }
+            ModuleTopLevelDeclaration::NamespaceStatement(namespace_statement) => { CompilerInstance::compile_namespace_statement(&file_scope, namespace_statement, DeclarationVisibility::Public) }
             ModuleTopLevelDeclaration::DataStatement(data_statement) => { CompilerInstance::compile_data_statement(&file_scope, data_statement, DeclarationVisibility::Public)?; Ok({}) }
             ModuleTopLevelDeclaration::StructStatement(struct_statement) => { CompilerInstance::compile_struct_statement(&file_scope, struct_statement, None, DeclarationVisibility::Public)?; Ok({}) }
         }).chain_compiler_result(|| compiler_error!(&file_scope.source_context, "Failed to compile source file"))
@@ -1135,6 +1135,13 @@ impl CompilerInstance {
             ExpressionValueType::Template => GospelValueType::Closure,
         }
     }
+    fn convert_access_specifier(value_type: DeclarationAccessSpecifier) -> DeclarationVisibility {
+        match value_type {
+            DeclarationAccessSpecifier::Public => DeclarationVisibility::Public,
+            DeclarationAccessSpecifier::Internal => DeclarationVisibility::ModuleInternal,
+            DeclarationAccessSpecifier::Local => DeclarationVisibility::FileLocal,
+        }
+    }
     fn compile_import_statement(scope: &Rc<CompilerLexicalScope>, statement: &ModuleImportStatement) -> CompilerResult<()> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
 
@@ -1185,18 +1192,19 @@ impl CompilerInstance {
             }
         }
     }
-    fn compile_namespace_statement(scope: &Rc<CompilerLexicalScope>, statement: &NamespaceStatement) -> CompilerResult<()> {
+    fn compile_namespace_statement(scope: &Rc<CompilerLexicalScope>, statement: &NamespaceStatement, default_visibility: DeclarationVisibility) -> CompilerResult<()> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
         let mut current_scope: Rc<CompilerLexicalScope> = scope.clone();
 
         // Allocate a new scope for the namespace and declare it
+        let visibility = statement.access_specifier.map(|x| Self::convert_access_specifier(x)).unwrap_or(default_visibility);
         for namespace_name in &statement.name.path {
-            current_scope = current_scope.declare_scope(namespace_name, CompilerLexicalScopeClass::Namespace, DeclarationVisibility::Public, &source_context.line_context)?;
+            current_scope = current_scope.declare_scope(namespace_name, CompilerLexicalScopeClass::Namespace, visibility, &source_context.line_context)?;
         }
         statement.declarations.iter().map(|namespace_declaration| {
             match namespace_declaration {
                 NamespaceLevelDeclaration::EmptyStatement => { Ok({}) }
-                NamespaceLevelDeclaration::NamespaceStatement(nested_namespace) => { Self::compile_namespace_statement(&current_scope, nested_namespace) }
+                NamespaceLevelDeclaration::NamespaceStatement(nested_namespace) => { Self::compile_namespace_statement(&current_scope, nested_namespace, DeclarationVisibility::Public) }
                 NamespaceLevelDeclaration::DataStatement(data_statement) => { Self::compile_data_statement(&current_scope, data_statement, DeclarationVisibility::Public)?; Ok({}) }
                 NamespaceLevelDeclaration::StructStatement(struct_statement) => { Self::compile_struct_statement(&current_scope, struct_statement, None, DeclarationVisibility::Public)?; Ok({}) }
             }
@@ -1270,7 +1278,8 @@ impl CompilerInstance {
         let function_builder = CompilerFunctionBuilder::create(&function_scope)?;
         Ok(function_builder)
     }
-    fn compile_data_statement(scope: &Rc<CompilerLexicalScope>, statement: &DataStatement, visibility: DeclarationVisibility) -> CompilerResult<CompilerFunctionReference> {
+    fn compile_data_statement(scope: &Rc<CompilerLexicalScope>, statement: &DataStatement, default_visibility: DeclarationVisibility) -> CompilerResult<CompilerFunctionReference> {
+        let visibility = statement.access_specifier.map(|x| Self::convert_access_specifier(x)).unwrap_or(default_visibility);
         let mut function_builder = Self::compile_function_declaration(scope, statement.name.as_str(), visibility, statement.value_type, statement.template_declaration.as_ref(), &statement.source_context)?;
         function_builder.compile_return_value_expression(&function_builder.function_scope.clone(), &statement.source_context, &statement.initializer)?;
         function_builder.commit()
@@ -1340,10 +1349,12 @@ impl CompilerInstance {
         }
         Ok(meta_layout_reference.borrow().clone())
     }
-    fn compile_struct_statement(scope: &Rc<CompilerLexicalScope>, statement: &StructStatement, fallback_name: Option<&str>, visibility: DeclarationVisibility) -> CompilerResult<CompilerFunctionReference> {
+    fn compile_struct_statement(scope: &Rc<CompilerLexicalScope>, statement: &StructStatement, fallback_name: Option<&str>, default_visibility: DeclarationVisibility) -> CompilerResult<CompilerFunctionReference> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
         let function_name = statement.name.as_ref().map(|x| x.as_str()).or(fallback_name)
             .ok_or_else(|| compiler_error!(&source_context, "Unnamed struct declaration in top level scope. All top level structs must have a name"))?;
+
+        let visibility = statement.access_specifier.map(|x| Self::convert_access_specifier(x)).unwrap_or(default_visibility);
         let mut function_builder = Self::compile_function_declaration(scope, function_name, visibility, ExpressionValueType::Typename, statement.template_declaration.as_ref(), &source_context.line_context)?;
         let struct_meta_layout = Self::compile_struct_meta_layout(&function_builder.function_scope, statement)?;
 

@@ -11,6 +11,14 @@ pub enum ExpressionValueType {
     Template,
 }
 
+/// Describes a source level access specifier
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Display)]
+pub enum DeclarationAccessSpecifier {
+    Local,
+    Internal,
+    Public,
+}
+
 /// Represents a type of partial identifier
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Display)]
 pub enum PartialIdentifierKind {
@@ -251,6 +259,7 @@ pub struct ModuleImportStatement {
 /// Represents an external data declaration
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternStatement {
+    pub access_specifier: Option<DeclarationAccessSpecifier>,
     pub global_name: String,
     pub value_type: ExpressionValueType,
     #[serde(default)]
@@ -276,6 +285,7 @@ pub struct TemplateDeclaration {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataStatement {
     pub template_declaration: Option<TemplateDeclaration>,
+    pub access_specifier: Option<DeclarationAccessSpecifier>,
     pub value_type: ExpressionValueType,
     pub name: String,
     pub initializer: Expression,
@@ -328,6 +338,7 @@ pub enum StructInnerDeclaration {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructStatement {
     pub template_declaration: Option<TemplateDeclaration>,
+    pub access_specifier: Option<DeclarationAccessSpecifier>,
     pub alignment_expression: Option<Expression>,
     pub name: Option<String>,
     pub base_class_expressions: Vec<Expression>,
@@ -347,6 +358,7 @@ pub enum NamespaceLevelDeclaration {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NamespaceStatement {
+    pub access_specifier: Option<DeclarationAccessSpecifier>,
     pub name: PartialIdentifier,
     pub declarations: Vec<NamespaceLevelDeclaration>,
     #[serde(default)]
