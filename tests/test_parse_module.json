@@ -1,65 +1,106 @@
 {
+  "file_name": "tests/test_parse_module.gs",
   "declarations": [
     {
       "ImportStatement": {
-        "QualifiedImport": {
-          "path": [
-            "core",
-            "uint8"
-          ]
-        }
-      }
-    },
-    {
-      "ImportStatement": {
-        "QualifiedImport": {
-          "path": [
-            "core",
-            "uint32"
-          ]
-        }
-      }
-    },
-    {
-      "ImportStatement": {
-        "CompositeImport": {
-          "namespace": {
+        "statement_type": {
+          "QualifiedImport": {
+            "kind": "Relative",
             "path": [
-              "core"
+              "core",
+              "uint8"
             ]
-          },
-          "imported_names": [
-            "float",
-            "double"
-          ]
+          }
+        },
+        "source_context": {
+          "line_number": 0,
+          "line_offset": 3
         }
       }
     },
     {
       "ImportStatement": {
-        "NamespaceImport": {
-          "path": [
-            "core"
-          ]
+        "statement_type": {
+          "QualifiedImport": {
+            "kind": "Relative",
+            "path": [
+              "core",
+              "uint32"
+            ]
+          }
+        },
+        "source_context": {
+          "line_number": 1,
+          "line_offset": 1
+        }
+      }
+    },
+    {
+      "ImportStatement": {
+        "statement_type": {
+          "CompositeImport": {
+            "namespace": {
+              "kind": "Relative",
+              "path": [
+                "core"
+              ]
+            },
+            "imported_names": [
+              "float",
+              "double"
+            ]
+          }
+        },
+        "source_context": {
+          "line_number": 2,
+          "line_offset": 1
+        }
+      }
+    },
+    {
+      "ImportStatement": {
+        "statement_type": {
+          "QualifiedImport": {
+            "kind": "Relative",
+            "path": [
+              "unreal"
+            ]
+          }
+        },
+        "source_context": {
+          "line_number": 3,
+          "line_offset": 1
         }
       }
     },
     {
       "ExternStatement": {
         "global_name": "UE_VERSION_MAJOR",
-        "value_type": "Int"
+        "value_type": "Int",
+        "source_context": {
+          "line_number": 5,
+          "line_offset": 1
+        }
       }
     },
     {
       "ExternStatement": {
         "global_name": "UE_WITH_CASE_PRESERVING_NAME",
-        "value_type": "Int"
+        "value_type": "Int",
+        "source_context": {
+          "line_number": 6,
+          "line_offset": 1
+        }
       }
     },
     {
       "ExternStatement": {
         "global_name": "UE_NAME_OUTLINE_NUMBER",
-        "value_type": "Int"
+        "value_type": "Int",
+        "source_context": {
+          "line_number": 7,
+          "line_offset": 1
+        }
       }
     },
     {
@@ -73,32 +114,74 @@
               "BinaryExpression": {
                 "left_expression": {
                   "IdentifierExpression": {
-                    "path": [
-                      "UE_VERSION_MAJOR"
-                    ]
+                    "identifier": {
+                      "kind": "Relative",
+                      "path": [
+                        "UE_VERSION_MAJOR"
+                      ]
+                    },
+                    "template_arguments": null,
+                    "source_context": {
+                      "line_number": 9,
+                      "line_offset": 19
+                    }
                   }
                 },
                 "operator": "Equals",
                 "right_expression": {
-                  "IntegerConstantExpression": 5
+                  "IntegerConstantExpression": {
+                    "constant_value": 5,
+                    "source_context": {
+                      "line_number": 9,
+                      "line_offset": 39
+                    }
+                  }
+                },
+                "source_context": {
+                  "line_number": 9,
+                  "line_offset": 36
                 }
               }
             },
             "true_expression": {
               "IdentifierExpression": {
-                "path": [
-                  "double"
-                ]
+                "identifier": {
+                  "kind": "Relative",
+                  "path": [
+                    "double"
+                  ]
+                },
+                "template_arguments": null,
+                "source_context": {
+                  "line_number": 9,
+                  "line_offset": 42
+                }
               }
             },
             "false_expression": {
               "IdentifierExpression": {
-                "path": [
-                  "float"
-                ]
+                "identifier": {
+                  "kind": "Relative",
+                  "path": [
+                    "float"
+                  ]
+                },
+                "template_arguments": null,
+                "source_context": {
+                  "line_number": 9,
+                  "line_offset": 54
+                }
               }
+            },
+            "source_context": {
+              "line_number": 9,
+              "line_offset": 15
             }
           }
+        },
+        "source_context": {
+          "line_number": 9,
+          "line_offset": 1
         }
       }
     },
@@ -109,17 +192,30 @@
         "name": "FPartialIdentifierTest",
         "initializer": {
           "IdentifierExpression": {
-            "path": [
-              "core",
-              "float"
-            ]
+            "identifier": {
+              "kind": "Relative",
+              "path": [
+                "core",
+                "float"
+              ]
+            },
+            "template_arguments": null,
+            "source_context": {
+              "line_number": 10,
+              "line_offset": 38
+            }
           }
+        },
+        "source_context": {
+          "line_number": 10,
+          "line_offset": 1
         }
       }
     },
     {
       "NamespaceStatement": {
         "name": {
+          "kind": "Relative",
           "path": [
             "A",
             "B"
@@ -129,6 +225,7 @@
           {
             "NamespaceStatement": {
               "name": {
+                "kind": "Relative",
                 "path": [
                   "C"
                 ]
@@ -140,13 +237,25 @@
                     "alignment_expression": null,
                     "name": "FNoncopyable",
                     "base_class_expressions": [],
-                    "declarations": []
+                    "declarations": [],
+                    "source_context": {
+                      "line_number": 14,
+                      "line_offset": 9
+                    }
                   }
                 }
-              ]
+              ],
+              "source_context": {
+                "line_number": 13,
+                "line_offset": 5
+              }
             }
           }
-        ]
+        ],
+        "source_context": {
+          "line_number": 12,
+          "line_offset": 1
+        }
       }
     },
     {
@@ -161,17 +270,33 @@
               "alignment_expression": null,
               "member_type_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "uint32"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "uint32"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 20,
+                    "line_offset": 5
+                  }
                 }
               },
               "name": "Value",
               "array_size_expression": null,
-              "bitfield_width_expression": null
+              "bitfield_width_expression": null,
+              "source_context": {
+                "line_number": 20,
+                "line_offset": 5
+              }
             }
           }
-        ]
+        ],
+        "source_context": {
+          "line_number": 19,
+          "line_offset": 1
+        }
       }
     },
     {
@@ -186,60 +311,42 @@
               "alignment_expression": null,
               "member_type_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "FNameEntryId"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "FNameEntryId"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 24,
+                    "line_offset": 5
+                  }
                 }
               },
               "name": "ComparisonIndex",
               "array_size_expression": null,
-              "bitfield_width_expression": null
+              "bitfield_width_expression": null,
+              "source_context": {
+                "line_number": 24,
+                "line_offset": 5
+              }
             }
           },
           {
             "ConditionalDeclaration": {
               "condition_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "UE_WITH_CASE_PRESERVING_NAME"
-                  ]
-                }
-              },
-              "then_branch": {
-                "BlockDeclaration": {
-                  "declarations": [
-                    {
-                      "MemberDeclaration": {
-                        "alignment_expression": null,
-                        "member_type_expression": {
-                          "IdentifierExpression": {
-                            "path": [
-                              "FNameEntryId"
-                            ]
-                          }
-                        },
-                        "name": "DisplayIndex",
-                        "array_size_expression": null,
-                        "bitfield_width_expression": null
-                      }
-                    }
-                  ]
-                }
-              },
-              "else_branch": null
-            }
-          },
-          {
-            "ConditionalDeclaration": {
-              "condition_expression": {
-                "UnaryExpression": {
-                  "operator": "BoolNegate",
-                  "expression": {
-                    "IdentifierExpression": {
-                      "path": [
-                        "UE_NAME_OUTLINE_NUMBER"
-                      ]
-                    }
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "UE_WITH_CASE_PRESERVING_NAME"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 25,
+                    "line_offset": 9
                   }
                 }
               },
@@ -251,23 +358,117 @@
                         "alignment_expression": null,
                         "member_type_expression": {
                           "IdentifierExpression": {
-                            "path": [
-                              "uint32"
-                            ]
+                            "identifier": {
+                              "kind": "Relative",
+                              "path": [
+                                "FNameEntryId"
+                              ]
+                            },
+                            "template_arguments": null,
+                            "source_context": {
+                              "line_number": 26,
+                              "line_offset": 9
+                            }
+                          }
+                        },
+                        "name": "DisplayIndex",
+                        "array_size_expression": null,
+                        "bitfield_width_expression": null,
+                        "source_context": {
+                          "line_number": 26,
+                          "line_offset": 9
+                        }
+                      }
+                    }
+                  ],
+                  "source_context": {
+                    "line_number": 25,
+                    "line_offset": 39
+                  }
+                }
+              },
+              "else_branch": null,
+              "source_context": {
+                "line_number": 25,
+                "line_offset": 5
+              }
+            }
+          },
+          {
+            "ConditionalDeclaration": {
+              "condition_expression": {
+                "UnaryExpression": {
+                  "operator": "BoolNegate",
+                  "expression": {
+                    "IdentifierExpression": {
+                      "identifier": {
+                        "kind": "Relative",
+                        "path": [
+                          "UE_NAME_OUTLINE_NUMBER"
+                        ]
+                      },
+                      "template_arguments": null,
+                      "source_context": {
+                        "line_number": 28,
+                        "line_offset": 10
+                      }
+                    }
+                  },
+                  "source_context": {
+                    "line_number": 28,
+                    "line_offset": 9
+                  }
+                }
+              },
+              "then_branch": {
+                "BlockDeclaration": {
+                  "declarations": [
+                    {
+                      "MemberDeclaration": {
+                        "alignment_expression": null,
+                        "member_type_expression": {
+                          "IdentifierExpression": {
+                            "identifier": {
+                              "kind": "Relative",
+                              "path": [
+                                "uint32"
+                              ]
+                            },
+                            "template_arguments": null,
+                            "source_context": {
+                              "line_number": 29,
+                              "line_offset": 9
+                            }
                           }
                         },
                         "name": "Number",
                         "array_size_expression": null,
-                        "bitfield_width_expression": null
+                        "bitfield_width_expression": null,
+                        "source_context": {
+                          "line_number": 29,
+                          "line_offset": 9
+                        }
                       }
                     }
-                  ]
+                  ],
+                  "source_context": {
+                    "line_number": 28,
+                    "line_offset": 34
+                  }
                 }
               },
-              "else_branch": null
+              "else_branch": null,
+              "source_context": {
+                "line_number": 28,
+                "line_offset": 5
+              }
             }
           }
-        ]
+        ],
+        "source_context": {
+          "line_number": 23,
+          "line_offset": 1
+        }
       }
     },
     {
@@ -277,12 +478,20 @@
             {
               "name": "KeyType",
               "value_type": "Typename",
-              "default_value": null
+              "default_value": null,
+              "source_context": {
+                "line_number": 33,
+                "line_offset": 10
+              }
             },
             {
               "name": "ValueType",
               "value_type": "Typename",
-              "default_value": null
+              "default_value": null,
+              "source_context": {
+                "line_number": 33,
+                "line_offset": 28
+              }
             }
           ]
         },
@@ -295,14 +504,26 @@
               "alignment_expression": null,
               "member_type_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "KeyType"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "KeyType"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 35,
+                    "line_offset": 5
+                  }
                 }
               },
               "name": "Key",
               "array_size_expression": null,
-              "bitfield_width_expression": null
+              "bitfield_width_expression": null,
+              "source_context": {
+                "line_number": 35,
+                "line_offset": 5
+              }
             }
           },
           {
@@ -310,17 +531,33 @@
               "alignment_expression": null,
               "member_type_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "ValueType"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "ValueType"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 36,
+                    "line_offset": 5
+                  }
                 }
               },
               "name": "Value",
               "array_size_expression": null,
-              "bitfield_width_expression": null
+              "bitfield_width_expression": null,
+              "source_context": {
+                "line_number": 36,
+                "line_offset": 5
+              }
             }
           }
-        ]
+        ],
+        "source_context": {
+          "line_number": 34,
+          "line_offset": 1
+        }
       }
     },
     {
@@ -330,7 +567,11 @@
             {
               "name": "T",
               "value_type": "Typename",
-              "default_value": null
+              "default_value": null,
+              "source_context": {
+                "line_number": 39,
+                "line_offset": 10
+              }
             }
           ]
         },
@@ -345,10 +586,22 @@
               "name": "ElementType",
               "initializer": {
                 "IdentifierExpression": {
-                  "path": [
-                    "T"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "T"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 41,
+                    "line_offset": 25
+                  }
                 }
+              },
+              "source_context": {
+                "line_number": 41,
+                "line_offset": 5
               }
             }
           },
@@ -357,14 +610,26 @@
               "alignment_expression": null,
               "member_type_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "T"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "T"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 42,
+                    "line_offset": 5
+                  }
                 }
               },
               "name": "X",
               "array_size_expression": null,
-              "bitfield_width_expression": null
+              "bitfield_width_expression": null,
+              "source_context": {
+                "line_number": 42,
+                "line_offset": 5
+              }
             }
           },
           {
@@ -372,14 +637,26 @@
               "alignment_expression": null,
               "member_type_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "T"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "T"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 43,
+                    "line_offset": 5
+                  }
                 }
               },
               "name": "Y",
               "array_size_expression": null,
-              "bitfield_width_expression": null
+              "bitfield_width_expression": null,
+              "source_context": {
+                "line_number": 43,
+                "line_offset": 5
+              }
             }
           },
           {
@@ -387,17 +664,33 @@
               "alignment_expression": null,
               "member_type_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "T"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "T"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 44,
+                    "line_offset": 5
+                  }
                 }
               },
               "name": "Z",
               "array_size_expression": null,
-              "bitfield_width_expression": null
+              "bitfield_width_expression": null,
+              "source_context": {
+                "line_number": 44,
+                "line_offset": 5
+              }
             }
           }
-        ]
+        ],
+        "source_context": {
+          "line_number": 40,
+          "line_offset": 1
+        }
       }
     },
     {
@@ -406,22 +699,39 @@
         "value_type": "Typename",
         "name": "FVector",
         "initializer": {
-          "TemplateInstantiationExpression": {
-            "template_name": {
+          "IdentifierExpression": {
+            "identifier": {
+              "kind": "Relative",
               "path": [
                 "TVector"
               ]
             },
-            "argument_expressions": [
+            "template_arguments": [
               {
                 "IdentifierExpression": {
-                  "path": [
-                    "FReal"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "FReal"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 46,
+                    "line_offset": 25
+                  }
                 }
               }
-            ]
+            ],
+            "source_context": {
+              "line_number": 46,
+              "line_offset": 17
+            }
           }
+        },
+        "source_context": {
+          "line_number": 46,
+          "line_offset": 1
         }
       }
     },
@@ -434,14 +744,31 @@
           "MemberAccessExpression": {
             "type_expression": {
               "IdentifierExpression": {
-                "path": [
-                  "FVector"
-                ]
+                "identifier": {
+                  "kind": "Relative",
+                  "path": [
+                    "FVector"
+                  ]
+                },
+                "template_arguments": null,
+                "source_context": {
+                  "line_number": 48,
+                  "line_offset": 35
+                }
               }
             },
             "member_type": "Typename",
-            "member_name": "ElementType"
+            "member_name": "ElementType",
+            "template_arguments": null,
+            "source_context": {
+              "line_number": 48,
+              "line_offset": 42
+            }
           }
+        },
+        "source_context": {
+          "line_number": 48,
+          "line_offset": 1
         }
       }
     },
@@ -454,14 +781,31 @@
           "MemberAccessExpression": {
             "type_expression": {
               "IdentifierExpression": {
-                "path": [
-                  "FVector"
-                ]
+                "identifier": {
+                  "kind": "Relative",
+                  "path": [
+                    "FVector"
+                  ]
+                },
+                "template_arguments": null,
+                "source_context": {
+                  "line_number": 49,
+                  "line_offset": 35
+                }
               }
             },
             "member_type": "Typename",
-            "member_name": "X"
+            "member_name": "X",
+            "template_arguments": null,
+            "source_context": {
+              "line_number": 49,
+              "line_offset": 42
+            }
           }
+        },
+        "source_context": {
+          "line_number": 49,
+          "line_offset": 1
         }
       }
     },
@@ -477,30 +821,68 @@
                 "BinaryExpression": {
                   "left_expression": {
                     "IdentifierExpression": {
-                      "path": [
-                        "UE_VERSION_MAJOR"
-                      ]
+                      "identifier": {
+                        "kind": "Relative",
+                        "path": [
+                          "UE_VERSION_MAJOR"
+                        ]
+                      },
+                      "template_arguments": null,
+                      "source_context": {
+                        "line_number": 51,
+                        "line_offset": 37
+                      }
                     }
                   },
                   "operator": "Equals",
                   "right_expression": {
-                    "IntegerConstantExpression": 5
+                    "IntegerConstantExpression": {
+                      "constant_value": 5,
+                      "source_context": {
+                        "line_number": 51,
+                        "line_offset": 57
+                      }
+                    }
+                  },
+                  "source_context": {
+                    "line_number": 51,
+                    "line_offset": 54
                   }
                 }
               },
               "true_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "AInfo"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "AInfo"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 51,
+                    "line_offset": 60
+                  }
                 }
               },
               "false_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "AActor"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "AActor"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 51,
+                    "line_offset": 71
+                  }
                 }
+              },
+              "source_context": {
+                "line_number": 51,
+                "line_offset": 33
               }
             }
           }
@@ -512,14 +894,32 @@
                 "BinaryExpression": {
                   "left_expression": {
                     "IdentifierExpression": {
-                      "path": [
-                        "UE_VERSION_MAJOR"
-                      ]
+                      "identifier": {
+                        "kind": "Relative",
+                        "path": [
+                          "UE_VERSION_MAJOR"
+                        ]
+                      },
+                      "template_arguments": null,
+                      "source_context": {
+                        "line_number": 52,
+                        "line_offset": 9
+                      }
                     }
                   },
                   "operator": "NotEquals",
                   "right_expression": {
-                    "IntegerConstantExpression": 5
+                    "IntegerConstantExpression": {
+                      "constant_value": 5,
+                      "source_context": {
+                        "line_number": 52,
+                        "line_offset": 29
+                      }
+                    }
+                  },
+                  "source_context": {
+                    "line_number": 52,
+                    "line_offset": 26
                   }
                 }
               },
@@ -531,19 +931,41 @@
                         "alignment_expression": null,
                         "member_type_expression": {
                           "IdentifierExpression": {
-                            "path": [
-                              "uint32"
-                            ]
+                            "identifier": {
+                              "kind": "Relative",
+                              "path": [
+                                "uint32"
+                              ]
+                            },
+                            "template_arguments": null,
+                            "source_context": {
+                              "line_number": 53,
+                              "line_offset": 9
+                            }
                           }
                         },
                         "name": "Test",
                         "array_size_expression": null,
                         "bitfield_width_expression": {
-                          "IntegerConstantExpression": 5
+                          "IntegerConstantExpression": {
+                            "constant_value": 5,
+                            "source_context": {
+                              "line_number": 53,
+                              "line_offset": 22
+                            }
+                          }
+                        },
+                        "source_context": {
+                          "line_number": 53,
+                          "line_offset": 9
                         }
                       }
                     }
-                  ]
+                  ],
+                  "source_context": {
+                    "line_number": 52,
+                    "line_offset": 32
+                  }
                 }
               },
               "else_branch": {
@@ -552,14 +974,32 @@
                     "BinaryExpression": {
                       "left_expression": {
                         "IdentifierExpression": {
-                          "path": [
-                            "UE_VERSION_MINOR"
-                          ]
+                          "identifier": {
+                            "kind": "Relative",
+                            "path": [
+                              "UE_VERSION_MINOR"
+                            ]
+                          },
+                          "template_arguments": null,
+                          "source_context": {
+                            "line_number": 54,
+                            "line_offset": 16
+                          }
                         }
                       },
                       "operator": "Equals",
                       "right_expression": {
-                        "IntegerConstantExpression": 26
+                        "IntegerConstantExpression": {
+                          "constant_value": 26,
+                          "source_context": {
+                            "line_number": 54,
+                            "line_offset": 36
+                          }
+                        }
+                      },
+                      "source_context": {
+                        "line_number": 54,
+                        "line_offset": 33
                       }
                     }
                   },
@@ -571,19 +1011,41 @@
                             "alignment_expression": null,
                             "member_type_expression": {
                               "IdentifierExpression": {
-                                "path": [
-                                  "uint16"
-                                ]
+                                "identifier": {
+                                  "kind": "Relative",
+                                  "path": [
+                                    "uint16"
+                                  ]
+                                },
+                                "template_arguments": null,
+                                "source_context": {
+                                  "line_number": 55,
+                                  "line_offset": 9
+                                }
                               }
                             },
                             "name": "Test",
                             "array_size_expression": {
-                              "IntegerConstantExpression": 5
+                              "IntegerConstantExpression": {
+                                "constant_value": 5,
+                                "source_context": {
+                                  "line_number": 55,
+                                  "line_offset": 21
+                                }
+                              }
                             },
-                            "bitfield_width_expression": null
+                            "bitfield_width_expression": null,
+                            "source_context": {
+                              "line_number": 55,
+                              "line_offset": 9
+                            }
                           }
                         }
-                      ]
+                      ],
+                      "source_context": {
+                        "line_number": 54,
+                        "line_offset": 40
+                      }
                     }
                   },
                   "else_branch": {
@@ -594,20 +1056,44 @@
                             "alignment_expression": null,
                             "member_type_expression": {
                               "IdentifierExpression": {
-                                "path": [
-                                  "uint8"
-                                ]
+                                "identifier": {
+                                  "kind": "Relative",
+                                  "path": [
+                                    "uint8"
+                                  ]
+                                },
+                                "template_arguments": null,
+                                "source_context": {
+                                  "line_number": 57,
+                                  "line_offset": 9
+                                }
                               }
                             },
                             "name": "Test",
                             "array_size_expression": null,
-                            "bitfield_width_expression": null
+                            "bitfield_width_expression": null,
+                            "source_context": {
+                              "line_number": 57,
+                              "line_offset": 9
+                            }
                           }
                         }
-                      ]
+                      ],
+                      "source_context": {
+                        "line_number": 56,
+                        "line_offset": 12
+                      }
                     }
+                  },
+                  "source_context": {
+                    "line_number": 54,
+                    "line_offset": 12
                   }
                 }
+              },
+              "source_context": {
+                "line_number": 52,
+                "line_offset": 5
               }
             }
           },
@@ -615,9 +1101,17 @@
             "ConditionalDeclaration": {
               "condition_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "UE_WITH_CASE_PRESERVING_NAME"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "UE_WITH_CASE_PRESERVING_NAME"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 59,
+                    "line_offset": 9
+                  }
                 }
               },
               "then_branch": {
@@ -628,17 +1122,33 @@
                         "alignment_expression": null,
                         "member_type_expression": {
                           "IdentifierExpression": {
-                            "path": [
-                              "FName"
-                            ]
+                            "identifier": {
+                              "kind": "Relative",
+                              "path": [
+                                "FName"
+                              ]
+                            },
+                            "template_arguments": null,
+                            "source_context": {
+                              "line_number": 60,
+                              "line_offset": 9
+                            }
                           }
                         },
                         "name": "Name",
                         "array_size_expression": null,
-                        "bitfield_width_expression": null
+                        "bitfield_width_expression": null,
+                        "source_context": {
+                          "line_number": 60,
+                          "line_offset": 9
+                        }
                       }
                     }
-                  ]
+                  ],
+                  "source_context": {
+                    "line_number": 59,
+                    "line_offset": 39
+                  }
                 }
               },
               "else_branch": {
@@ -648,10 +1158,22 @@
                       "operator": "BoolNegate",
                       "expression": {
                         "IdentifierExpression": {
-                          "path": [
-                            "UE_NAME_OUTLINE_NUMBER"
-                          ]
+                          "identifier": {
+                            "kind": "Relative",
+                            "path": [
+                              "UE_NAME_OUTLINE_NUMBER"
+                            ]
+                          },
+                          "template_arguments": null,
+                          "source_context": {
+                            "line_number": 61,
+                            "line_offset": 17
+                          }
                         }
+                      },
+                      "source_context": {
+                        "line_number": 61,
+                        "line_offset": 16
                       }
                     }
                   },
@@ -663,25 +1185,117 @@
                             "alignment_expression": null,
                             "member_type_expression": {
                               "IdentifierExpression": {
-                                "path": [
-                                  "uint32"
-                                ]
+                                "identifier": {
+                                  "kind": "Relative",
+                                  "path": [
+                                    "uint32"
+                                  ]
+                                },
+                                "template_arguments": null,
+                                "source_context": {
+                                  "line_number": 62,
+                                  "line_offset": 9
+                                }
                               }
                             },
                             "name": "Number",
                             "array_size_expression": null,
-                            "bitfield_width_expression": null
+                            "bitfield_width_expression": null,
+                            "source_context": {
+                              "line_number": 62,
+                              "line_offset": 9
+                            }
                           }
                         }
-                      ]
+                      ],
+                      "source_context": {
+                        "line_number": 61,
+                        "line_offset": 41
+                      }
                     }
                   },
-                  "else_branch": null
+                  "else_branch": null,
+                  "source_context": {
+                    "line_number": 61,
+                    "line_offset": 12
+                  }
                 }
+              },
+              "source_context": {
+                "line_number": 59,
+                "line_offset": 5
               }
             }
           }
-        ]
+        ],
+        "source_context": {
+          "line_number": 51,
+          "line_offset": 1
+        }
+      }
+    },
+    {
+      "StructStatement": {
+        "template_declaration": {
+          "arguments": [
+            {
+              "name": "Ignored",
+              "value_type": "Typename",
+              "default_value": null,
+              "source_context": {
+                "line_number": 66,
+                "line_offset": 10
+              }
+            }
+          ]
+        },
+        "alignment_expression": null,
+        "name": "FWrapperStruct",
+        "base_class_expressions": [],
+        "declarations": [
+          {
+            "DataDeclaration": {
+              "template_declaration": {
+                "arguments": [
+                  {
+                    "name": "InInnerType",
+                    "value_type": "Typename",
+                    "default_value": null,
+                    "source_context": {
+                      "line_number": 68,
+                      "line_offset": 14
+                    }
+                  }
+                ]
+              },
+              "value_type": "Typename",
+              "name": "Inner",
+              "initializer": {
+                "IdentifierExpression": {
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "InInnerType"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 69,
+                    "line_offset": 19
+                  }
+                }
+              },
+              "source_context": {
+                "line_number": 69,
+                "line_offset": 5
+              }
+            }
+          }
+        ],
+        "source_context": {
+          "line_number": 67,
+          "line_offset": 1
+        }
       }
     },
     {
@@ -690,24 +1304,66 @@
         "value_type": "Typename",
         "name": "DynamicTemplateInstantiationTest",
         "initializer": {
-          "TemplateInstantiationByPointerExpression": {
-            "template_pointer_expression": {
-              "TemplatePointerConstantExpression": {
-                "path": [
-                  "TVector"
-                ]
-              }
-            },
-            "argument_expressions": [
-              {
-                "IdentifierExpression": {
+          "MemberAccessExpression": {
+            "type_expression": {
+              "IdentifierExpression": {
+                "identifier": {
+                  "kind": "Relative",
                   "path": [
-                    "float"
+                    "FWrapperStruct"
                   ]
+                },
+                "template_arguments": [
+                  {
+                    "IdentifierExpression": {
+                      "identifier": {
+                        "kind": "Relative",
+                        "path": [
+                          "FVector"
+                        ]
+                      },
+                      "template_arguments": null,
+                      "source_context": {
+                        "line_number": 72,
+                        "line_offset": 57
+                      }
+                    }
+                  }
+                ],
+                "source_context": {
+                  "line_number": 72,
+                  "line_offset": 42
                 }
               }
-            ]
+            },
+            "member_type": "Typename",
+            "member_name": "Inner",
+            "template_arguments": [
+              {
+                "IdentifierExpression": {
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "float"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 72,
+                    "line_offset": 82
+                  }
+                }
+              }
+            ],
+            "source_context": {
+              "line_number": 72,
+              "line_offset": 65
+            }
           }
+        },
+        "source_context": {
+          "line_number": 72,
+          "line_offset": 1
         }
       }
     },
@@ -725,10 +1381,22 @@
                   "name": "LocalVariable",
                   "initializer": {
                     "IdentifierExpression": {
-                      "path": [
-                        "UE_VERSION_MINOR"
-                      ]
+                      "identifier": {
+                        "kind": "Relative",
+                        "path": [
+                          "UE_VERSION_MINOR"
+                        ]
+                      },
+                      "template_arguments": null,
+                      "source_context": {
+                        "line_number": 75,
+                        "line_offset": 25
+                      }
                     }
+                  },
+                  "source_context": {
+                    "line_number": 75,
+                    "line_offset": 5
                   }
                 }
               },
@@ -736,14 +1404,32 @@
                 "AssignmentStatement": {
                   "left_hand_expression": {
                     "IdentifierExpression": {
-                      "path": [
-                        "LocalVariable"
-                      ]
+                      "identifier": {
+                        "kind": "Relative",
+                        "path": [
+                          "LocalVariable"
+                        ]
+                      },
+                      "template_arguments": null,
+                      "source_context": {
+                        "line_number": 76,
+                        "line_offset": 5
+                      }
                     }
                   },
                   "assignment_operator": "ArithmeticAdd",
                   "assignment_expression": {
-                    "IntegerConstantExpression": 5
+                    "IntegerConstantExpression": {
+                      "constant_value": 5,
+                      "source_context": {
+                        "line_number": 76,
+                        "line_offset": 22
+                      }
+                    }
+                  },
+                  "source_context": {
+                    "line_number": 76,
+                    "line_offset": 5
                   }
                 }
               },
@@ -751,9 +1437,17 @@
                 "AssignmentStatement": {
                   "left_hand_expression": {
                     "IdentifierExpression": {
-                      "path": [
-                        "LocalVariable"
-                      ]
+                      "identifier": {
+                        "kind": "Relative",
+                        "path": [
+                          "LocalVariable"
+                        ]
+                      },
+                      "template_arguments": null,
+                      "source_context": {
+                        "line_number": 77,
+                        "line_offset": 5
+                      }
                     }
                   },
                   "assignment_operator": null,
@@ -761,16 +1455,38 @@
                     "BinaryExpression": {
                       "left_expression": {
                         "IdentifierExpression": {
-                          "path": [
-                            "LocalVariable"
-                          ]
+                          "identifier": {
+                            "kind": "Relative",
+                            "path": [
+                              "LocalVariable"
+                            ]
+                          },
+                          "template_arguments": null,
+                          "source_context": {
+                            "line_number": 77,
+                            "line_offset": 21
+                          }
                         }
                       },
                       "operator": "ArithmeticDivide",
                       "right_expression": {
-                        "IntegerConstantExpression": 1
+                        "IntegerConstantExpression": {
+                          "constant_value": 1,
+                          "source_context": {
+                            "line_number": 77,
+                            "line_offset": 37
+                          }
+                        }
+                      },
+                      "source_context": {
+                        "line_number": 77,
+                        "line_offset": 35
                       }
                     }
+                  },
+                  "source_context": {
+                    "line_number": 77,
+                    "line_offset": 5
                   }
                 }
               },
@@ -779,7 +1495,17 @@
                   "value_type": "Int",
                   "name": "Result",
                   "initializer": {
-                    "IntegerConstantExpression": 3
+                    "IntegerConstantExpression": {
+                      "constant_value": 3,
+                      "source_context": {
+                        "line_number": 78,
+                        "line_offset": 18
+                      }
+                    }
+                  },
+                  "source_context": {
+                    "line_number": 78,
+                    "line_offset": 5
                   }
                 }
               },
@@ -789,14 +1515,32 @@
                     "BinaryExpression": {
                       "left_expression": {
                         "IdentifierExpression": {
-                          "path": [
-                            "LocalVariable"
-                          ]
+                          "identifier": {
+                            "kind": "Relative",
+                            "path": [
+                              "LocalVariable"
+                            ]
+                          },
+                          "template_arguments": null,
+                          "source_context": {
+                            "line_number": 79,
+                            "line_offset": 9
+                          }
                         }
                       },
                       "operator": "Equals",
                       "right_expression": {
-                        "IntegerConstantExpression": 4
+                        "IntegerConstantExpression": {
+                          "constant_value": 4,
+                          "source_context": {
+                            "line_number": 79,
+                            "line_offset": 26
+                          }
+                        }
+                      },
+                      "source_context": {
+                        "line_number": 79,
+                        "line_offset": 23
                       }
                     }
                   },
@@ -807,9 +1551,17 @@
                           "AssignmentStatement": {
                             "left_hand_expression": {
                               "IdentifierExpression": {
-                                "path": [
-                                  "Result"
-                                ]
+                                "identifier": {
+                                  "kind": "Relative",
+                                  "path": [
+                                    "Result"
+                                  ]
+                                },
+                                "template_arguments": null,
+                                "source_context": {
+                                  "line_number": 80,
+                                  "line_offset": 9
+                                }
                               }
                             },
                             "assignment_operator": null,
@@ -818,19 +1570,43 @@
                                 "operator": "StructSizeOf",
                                 "expression": {
                                   "IdentifierExpression": {
-                                    "path": [
-                                      "FVector"
-                                    ]
+                                    "identifier": {
+                                      "kind": "Relative",
+                                      "path": [
+                                        "FVector"
+                                      ]
+                                    },
+                                    "template_arguments": null,
+                                    "source_context": {
+                                      "line_number": 80,
+                                      "line_offset": 25
+                                    }
                                   }
+                                },
+                                "source_context": {
+                                  "line_number": 80,
+                                  "line_offset": 24
                                 }
                               }
+                            },
+                            "source_context": {
+                              "line_number": 80,
+                              "line_offset": 9
                             }
                           }
                         }
-                      ]
+                      ],
+                      "source_context": {
+                        "line_number": 79,
+                        "line_offset": 29
+                      }
                     }
                   },
-                  "else_statement": null
+                  "else_statement": null,
+                  "source_context": {
+                    "line_number": 79,
+                    "line_offset": 5
+                  }
                 }
               },
               {
@@ -839,14 +1615,32 @@
                     "BinaryExpression": {
                       "left_expression": {
                         "IdentifierExpression": {
-                          "path": [
-                            "LocalVariable"
-                          ]
+                          "identifier": {
+                            "kind": "Relative",
+                            "path": [
+                              "LocalVariable"
+                            ]
+                          },
+                          "template_arguments": null,
+                          "source_context": {
+                            "line_number": 82,
+                            "line_offset": 12
+                          }
                         }
                       },
                       "operator": "LogicalLess",
                       "right_expression": {
-                        "IntegerConstantExpression": 100
+                        "IntegerConstantExpression": {
+                          "constant_value": 100,
+                          "source_context": {
+                            "line_number": 82,
+                            "line_offset": 28
+                          }
+                        }
+                      },
+                      "source_context": {
+                        "line_number": 82,
+                        "line_offset": 26
                       }
                     }
                   },
@@ -857,22 +1651,69 @@
                           "AssignmentStatement": {
                             "left_hand_expression": {
                               "IdentifierExpression": {
-                                "path": [
-                                  "LocalVariable"
-                                ]
+                                "identifier": {
+                                  "kind": "Relative",
+                                  "path": [
+                                    "LocalVariable"
+                                  ]
+                                },
+                                "template_arguments": null,
+                                "source_context": {
+                                  "line_number": 83,
+                                  "line_offset": 9
+                                }
                               }
                             },
                             "assignment_operator": "ArithmeticAdd",
                             "assignment_expression": {
-                              "IntegerConstantExpression": 1
+                              "IntegerConstantExpression": {
+                                "constant_value": 1,
+                                "source_context": {
+                                  "line_number": 83,
+                                  "line_offset": 26
+                                }
+                              }
+                            },
+                            "source_context": {
+                              "line_number": 83,
+                              "line_offset": 9
                             }
                           }
                         },
-                        "ContinueLoopStatement",
-                        "BreakLoopStatement",
-                        "EmptyStatement"
-                      ]
+                        {
+                          "ContinueLoopStatement": {
+                            "source_context": {
+                              "line_number": 84,
+                              "line_offset": 9
+                            }
+                          }
+                        },
+                        {
+                          "BreakLoopStatement": {
+                            "source_context": {
+                              "line_number": 85,
+                              "line_offset": 9
+                            }
+                          }
+                        },
+                        {
+                          "EmptyStatement": {
+                            "source_context": {
+                              "line_number": 86,
+                              "line_offset": 9
+                            }
+                          }
+                        }
+                      ],
+                      "source_context": {
+                        "line_number": 82,
+                        "line_offset": 33
+                      }
                     }
+                  },
+                  "source_context": {
+                    "line_number": 82,
+                    "line_offset": 5
                   }
                 }
               }
@@ -883,21 +1724,52 @@
                   "ArrayIndexExpression": {
                     "array_expression": {
                       "IdentifierExpression": {
-                        "path": [
-                          "Result"
-                        ]
+                        "identifier": {
+                          "kind": "Relative",
+                          "path": [
+                            "Result"
+                          ]
+                        },
+                        "template_arguments": null,
+                        "source_context": {
+                          "line_number": 88,
+                          "line_offset": 6
+                        }
                       }
                     },
                     "index_expression": {
-                      "IntegerConstantExpression": 10
+                      "IntegerConstantExpression": {
+                        "constant_value": 10,
+                        "source_context": {
+                          "line_number": 88,
+                          "line_offset": 13
+                        }
+                      }
+                    },
+                    "source_context": {
+                      "line_number": 88,
+                      "line_offset": 12
                     }
                   }
                 },
                 "member_type": "Int",
-                "member_name": "Variable"
+                "member_name": "Variable",
+                "template_arguments": null,
+                "source_context": {
+                  "line_number": 88,
+                  "line_offset": 17
+                }
               }
+            },
+            "source_context": {
+              "line_number": 74,
+              "line_offset": 29
             }
           }
+        },
+        "source_context": {
+          "line_number": 74,
+          "line_offset": 1
         }
       }
     },
@@ -911,12 +1783,28 @@
             "operator": "StructSizeOf",
             "expression": {
               "IdentifierExpression": {
-                "path": [
-                  "FVector"
-                ]
+                "identifier": {
+                  "kind": "Relative",
+                  "path": [
+                    "FVector"
+                  ]
+                },
+                "template_arguments": null,
+                "source_context": {
+                  "line_number": 91,
+                  "line_offset": 27
+                }
               }
+            },
+            "source_context": {
+              "line_number": 91,
+              "line_offset": 26
             }
           }
+        },
+        "source_context": {
+          "line_number": 91,
+          "line_offset": 1
         }
       }
     },
@@ -930,12 +1818,28 @@
             "operator": "StructAlignOf",
             "expression": {
               "IdentifierExpression": {
-                "path": [
-                  "FVector"
-                ]
+                "identifier": {
+                  "kind": "Relative",
+                  "path": [
+                    "FVector"
+                  ]
+                },
+                "template_arguments": null,
+                "source_context": {
+                  "line_number": 92,
+                  "line_offset": 33
+                }
               }
+            },
+            "source_context": {
+              "line_number": 92,
+              "line_offset": 32
             }
           }
+        },
+        "source_context": {
+          "line_number": 92,
+          "line_offset": 1
         }
       }
     },
@@ -946,7 +1850,11 @@
             {
               "name": "T",
               "value_type": "Typename",
-              "default_value": null
+              "default_value": null,
+              "source_context": {
+                "line_number": 94,
+                "line_offset": 10
+              }
             }
           ]
         },
@@ -958,16 +1866,32 @@
             "MemberDeclaration": {
               "alignment_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "T"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "T"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 96,
+                    "line_offset": 13
+                  }
                 }
               },
               "member_type_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "char"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "char"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 96,
+                    "line_offset": 16
+                  }
                 }
               },
               "name": "Pad",
@@ -976,17 +1900,37 @@
                   "operator": "StructSizeOf",
                   "expression": {
                     "IdentifierExpression": {
-                      "path": [
-                        "T"
-                      ]
+                      "identifier": {
+                        "kind": "Relative",
+                        "path": [
+                          "T"
+                        ]
+                      },
+                      "template_arguments": null,
+                      "source_context": {
+                        "line_number": 96,
+                        "line_offset": 32
+                      }
                     }
+                  },
+                  "source_context": {
+                    "line_number": 96,
+                    "line_offset": 31
                   }
                 }
               },
-              "bitfield_width_expression": null
+              "bitfield_width_expression": null,
+              "source_context": {
+                "line_number": 96,
+                "line_offset": 5
+              }
             }
           }
-        ]
+        ],
+        "source_context": {
+          "line_number": 95,
+          "line_offset": 1
+        }
       }
     },
     {
@@ -996,7 +1940,11 @@
             {
               "name": "ElementType",
               "value_type": "Typename",
-              "default_value": null
+              "default_value": null,
+              "source_context": {
+                "line_number": 99,
+                "line_offset": 10
+              }
             }
           ]
         },
@@ -1012,19 +1960,39 @@
                   "operator": "StructMakePointer",
                   "expression": {
                     "IdentifierExpression": {
-                      "path": [
-                        "ElementType"
-                      ]
+                      "identifier": {
+                        "kind": "Relative",
+                        "path": [
+                          "ElementType"
+                        ]
+                      },
+                      "template_arguments": null,
+                      "source_context": {
+                        "line_number": 101,
+                        "line_offset": 5
+                      }
                     }
+                  },
+                  "source_context": {
+                    "line_number": 101,
+                    "line_offset": 16
                   }
                 }
               },
               "name": "Data",
               "array_size_expression": null,
-              "bitfield_width_expression": null
+              "bitfield_width_expression": null,
+              "source_context": {
+                "line_number": 101,
+                "line_offset": 5
+              }
             }
           }
-        ]
+        ],
+        "source_context": {
+          "line_number": 100,
+          "line_offset": 1
+        }
       }
     },
     {
@@ -1034,33 +2002,58 @@
             {
               "name": "ElementType",
               "value_type": "Typename",
-              "default_value": null
+              "default_value": null,
+              "source_context": {
+                "line_number": 104,
+                "line_offset": 10
+              }
             },
             {
               "name": "InlineElementCount",
               "value_type": "Int",
-              "default_value": null
+              "default_value": null,
+              "source_context": {
+                "line_number": 104,
+                "line_offset": 32
+              }
             },
             {
               "name": "SecondaryAllocator",
               "value_type": "Typename",
               "default_value": {
-                "TemplateInstantiationExpression": {
-                  "template_name": {
+                "IdentifierExpression": {
+                  "identifier": {
+                    "kind": "Relative",
                     "path": [
                       "THeapAllocator"
                     ]
                   },
-                  "argument_expressions": [
+                  "template_arguments": [
                     {
                       "IdentifierExpression": {
-                        "path": [
-                          "ElementType"
-                        ]
+                        "identifier": {
+                          "kind": "Relative",
+                          "path": [
+                            "ElementType"
+                          ]
+                        },
+                        "template_arguments": null,
+                        "source_context": {
+                          "line_number": 104,
+                          "line_offset": 101
+                        }
                       }
                     }
-                  ]
+                  ],
+                  "source_context": {
+                    "line_number": 104,
+                    "line_offset": 86
+                  }
                 }
+              },
+              "source_context": {
+                "line_number": 104,
+                "line_offset": 56
               }
             }
           ]
@@ -1073,32 +2066,57 @@
             "MemberDeclaration": {
               "alignment_expression": null,
               "member_type_expression": {
-                "TemplateInstantiationExpression": {
-                  "template_name": {
+                "IdentifierExpression": {
+                  "identifier": {
+                    "kind": "Relative",
                     "path": [
                       "TTypeCompatibleBytes"
                     ]
                   },
-                  "argument_expressions": [
+                  "template_arguments": [
                     {
                       "IdentifierExpression": {
-                        "path": [
-                          "ElementType"
-                        ]
+                        "identifier": {
+                          "kind": "Relative",
+                          "path": [
+                            "ElementType"
+                          ]
+                        },
+                        "template_arguments": null,
+                        "source_context": {
+                          "line_number": 106,
+                          "line_offset": 26
+                        }
                       }
                     }
-                  ]
+                  ],
+                  "source_context": {
+                    "line_number": 106,
+                    "line_offset": 5
+                  }
                 }
               },
               "name": "InlineData",
               "array_size_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "InlineElementCount"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "InlineElementCount"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 106,
+                    "line_offset": 50
+                  }
                 }
               },
-              "bitfield_width_expression": null
+              "bitfield_width_expression": null,
+              "source_context": {
+                "line_number": 106,
+                "line_offset": 5
+              }
             }
           },
           {
@@ -1106,17 +2124,33 @@
               "alignment_expression": null,
               "member_type_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "SecondaryAllocator"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "SecondaryAllocator"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 107,
+                    "line_offset": 5
+                  }
                 }
               },
               "name": "SecondaryData",
               "array_size_expression": null,
-              "bitfield_width_expression": null
+              "bitfield_width_expression": null,
+              "source_context": {
+                "line_number": 107,
+                "line_offset": 5
+              }
             }
           }
-        ]
+        ],
+        "source_context": {
+          "line_number": 105,
+          "line_offset": 1
+        }
       }
     },
     {
@@ -1126,28 +2160,49 @@
             {
               "name": "ElementType",
               "value_type": "Typename",
-              "default_value": null
+              "default_value": null,
+              "source_context": {
+                "line_number": 110,
+                "line_offset": 10
+              }
             },
             {
               "name": "AllocatorType",
               "value_type": "Typename",
               "default_value": {
-                "TemplateInstantiationExpression": {
-                  "template_name": {
+                "IdentifierExpression": {
+                  "identifier": {
+                    "kind": "Relative",
                     "path": [
                       "THeapAllocator"
                     ]
                   },
-                  "argument_expressions": [
+                  "template_arguments": [
                     {
                       "IdentifierExpression": {
-                        "path": [
-                          "ElementType"
-                        ]
+                        "identifier": {
+                          "kind": "Relative",
+                          "path": [
+                            "ElementType"
+                          ]
+                        },
+                        "template_arguments": null,
+                        "source_context": {
+                          "line_number": 110,
+                          "line_offset": 72
+                        }
                       }
                     }
-                  ]
+                  ],
+                  "source_context": {
+                    "line_number": 110,
+                    "line_offset": 57
+                  }
                 }
+              },
+              "source_context": {
+                "line_number": 110,
+                "line_offset": 32
               }
             }
           ]
@@ -1161,14 +2216,26 @@
               "alignment_expression": null,
               "member_type_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "AllocatorType"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "AllocatorType"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 112,
+                    "line_offset": 5
+                  }
                 }
               },
               "name": "AllocatorInstance",
               "array_size_expression": null,
-              "bitfield_width_expression": null
+              "bitfield_width_expression": null,
+              "source_context": {
+                "line_number": 112,
+                "line_offset": 5
+              }
             }
           },
           {
@@ -1176,14 +2243,26 @@
               "alignment_expression": null,
               "member_type_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "int32"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "int32"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 113,
+                    "line_offset": 5
+                  }
                 }
               },
               "name": "ArrayNum",
               "array_size_expression": null,
-              "bitfield_width_expression": null
+              "bitfield_width_expression": null,
+              "source_context": {
+                "line_number": 113,
+                "line_offset": 5
+              }
             }
           },
           {
@@ -1191,17 +2270,33 @@
               "alignment_expression": null,
               "member_type_expression": {
                 "IdentifierExpression": {
-                  "path": [
-                    "int32"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "int32"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 114,
+                    "line_offset": 5
+                  }
                 }
               },
               "name": "ArrayMax",
               "array_size_expression": null,
-              "bitfield_width_expression": null
+              "bitfield_width_expression": null,
+              "source_context": {
+                "line_number": 114,
+                "line_offset": 5
+              }
             }
           }
-        ]
+        ],
+        "source_context": {
+          "line_number": 111,
+          "line_offset": 1
+        }
       }
     },
     {
@@ -1210,22 +2305,39 @@
         "value_type": "Typename",
         "name": "FByteArray",
         "initializer": {
-          "TemplateInstantiationExpression": {
-            "template_name": {
+          "IdentifierExpression": {
+            "identifier": {
+              "kind": "Relative",
               "path": [
                 "TArray"
               ]
             },
-            "argument_expressions": [
+            "template_arguments": [
               {
                 "IdentifierExpression": {
-                  "path": [
-                    "uint8"
-                  ]
+                  "identifier": {
+                    "kind": "Relative",
+                    "path": [
+                      "uint8"
+                    ]
+                  },
+                  "template_arguments": null,
+                  "source_context": {
+                    "line_number": 116,
+                    "line_offset": 27
+                  }
                 }
               }
-            ]
+            ],
+            "source_context": {
+              "line_number": 116,
+              "line_offset": 20
+            }
           }
+        },
+        "source_context": {
+          "line_number": 116,
+          "line_offset": 1
         }
       }
     },
@@ -1242,9 +2354,17 @@
                   "BinaryExpression": {
                     "left_expression": {
                       "IdentifierExpression": {
-                        "path": [
-                          "A"
-                        ]
+                        "identifier": {
+                          "kind": "Relative",
+                          "path": [
+                            "A"
+                          ]
+                        },
+                        "template_arguments": null,
+                        "source_context": {
+                          "line_number": 118,
+                          "line_offset": 36
+                        }
                       }
                     },
                     "operator": "BitwiseOr",
@@ -1252,9 +2372,17 @@
                       "BinaryExpression": {
                         "left_expression": {
                           "IdentifierExpression": {
-                            "path": [
-                              "B"
-                            ]
+                            "identifier": {
+                              "kind": "Relative",
+                              "path": [
+                                "B"
+                              ]
+                            },
+                            "template_arguments": null,
+                            "source_context": {
+                              "line_number": 118,
+                              "line_offset": 40
+                            }
                           }
                         },
                         "operator": "BitwiseXor",
@@ -1262,9 +2390,17 @@
                           "BinaryExpression": {
                             "left_expression": {
                               "IdentifierExpression": {
-                                "path": [
-                                  "C"
-                                ]
+                                "identifier": {
+                                  "kind": "Relative",
+                                  "path": [
+                                    "C"
+                                  ]
+                                },
+                                "template_arguments": null,
+                                "source_context": {
+                                  "line_number": 118,
+                                  "line_offset": 44
+                                }
                               }
                             },
                             "operator": "BitwiseAnd",
@@ -1282,18 +2418,38 @@
                                                   "BinaryExpression": {
                                                     "left_expression": {
                                                       "IdentifierExpression": {
-                                                        "path": [
-                                                          "D"
-                                                        ]
+                                                        "identifier": {
+                                                          "kind": "Relative",
+                                                          "path": [
+                                                            "D"
+                                                          ]
+                                                        },
+                                                        "template_arguments": null,
+                                                        "source_context": {
+                                                          "line_number": 118,
+                                                          "line_offset": 48
+                                                        }
                                                       }
                                                     },
                                                     "operator": "BitwiseShiftRight",
                                                     "right_expression": {
                                                       "IdentifierExpression": {
-                                                        "path": [
-                                                          "E"
-                                                        ]
+                                                        "identifier": {
+                                                          "kind": "Relative",
+                                                          "path": [
+                                                            "E"
+                                                          ]
+                                                        },
+                                                        "template_arguments": null,
+                                                        "source_context": {
+                                                          "line_number": 118,
+                                                          "line_offset": 53
+                                                        }
                                                       }
+                                                    },
+                                                    "source_context": {
+                                                      "line_number": 118,
+                                                      "line_offset": 50
                                                     }
                                                   }
                                                 },
@@ -1304,18 +2460,38 @@
                                                       "BinaryExpression": {
                                                         "left_expression": {
                                                           "IdentifierExpression": {
-                                                            "path": [
-                                                              "F"
-                                                            ]
+                                                            "identifier": {
+                                                              "kind": "Relative",
+                                                              "path": [
+                                                                "F"
+                                                              ]
+                                                            },
+                                                            "template_arguments": null,
+                                                            "source_context": {
+                                                              "line_number": 118,
+                                                              "line_offset": 58
+                                                            }
                                                           }
                                                         },
                                                         "operator": "ArithmeticAdd",
                                                         "right_expression": {
                                                           "IdentifierExpression": {
-                                                            "path": [
-                                                              "G"
-                                                            ]
+                                                            "identifier": {
+                                                              "kind": "Relative",
+                                                              "path": [
+                                                                "G"
+                                                              ]
+                                                            },
+                                                            "template_arguments": null,
+                                                            "source_context": {
+                                                              "line_number": 118,
+                                                              "line_offset": 62
+                                                            }
                                                           }
+                                                        },
+                                                        "source_context": {
+                                                          "line_number": 118,
+                                                          "line_offset": 60
                                                         }
                                                       }
                                                     },
@@ -1328,9 +2504,17 @@
                                                               "BinaryExpression": {
                                                                 "left_expression": {
                                                                   "IdentifierExpression": {
-                                                                    "path": [
-                                                                      "H"
-                                                                    ]
+                                                                    "identifier": {
+                                                                      "kind": "Relative",
+                                                                      "path": [
+                                                                        "H"
+                                                                      ]
+                                                                    },
+                                                                    "template_arguments": null,
+                                                                    "source_context": {
+                                                                      "line_number": 118,
+                                                                      "line_offset": 66
+                                                                    }
                                                                   }
                                                                 },
                                                                 "operator": "ArithmeticMultiply",
@@ -1338,147 +2522,327 @@
                                                                   "ArrayIndexExpression": {
                                                                     "array_expression": {
                                                                       "IdentifierExpression": {
-                                                                        "path": [
-                                                                          "I"
-                                                                        ]
+                                                                        "identifier": {
+                                                                          "kind": "Relative",
+                                                                          "path": [
+                                                                            "I"
+                                                                          ]
+                                                                        },
+                                                                        "template_arguments": null,
+                                                                        "source_context": {
+                                                                          "line_number": 118,
+                                                                          "line_offset": 70
+                                                                        }
                                                                       }
                                                                     },
                                                                     "index_expression": {
                                                                       "BinaryExpression": {
                                                                         "left_expression": {
                                                                           "IdentifierExpression": {
-                                                                            "path": [
-                                                                              "A"
-                                                                            ]
+                                                                            "identifier": {
+                                                                              "kind": "Relative",
+                                                                              "path": [
+                                                                                "A"
+                                                                              ]
+                                                                            },
+                                                                            "template_arguments": null,
+                                                                            "source_context": {
+                                                                              "line_number": 118,
+                                                                              "line_offset": 72
+                                                                            }
                                                                           }
                                                                         },
                                                                         "operator": "ArithmeticAdd",
                                                                         "right_expression": {
                                                                           "IdentifierExpression": {
-                                                                            "path": [
-                                                                              "B"
-                                                                            ]
+                                                                            "identifier": {
+                                                                              "kind": "Relative",
+                                                                              "path": [
+                                                                                "B"
+                                                                              ]
+                                                                            },
+                                                                            "template_arguments": null,
+                                                                            "source_context": {
+                                                                              "line_number": 118,
+                                                                              "line_offset": 76
+                                                                            }
                                                                           }
+                                                                        },
+                                                                        "source_context": {
+                                                                          "line_number": 118,
+                                                                          "line_offset": 74
                                                                         }
                                                                       }
+                                                                    },
+                                                                    "source_context": {
+                                                                      "line_number": 118,
+                                                                      "line_offset": 71
                                                                     }
                                                                   }
+                                                                },
+                                                                "source_context": {
+                                                                  "line_number": 118,
+                                                                  "line_offset": 68
                                                                 }
                                                               }
                                                             },
                                                             "operator": "ArithmeticDivide",
                                                             "right_expression": {
                                                               "IdentifierExpression": {
-                                                                "path": [
-                                                                  "J"
-                                                                ]
+                                                                "identifier": {
+                                                                  "kind": "Relative",
+                                                                  "path": [
+                                                                    "J"
+                                                                  ]
+                                                                },
+                                                                "template_arguments": null,
+                                                                "source_context": {
+                                                                  "line_number": 118,
+                                                                  "line_offset": 81
+                                                                }
                                                               }
+                                                            },
+                                                            "source_context": {
+                                                              "line_number": 118,
+                                                              "line_offset": 79
                                                             }
                                                           }
                                                         },
                                                         "operator": "ArithmeticRemainder",
                                                         "right_expression": {
                                                           "IdentifierExpression": {
-                                                            "path": [
-                                                              "K"
-                                                            ]
+                                                            "identifier": {
+                                                              "kind": "Relative",
+                                                              "path": [
+                                                                "K"
+                                                              ]
+                                                            },
+                                                            "template_arguments": null,
+                                                            "source_context": {
+                                                              "line_number": 118,
+                                                              "line_offset": 85
+                                                            }
                                                           }
+                                                        },
+                                                        "source_context": {
+                                                          "line_number": 118,
+                                                          "line_offset": 83
                                                         }
                                                       }
+                                                    },
+                                                    "source_context": {
+                                                      "line_number": 118,
+                                                      "line_offset": 64
                                                     }
                                                   }
+                                                },
+                                                "source_context": {
+                                                  "line_number": 118,
+                                                  "line_offset": 55
                                                 }
                                               }
                                             },
                                             "operator": "LogicalMore",
                                             "right_expression": {
                                               "IdentifierExpression": {
-                                                "path": [
-                                                  "L"
-                                                ]
+                                                "identifier": {
+                                                  "kind": "Relative",
+                                                  "path": [
+                                                    "L"
+                                                  ]
+                                                },
+                                                "template_arguments": null,
+                                                "source_context": {
+                                                  "line_number": 118,
+                                                  "line_offset": 89
+                                                }
                                               }
+                                            },
+                                            "source_context": {
+                                              "line_number": 118,
+                                              "line_offset": 87
                                             }
                                           }
                                         },
                                         "operator": "LogicalLess",
                                         "right_expression": {
                                           "IdentifierExpression": {
-                                            "path": [
-                                              "M"
-                                            ]
+                                            "identifier": {
+                                              "kind": "Relative",
+                                              "path": [
+                                                "M"
+                                              ]
+                                            },
+                                            "template_arguments": null,
+                                            "source_context": {
+                                              "line_number": 118,
+                                              "line_offset": 93
+                                            }
                                           }
+                                        },
+                                        "source_context": {
+                                          "line_number": 118,
+                                          "line_offset": 91
                                         }
                                       }
                                     },
                                     "operator": "LogicalMoreEquals",
                                     "right_expression": {
                                       "IdentifierExpression": {
-                                        "path": [
-                                          "N"
-                                        ]
+                                        "identifier": {
+                                          "kind": "Relative",
+                                          "path": [
+                                            "N"
+                                          ]
+                                        },
+                                        "template_arguments": null,
+                                        "source_context": {
+                                          "line_number": 118,
+                                          "line_offset": 98
+                                        }
                                       }
+                                    },
+                                    "source_context": {
+                                      "line_number": 118,
+                                      "line_offset": 95
                                     }
                                   }
                                 },
                                 "operator": "LogicalLessEquals",
                                 "right_expression": {
                                   "IdentifierExpression": {
-                                    "path": [
-                                      "O"
-                                    ]
+                                    "identifier": {
+                                      "kind": "Relative",
+                                      "path": [
+                                        "O"
+                                      ]
+                                    },
+                                    "template_arguments": null,
+                                    "source_context": {
+                                      "line_number": 118,
+                                      "line_offset": 103
+                                    }
                                   }
+                                },
+                                "source_context": {
+                                  "line_number": 118,
+                                  "line_offset": 100
                                 }
                               }
+                            },
+                            "source_context": {
+                              "line_number": 118,
+                              "line_offset": 46
                             }
                           }
+                        },
+                        "source_context": {
+                          "line_number": 118,
+                          "line_offset": 42
                         }
                       }
+                    },
+                    "source_context": {
+                      "line_number": 118,
+                      "line_offset": 38
                     }
                   }
                 },
-                "operator": "LogicalAnd",
+                "operator": "ShortCircuitAnd",
                 "right_expression": {
                   "IdentifierExpression": {
-                    "path": [
-                      "P"
-                    ]
+                    "identifier": {
+                      "kind": "Relative",
+                      "path": [
+                        "P"
+                      ]
+                    },
+                    "template_arguments": null,
+                    "source_context": {
+                      "line_number": 118,
+                      "line_offset": 108
+                    }
                   }
+                },
+                "source_context": {
+                  "line_number": 118,
+                  "line_offset": 105
                 }
               }
             },
-            "operator": "LogicalOr",
+            "operator": "ShortCircuitOr",
             "right_expression": {
               "BinaryExpression": {
                 "left_expression": {
                   "BinaryExpression": {
                     "left_expression": {
                       "IdentifierExpression": {
-                        "path": [
-                          "Q"
-                        ]
+                        "identifier": {
+                          "kind": "Relative",
+                          "path": [
+                            "Q"
+                          ]
+                        },
+                        "template_arguments": null,
+                        "source_context": {
+                          "line_number": 118,
+                          "line_offset": 113
+                        }
                       }
                     },
                     "operator": "Equals",
                     "right_expression": {
                       "IdentifierExpression": {
-                        "path": [
-                          "R"
-                        ]
+                        "identifier": {
+                          "kind": "Relative",
+                          "path": [
+                            "R"
+                          ]
+                        },
+                        "template_arguments": null,
+                        "source_context": {
+                          "line_number": 118,
+                          "line_offset": 118
+                        }
                       }
+                    },
+                    "source_context": {
+                      "line_number": 118,
+                      "line_offset": 115
                     }
                   }
                 },
                 "operator": "NotEquals",
                 "right_expression": {
                   "IdentifierExpression": {
-                    "path": [
-                      "S"
-                    ]
+                    "identifier": {
+                      "kind": "Relative",
+                      "path": [
+                        "S"
+                      ]
+                    },
+                    "template_arguments": null,
+                    "source_context": {
+                      "line_number": 118,
+                      "line_offset": 123
+                    }
                   }
+                },
+                "source_context": {
+                  "line_number": 118,
+                  "line_offset": 120
                 }
               }
+            },
+            "source_context": {
+              "line_number": 118,
+              "line_offset": 110
             }
           }
+        },
+        "source_context": {
+          "line_number": 118,
+          "line_offset": 1
         }
       }
     },
@@ -1503,12 +2867,28 @@
                                 "operator": "StructMakePointer",
                                 "expression": {
                                   "IdentifierExpression": {
-                                    "path": [
-                                      "A"
-                                    ]
+                                    "identifier": {
+                                      "kind": "Relative",
+                                      "path": [
+                                        "A"
+                                      ]
+                                    },
+                                    "template_arguments": null,
+                                    "source_context": {
+                                      "line_number": 119,
+                                      "line_offset": 32
+                                    }
                                   }
+                                },
+                                "source_context": {
+                                  "line_number": 119,
+                                  "line_offset": 33
                                 }
                               }
+                            },
+                            "source_context": {
+                              "line_number": 119,
+                              "line_offset": 31
                             }
                           }
                         },
@@ -1521,14 +2901,34 @@
                                 "operator": "StructMakePointer",
                                 "expression": {
                                   "IdentifierExpression": {
-                                    "path": [
-                                      "B"
-                                    ]
+                                    "identifier": {
+                                      "kind": "Relative",
+                                      "path": [
+                                        "B"
+                                      ]
+                                    },
+                                    "template_arguments": null,
+                                    "source_context": {
+                                      "line_number": 119,
+                                      "line_offset": 46
+                                    }
                                   }
+                                },
+                                "source_context": {
+                                  "line_number": 119,
+                                  "line_offset": 47
                                 }
                               }
+                            },
+                            "source_context": {
+                              "line_number": 119,
+                              "line_offset": 45
                             }
                           }
+                        },
+                        "source_context": {
+                          "line_number": 119,
+                          "line_offset": 36
                         }
                       }
                     },
@@ -1538,12 +2938,28 @@
                         "operator": "BitwiseInverse",
                         "expression": {
                           "IdentifierExpression": {
-                            "path": [
-                              "C"
-                            ]
+                            "identifier": {
+                              "kind": "Relative",
+                              "path": [
+                                "C"
+                              ]
+                            },
+                            "template_arguments": null,
+                            "source_context": {
+                              "line_number": 119,
+                              "line_offset": 53
+                            }
                           }
+                        },
+                        "source_context": {
+                          "line_number": 119,
+                          "line_offset": 52
                         }
                       }
+                    },
+                    "source_context": {
+                      "line_number": 119,
+                      "line_offset": 50
                     }
                   }
                 },
@@ -1553,12 +2969,28 @@
                     "operator": "ArithmeticNegate",
                     "expression": {
                       "IdentifierExpression": {
-                        "path": [
-                          "D"
-                        ]
+                        "identifier": {
+                          "kind": "Relative",
+                          "path": [
+                            "D"
+                          ]
+                        },
+                        "template_arguments": null,
+                        "source_context": {
+                          "line_number": 119,
+                          "line_offset": 58
+                        }
                       }
+                    },
+                    "source_context": {
+                      "line_number": 119,
+                      "line_offset": 57
                     }
                   }
+                },
+                "source_context": {
+                  "line_number": 119,
+                  "line_offset": 55
                 }
               }
             },
@@ -1570,10 +3002,22 @@
                     "operator": "BoolNegate",
                     "expression": {
                       "IdentifierExpression": {
-                        "path": [
-                          "E"
-                        ]
+                        "identifier": {
+                          "kind": "Relative",
+                          "path": [
+                            "E"
+                          ]
+                        },
+                        "template_arguments": null,
+                        "source_context": {
+                          "line_number": 119,
+                          "line_offset": 63
+                        }
                       }
+                    },
+                    "source_context": {
+                      "line_number": 119,
+                      "line_offset": 62
                     }
                   }
                 },
@@ -1582,24 +3026,56 @@
                   "BinaryExpression": {
                     "left_expression": {
                       "IdentifierExpression": {
-                        "path": [
-                          "F"
-                        ]
+                        "identifier": {
+                          "kind": "Relative",
+                          "path": [
+                            "F"
+                          ]
+                        },
+                        "template_arguments": null,
+                        "source_context": {
+                          "line_number": 119,
+                          "line_offset": 68
+                        }
                       }
                     },
                     "operator": "ArithmeticAdd",
                     "right_expression": {
                       "IdentifierExpression": {
-                        "path": [
-                          "G"
-                        ]
+                        "identifier": {
+                          "kind": "Relative",
+                          "path": [
+                            "G"
+                          ]
+                        },
+                        "template_arguments": null,
+                        "source_context": {
+                          "line_number": 119,
+                          "line_offset": 72
+                        }
                       }
+                    },
+                    "source_context": {
+                      "line_number": 119,
+                      "line_offset": 70
                     }
                   }
+                },
+                "source_context": {
+                  "line_number": 119,
+                  "line_offset": 65
                 }
               }
+            },
+            "source_context": {
+              "line_number": 119,
+              "line_offset": 60
             }
           }
+        },
+        "source_context": {
+          "line_number": 119,
+          "line_offset": 1
         }
       }
     },

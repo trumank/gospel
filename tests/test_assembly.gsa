@@ -14,18 +14,51 @@ hidden function __define_opaque_base_type base_layout: TypeLayout size_and_align
 };
 
 function usize -> TypeLayout {
+    LoadSlot &function __define_opaque_base_type;
     TypeLayoutAllocate "usize";
     LoadSlot &platform AddressSize;
-    LoadSlot &function __define_opaque_base_type;
     Call 2;
     ReturnValue;
 };
 
 function u32 -> TypeLayout {
+    LoadSlot &function __define_opaque_base_type;
     TypeLayoutAllocate "u32";
     IntConstant 0x4;
-    LoadSlot &function __define_opaque_base_type;
     Call 2;
+    ReturnValue;
+};
+
+function u8 -> TypeLayout {
+    LoadSlot &function __define_opaque_base_type;
+    TypeLayoutAllocate "u8";
+    IntConstant 0x1;
+    Call 2;
+    ReturnValue;
+};
+
+function BitfieldStructTest -> TypeLayout {
+    TypeLayoutAllocate "BitfieldStruct";
+    LoadSlot &function u8;
+    Call 0;
+    IntConstant 0x1;
+    TypeLayoutDefineBitfieldMember "bitfield_size_1";
+    LoadSlot &function u8;
+    Call 0;
+    IntConstant 0x4;
+    TypeLayoutDefineBitfieldMember "bitfield_size_4";
+    LoadSlot &function u8;
+    Call 0;
+    IntConstant 0x6;
+    TypeLayoutDefineBitfieldMember "bitfield_size_6";
+    LoadSlot &function usize;
+    Call 0;
+    TypeLayoutDefineMember "test_member_usize";
+    LoadSlot &function u8;
+    Call 0;
+    IntConstant 0x1;
+    TypeLayoutDefineBitfieldMember "bitfield_size_1_2";
+    TypeLayoutFinalize;
     ReturnValue;
 };
 
@@ -85,8 +118,8 @@ function ClosureCallFunction first: Integer second: Integer -> Integer {
 };
 
 function ClosureTest -> Integer {
-    IntConstant 5;
     LoadSlot &function ClosureCallFunction;
+    IntConstant 5;
     BindClosure 1;
 A:  Slot Closure;
     StoreSlot A;
@@ -171,6 +204,6 @@ function SimpleStructWithMetadata -> TypeLayout {
 function ReadTypeLayoutMetadata -> Struct {
     LoadSlot &function SimpleStructWithMetadata;
     Call 0;
-    TypeLayoutGetMetadata TestStruct;
+    TypeLayoutGetMetadata;
     ReturnValue;
 };

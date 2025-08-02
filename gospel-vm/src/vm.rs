@@ -22,11 +22,19 @@ pub struct GospelBaseClassLayout {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GospelBitfieldLocation {
+    bitfield_bit_offset: usize,
+    bitfield_bit_width: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GospelMemberLayout {
     pub name: String,
     pub offset: usize,
     /// If this is a statically sized array, size of the array
     pub array_size: Option<usize>,
+    /// If this is a bitfield, this is a location of the bitfield data in the member at the given offset
+    pub bitfield_location: Option<GospelBitfieldLocation>,
     pub actual_size: usize,
     pub layout: GospelTypeLayout,
 }
@@ -80,6 +88,7 @@ impl GospelTypeLayout {
                     name: base_member.name,
                     offset: base_class.offset + base_member.offset,
                     array_size: base_member.array_size,
+                    bitfield_location: base_member.bitfield_location,
                     actual_size: base_member.actual_size,
                     layout: base_member.layout,
                 }) // indirect member, add offset of our direct base to the given offset
@@ -830,6 +839,7 @@ impl GospelVMExecutionState<'_> {
                         name: member_name,
                         offset: layout_builder.unaligned_size,
                         array_size: None,
+                        bitfield_location: None,
                         actual_size,
                         layout: member_layout,
                     });
@@ -849,15 +859,67 @@ impl GospelVMExecutionState<'_> {
                     layout_builder.unaligned_size = Self::align_value(layout_builder.unaligned_size, member_layout.alignment);
 
                     let actual_size = member_layout.size * array_size;
-                    let array_member_name = format!("{}[{}]", member_name, array_size);
                     layout_builder.members.push(GospelMemberLayout{
-                        name: array_member_name,
+                        name: member_name,
                         offset: layout_builder.unaligned_size,
                         array_size: Some(array_size),
+                        bitfield_location: None,
                         actual_size,
                         layout: member_layout,
                     });
                     layout_builder.unaligned_size += actual_size;
+                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
+                }
+                GospelOpcode::TypeLayoutDefineBitfieldMember => {
+                    let member_name_index = Self::immediate_value_checked(instruction, 0)? as usize;
+                    let member_name = state.copy_referenced_string_checked(member_name_index)?;
+
+                    let bitfield_width = Self::unwrap_value_as_int_checked(state.pop_stack_check_underflow()?)? as usize;
+                    let member_layout = Self::unwrap_value_as_complete_type_layout_checked(state.pop_stack_check_underflow()?)?;
+                    let mut layout_builder = Self::unwrap_value_as_partial_type_layout_checked(state.pop_stack_check_underflow()?)?;
+
+                    // See if we can fit this bitfield at the offset allocated to the previous member, given that it is of the same type and has enough bits of unallocated storage left
+                    if let Some(previous_bitfield_member) = layout_builder.members.last() &&
+                        let Some(previous_bitfield_location) = &previous_bitfield_member.bitfield_location &&
+                        previous_bitfield_member.layout == member_layout &&
+                        let new_bitfield_start_offset = previous_bitfield_location.bitfield_bit_offset + previous_bitfield_location.bitfield_bit_width &&
+                        let member_layout_bit_width = previous_bitfield_member.actual_size * 8 &&
+                        new_bitfield_start_offset + bitfield_width <= member_layout_bit_width {
+
+                        let new_bitfield_location = GospelBitfieldLocation{
+                            bitfield_bit_offset: new_bitfield_start_offset,
+                            bitfield_bit_width: bitfield_width,
+                        };
+                        let new_bitfield_member = GospelMemberLayout{
+                            name: member_name,
+                            offset: previous_bitfield_member.offset,
+                            array_size: None,
+                            bitfield_location: Some(new_bitfield_location),
+                            actual_size: previous_bitfield_member.actual_size,
+                            layout: previous_bitfield_member.layout.clone(),
+                        };
+                        layout_builder.members.push(new_bitfield_member);
+                    } else {
+                        // We could not fit this bitfield into the previous member, so we need to allocate storage for it at the end of the struct
+                        layout_builder.alignment = max(layout_builder.alignment, member_layout.alignment);
+                        layout_builder.unaligned_size = Self::align_value(layout_builder.unaligned_size, member_layout.alignment);
+
+                        let new_bitfield_location = GospelBitfieldLocation{
+                            bitfield_bit_offset: 0,
+                            bitfield_bit_width: bitfield_width,
+                        };
+                        let actual_size = member_layout.size;
+                        let new_bitfield_member = GospelMemberLayout{
+                            name: member_name,
+                            offset: layout_builder.unaligned_size,
+                            array_size: None,
+                            bitfield_location: Some(new_bitfield_location),
+                            actual_size,
+                            layout: member_layout,
+                        };
+                        layout_builder.members.push(new_bitfield_member);
+                        layout_builder.unaligned_size += actual_size;
+                    }
                     state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
                 }
                 GospelOpcode::TypeLayoutFinalize => {
@@ -878,12 +940,8 @@ impl GospelVMExecutionState<'_> {
                     state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
                 }
                 GospelOpcode::TypeLayoutGetMetadata => {
-                    let struct_index = Self::immediate_value_checked(instruction, 0)? as usize;
-                    let struct_template = state.get_referenced_struct_checked(struct_index)?;
                     let type_layout = Self::unwrap_value_as_complete_type_layout_checked(state.pop_stack_check_underflow()?)?;
-
                     let metadata_struct = type_layout.metadata.ok_or_else(|| anyhow!("Type layout metadata not set on type layout"))?;
-                    Self::validate_struct_instance_template(&metadata_struct, &struct_template)?;
                     state.push_stack_check_overflow(GospelVMValue::Struct(metadata_struct))?;
                 }
                 GospelOpcode::TypeLayoutCreatePointer => {
@@ -1427,22 +1485,15 @@ impl GospelVMState {
 
     /// Attempts to find a function definition by its fully qualified name (container name combined with function name)
     /// Providing the container context allows resolving local function references as well
-    pub fn find_function_by_reference(&self, reference: &GospelSourceObjectReference, context: &Option<Rc<GospelVMContainer>>) -> Option<GospelVMClosure> {
-        match reference {
-            GospelSourceObjectReference::Local { name: function_name } => {
-                context.as_ref().and_then(|container| container.find_named_function(function_name.as_str()))
-            }
-            GospelSourceObjectReference::External { name: function_name, container_name} => {
-                self.find_named_container(container_name.as_str()).and_then(|container| container.find_named_function(function_name.as_str()))
-            }
-        }
+    pub fn find_function_by_reference(&self, reference: &GospelSourceObjectReference) -> Option<GospelVMClosure> {
+        self.find_named_container(reference.module_name.as_str()).and_then(|container| container.find_named_function(reference.local_name.as_str()))
     }
 
     /// Allows evaluating a source value without building a container first (REPL-like API)
-    pub fn eval_source_value(&self, value: &GospelSourceStaticValue, context: &Option<Rc<GospelVMContainer>>) -> anyhow::Result<GospelVMValue> {
+    pub fn eval_source_value(&self, value: &GospelSourceStaticValue) -> anyhow::Result<GospelVMValue> {
         match value {
             GospelSourceStaticValue::FunctionId(function_reference) => {
-                self.find_function_by_reference(&function_reference, context)
+                self.find_function_by_reference(&function_reference)
                     .map(|function_pointer| GospelVMValue::Closure(function_pointer))
                     .ok_or_else(|| anyhow!("Failed to find function by function reference {}", function_reference))
             }
@@ -1458,19 +1509,19 @@ impl GospelVMState {
                 Ok(GospelVMValue::Integer(self.target_triplet.resolve_platform_config_property(*config_property)))
             }
             GospelSourceStaticValue::LazyValue(lazy_value) => {
-                self.eval_lazy_value(lazy_value, context)
+                self.eval_lazy_value(lazy_value)
             }
         }
     }
 
     /// Allows evaluating a source lazy value without building a container first (REPL-like API)
-    pub fn eval_lazy_value(&self, value: &GospelSourceLazyValue, context: &Option<Rc<GospelVMContainer>>) -> anyhow::Result<GospelVMValue> {
-        let function_pointer = self.find_function_by_reference(&value.function_reference, context)
+    pub fn eval_lazy_value(&self, value: &GospelSourceLazyValue) -> anyhow::Result<GospelVMValue> {
+        let function_pointer = self.find_function_by_reference(&value.function_reference)
             .ok_or_else(|| anyhow!("Failed to find function {} to evaluate the lazy value", value.function_reference))?;
 
         let mut compiled_function_arguments: Vec<GospelVMValue> = Vec::with_capacity(value.arguments.len());
         for source_argument in &value.arguments {
-            let argument_value = self.eval_source_value(source_argument, context)?;
+            let argument_value = self.eval_source_value(source_argument)?;
             compiled_function_arguments.push(argument_value);
         }
         let eval_result = function_pointer.execute(compiled_function_arguments)?;

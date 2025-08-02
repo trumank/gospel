@@ -64,7 +64,13 @@ struct FConditionalStructTest : if (UE_VERSION_MAJOR == 5) AInfo else AActor {
     }
 };
 
-using DynamicTemplateInstantiationTest = (*(&TVector))<float>;
+template<typename Ignored>
+struct FWrapperStruct {
+    template<typename InInnerType>
+    using Inner = InInnerType;
+};
+
+using DynamicTemplateInstantiationTest = FWrapperStruct<FVector>::typename Inner<float>;
 
 int ComplexExpressionTest = {
     int LocalVariable = UE_VERSION_MINOR;

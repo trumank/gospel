@@ -1,42 +1,49 @@
+use std::fmt::{Display, Formatter};
 use serde::{Deserialize, Serialize};
+use strum_macros::Display;
 
 /// Describes value type of the expression in the source grammar
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Display, Default)]
 pub enum ExpressionValueType {
+    #[default]
     Int,
     Typename,
     Template,
 }
 
+/// Represents a type of partial identifier
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Display)]
+pub enum PartialIdentifierKind {
+    Absolute,
+    ModuleRelative,
+    Relative,
+}
+
 /// Partial or fully qualified name in source code
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartialIdentifier {
+    pub kind: PartialIdentifierKind,
     pub path: Vec<String>,
+}
+
+/// Describes a location of the declaration within the source file
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ASTSourceContext {
+    pub line_number: usize,
+    pub line_offset: usize,
+}
+impl Display for ASTSourceContext {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.line_number, self.line_offset)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrayIndexExpression {
     pub array_expression: Expression,
     pub index_expression: Expression,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TemplateInstantiationExpression {
-    pub template_name: PartialIdentifier,
-    pub argument_expressions: Vec<Expression>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DynamicTemplateInstantiationExpression {
-    pub template_pointer_expression: Expression,
-    pub argument_expressions: Vec<Expression>,
-}
-
-/// Inline struct declaration expression. Has more restrictions than struct statements:
-/// it cannot have an alignment operator, base classes, or name, it is always an unnamed struct with default alignment and no parent classes
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StructDeclarationExpression {
-    pub declarations: Vec<StructInnerDeclaration>,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +51,8 @@ pub struct ConditionalExpression {
     pub condition_expression: Expression,
     pub true_expression: Expression,
     pub false_expression: Expression,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,8 +71,8 @@ pub enum BinaryOperator {
     LogicalMore,
     LogicalLessEquals,
     LogicalMoreEquals,
-    LogicalAnd,
-    LogicalOr,
+    ShortCircuitAnd,
+    ShortCircuitOr,
     Equals,
     NotEquals,
 }
@@ -73,6 +82,8 @@ pub struct BinaryExpression {
     pub left_expression: Expression,
     pub operator: BinaryOperator,
     pub right_expression: Expression,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +100,8 @@ pub enum UnaryOperator {
 pub struct UnaryExpression {
     pub operator: UnaryOperator,
     pub expression: Expression,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,6 +109,9 @@ pub struct MemberAccessExpression {
     pub type_expression: Expression,
     pub member_type: ExpressionValueType,
     pub member_name: String,
+    pub template_arguments: Option<Vec<Expression>>,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +119,8 @@ pub struct AssignmentStatement {
     pub left_hand_expression: Expression,
     pub assignment_operator: Option<BinaryOperator>,
     pub assignment_expression: Expression,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,24 +128,38 @@ pub struct ConditionalStatement {
     pub condition_expression: Expression,
     pub then_statement: Statement,
     pub else_statement: Option<Statement>,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStatement {
     pub statements: Vec<Statement>,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalVarDeclarationStatement {
+pub struct DeclarationStatement {
     pub value_type: ExpressionValueType,
     pub name: String,
     pub initializer: Option<Expression>,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WhileLoopStatement {
     pub condition_expression: Expression,
     pub loop_body_statement: Statement,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimpleStatement {
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 /// Represents a generic statement inside an expression block
@@ -136,37 +168,66 @@ pub enum Statement {
     BlockStatement(Box<BlockStatement>),
     ConditionalStatement(Box<ConditionalStatement>),
     AssignmentStatement(Box<AssignmentStatement>),
-    DeclarationStatement(Box<LocalVarDeclarationStatement>),
+    DeclarationStatement(Box<DeclarationStatement>),
     WhileLoopStatement(Box<WhileLoopStatement>),
-    BreakLoopStatement,
-    ContinueLoopStatement,
-    EmptyStatement,
+    BreakLoopStatement(Box<SimpleStatement>),
+    ContinueLoopStatement(Box<SimpleStatement>),
+    EmptyStatement(Box<SimpleStatement>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockExpression {
     pub statements: Vec<Statement>,
     pub return_value_expression: Expression,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentifierExpression {
+    pub identifier: PartialIdentifier,
+    pub template_arguments: Option<Vec<Expression>>,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegerConstantExpression {
+    pub constant_value: i32,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Display)]
+pub enum BuiltinIdentifier {
+    AddressSize,
+    TargetPlatform,
+    TargetArch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuiltinIdentifierExpression {
+    pub identifier: BuiltinIdentifier,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 /// Represents a generic expression
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Expression {
-    IntegerConstantExpression(i32),
-    TemplatePointerConstantExpression(PartialIdentifier),
-    IdentifierExpression(PartialIdentifier),
-    TemplateInstantiationExpression(Box<TemplateInstantiationExpression>),
-    TemplateInstantiationByPointerExpression(Box<DynamicTemplateInstantiationExpression>),
+    IntegerConstantExpression(Box<IntegerConstantExpression>),
+    IdentifierExpression(Box<IdentifierExpression>),
     ConditionalExpression(Box<ConditionalExpression>),
-    StructDeclarationExpression(Box<StructDeclarationExpression>),
+    StructDeclarationExpression(Box<StructStatement>),
     BlockExpression(Box<BlockExpression>),
     UnaryExpression(Box<UnaryExpression>),
     ArrayIndexExpression(Box<ArrayIndexExpression>),
     MemberAccessExpression(Box<MemberAccessExpression>),
     BinaryExpression(Box<BinaryExpression>),
+    BuiltinIdentifierExpression(Box<BuiltinIdentifierExpression>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleCompositeImport {
     pub namespace: PartialIdentifier,
     pub imported_names: Vec<String>,
@@ -174,10 +235,17 @@ pub struct ModuleCompositeImport {
 
 /// Represents an import statement in its possible forms
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ModuleImportStatement {
+pub enum ModuleImportStatementType {
     QualifiedImport(PartialIdentifier),
-    NamespaceImport(PartialIdentifier),
     CompositeImport(ModuleCompositeImport),
+}
+
+/// Represents an import statement
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleImportStatement {
+    pub statement_type: ModuleImportStatementType,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 /// Represents an external data declaration
@@ -185,6 +253,8 @@ pub enum ModuleImportStatement {
 pub struct ExternStatement {
     pub global_name: String,
     pub value_type: ExpressionValueType,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,6 +262,8 @@ pub struct TemplateArgument {
     pub name: String,
     pub value_type: ExpressionValueType,
     pub default_value: Option<Expression>,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 /// Declaration of data or type template with names of arguments and their types
@@ -207,6 +279,8 @@ pub struct DataStatement {
     pub value_type: ExpressionValueType,
     pub name: String,
     pub initializer: Expression,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 /// Represents a member declaration inside the struct definition
@@ -217,6 +291,8 @@ pub struct MemberDeclaration {
     pub name: String,
     pub array_size_expression: Option<Expression>,
     pub bitfield_width_expression: Option<Expression>,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 /// Represents a conditional declaration inside the struct definition
@@ -225,12 +301,16 @@ pub struct ConditionalDeclaration {
     pub condition_expression: Expression,
     pub then_branch: StructInnerDeclaration,
     pub else_branch: Option<StructInnerDeclaration>,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 /// Represents a group of struct declarations grouped into a single logical block
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockDeclaration {
     pub declarations: Vec<StructInnerDeclaration>,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 /// Represents a declaration in the struct definition
@@ -249,9 +329,11 @@ pub enum StructInnerDeclaration {
 pub struct StructStatement {
     pub template_declaration: Option<TemplateDeclaration>,
     pub alignment_expression: Option<Expression>,
-    pub name: String,
+    pub name: Option<String>,
     pub base_class_expressions: Vec<Expression>,
     pub declarations: Vec<StructInnerDeclaration>,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 /// Declaration in a namespace. Namespaces can contain data and struct statements, as well as nested namespaces
@@ -267,6 +349,8 @@ pub enum NamespaceLevelDeclaration {
 pub struct NamespaceStatement {
     pub name: PartialIdentifier,
     pub declarations: Vec<NamespaceLevelDeclaration>,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
 }
 
 /// Represents a top level declaration in the module source file
@@ -283,5 +367,6 @@ pub enum ModuleTopLevelDeclaration {
 /// Represents a source file for a module
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleSourceFile {
+    pub file_name: String,
     pub declarations: Vec<ModuleTopLevelDeclaration>,
 }
