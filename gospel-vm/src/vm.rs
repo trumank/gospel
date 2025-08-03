@@ -7,7 +7,7 @@ use anyhow::{anyhow, bail};
 use strum_macros::Display;
 use crate::bytecode::{GospelInstruction, GospelOpcode};
 use crate::container::GospelContainer;
-use crate::gospel_type::{GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelTargetArch, GospelTargetEnv, GospelTargetOS, GospelFunctionDefinition, GospelObjectIndex, GospelValueType};
+use crate::gospel_type::{GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelTargetArch, GospelTargetEnv, GospelTargetOS, GospelFunctionDefinition, GospelObjectIndex, GospelValueType};
 use crate::writer::{GospelSourceObjectReference, GospelSourceLazyValue, GospelSourceStaticValue};
 use std::str::FromStr;
 use serde::{Deserialize, Serialize, Serializer};
@@ -1178,20 +1178,24 @@ impl GospelVMContainer {
             .and_then(|x| self.container.strings.get(*x).ok())
     }
     fn resolve_function_index(self: &Rc<Self>, function_index: GospelObjectIndex) -> anyhow::Result<GospelVMClosure> {
-        if function_index.is_external() {
-            if function_index.index() as usize >= self.container.external_functions.len() {
-                bail!("Invalid external function index #{} out of bounds (num external function references in container: {})", function_index.index(), self.container.external_functions.len());
+        match function_index {
+            GospelObjectIndex::External(external_index) => {
+                if external_index as usize >= self.container.external_functions.len() {
+                    bail!("Invalid external function index #{} out of bounds (num external function references in container: {})", external_index, self.container.external_functions.len());
+                }
+                let external_function = &self.container.external_functions[external_index as usize];
+                if external_function.import_index as usize >= self.external_references.len() {
+                    bail!("Invalid external container reference index #{} out of bounds (num external container references: {})", external_function.import_index, self.external_references.len());
+                }
+                let source_container = &self.external_references[external_function.import_index as usize];
+                let type_name = self.container.strings.get(external_function.object_name)?;
+                source_container.find_named_function(type_name)
+                    .ok_or_else(|| { anyhow!("Imported named function {} does not exist in container {}", self.container_name().unwrap(), type_name.to_string()) })
             }
-            let external_function = &self.container.external_functions[function_index.index() as usize];
-            if external_function.import_index as usize >= self.external_references.len() {
-                bail!("Invalid external container reference index #{} out of bounds (num external container references: {})", external_function.import_index, self.external_references.len());
+            GospelObjectIndex::Local(local_index) => {
+                Ok(GospelVMClosure { container: self.clone(), function_index: local_index, arguments: Vec::new() })
             }
-            let source_container = &self.external_references[external_function.import_index as usize];
-            let type_name = self.container.strings.get(external_function.object_name)?;
-            return source_container.find_named_function(type_name)
-                .ok_or_else(|| { anyhow!("Imported named function {} does not exist in container {}", self.container_name().unwrap(), type_name.to_string()) });
         }
-        Ok(GospelVMClosure { container: self.clone(), function_index: function_index.index(), arguments: Vec::new() })
     }
     fn resolve_lazy_value(self: &Rc<Self>, index: u32, recursion_counter: usize) -> anyhow::Result<GospelVMValue> {
         if index as usize >= self.container.lazy_values.len() {
@@ -1202,40 +1206,28 @@ impl GospelVMContainer {
         type_reference.container.execute_function_static(type_reference.function_index, &lazy_value.arguments, recursion_counter)
     }
     fn resolve_static_value(self: &Rc<Self>, value: &GospelStaticValue, recursion_counter: usize) -> anyhow::Result<GospelVMValue> {
-        match value.static_type {
-            GospelStaticValueType::Integer => {
-                if value.value_type != GospelValueType::Integer {
-                    bail!("Incompatible integer static initializer with a value type that is not an integer");
-                }
-                Ok(GospelVMValue::Integer(value.data as i32))
+        match value {
+            GospelStaticValue::Integer(integer_value) => {
+                Ok(GospelVMValue::Integer(*integer_value))
             }
-            GospelStaticValueType::FunctionIndex => {
-                if value.value_type != GospelValueType::Closure {
-                    bail!("Incompatible function index static initializer with a value type that is not a closure");
-                }
-                let function_index = GospelObjectIndex::create_raw(value.data);
-                let reference = self.resolve_function_index(function_index)?;
+            GospelStaticValue::FunctionIndex(function_index) => {
+                let reference = self.resolve_function_index(*function_index)?;
                 Ok(GospelVMValue::Closure(reference))
             }
-            GospelStaticValueType::LazyValue => {
-                let resolved_value = self.resolve_lazy_value(value.data, recursion_counter)?;
-                if resolved_value.value_type() != value.value_type {
-                    bail!("Incompatible lazy value initializer yielded value type different from the value type specified");
-                }
+            GospelStaticValue::LazyValue(lazy_value_index) => {
+                let resolved_value = self.resolve_lazy_value(*lazy_value_index, recursion_counter)?;
                 Ok(resolved_value)
             }
-            GospelStaticValueType::GlobalVariableValue => {
-                let global_variable = self.global_lookup_by_id.get(&(value.data as usize))
+            GospelStaticValue::GlobalVariableValue(global_variable_index) => {
+                let global_variable = self.global_lookup_by_id.get(&(*global_variable_index as usize))
                     .ok_or_else(|| anyhow!("Failed to find global with index specified"))?;
                 // Make sure the global variable has been initialized
                 let current_value = global_variable.current_value.borrow().clone()
                     .ok_or_else(|| anyhow!("Attempt to read uninitialized global variable {}", global_variable.name))?;
                 Ok(GospelVMValue::Integer(current_value))
             }
-            GospelStaticValueType::PlatformConfigProperty => {
-                let config_property = GospelPlatformConfigProperty::from_repr(value.data as u8)
-                    .ok_or_else(|| anyhow!("Unknown platform config property"))?;
-                let resolved_value = self.target_triplet.resolve_platform_config_property(config_property);
+            GospelStaticValue::PlatformConfigProperty(config_property) => {
+                let resolved_value = self.target_triplet.resolve_platform_config_property(*config_property);
                 Ok(GospelVMValue::Integer(resolved_value))
             }
         }
@@ -1251,30 +1243,31 @@ impl GospelVMContainer {
     }
     fn resolve_slot_binding(self: &Rc<Self>, type_definition: &GospelFunctionDefinition, slot: &GospelSlotDefinition, args: &Vec<GospelVMValue>, recursion_counter: usize) -> anyhow::Result<Option<GospelVMValue>> {
         match slot.binding {
-            GospelSlotBinding::StaticValue => {
-                if let Some(static_value) = slot.static_value {
-                    let resolved_value = self.resolve_static_value(&static_value, recursion_counter)?;
-                    if slot.value_type != resolved_value.value_type() {
-                        bail!("Slot value type is not compatible with static value type specified")
-                    }
-                    Ok(Some(resolved_value))
-                } else { Ok(None) }
+            GospelSlotBinding::Uninitialized => {
+                Ok(None)
             }
-            GospelSlotBinding::ArgumentValue => {
-                if slot.argument_index as usize >= type_definition.arguments.len() {
-                    bail!("Invalid template argument index #{} (number of template arguments: {})", slot.argument_index, type_definition.arguments.len());
+            GospelSlotBinding::StaticValue(static_value) => {
+                let resolved_value = self.resolve_static_value(&static_value, recursion_counter)?;
+                if slot.value_type != resolved_value.value_type() {
+                    bail!("Slot value type is not compatible with static value type specified")
                 }
-                if type_definition.arguments[slot.argument_index as usize].argument_type != slot.value_type {
-                    bail!("Incompatible value type for slot and argument at index #{}", slot.argument_index);
+                Ok(Some(resolved_value))
+            }
+            GospelSlotBinding::ArgumentValue(argument_index) => {
+                if argument_index as usize >= type_definition.arguments.len() {
+                    bail!("Invalid template argument index #{} (number of template arguments: {})", argument_index, type_definition.arguments.len());
                 }
-                let resolved_value = if slot.argument_index as usize >= args.len() {
-                    let static_value = type_definition.arguments[slot.argument_index as usize].default_value.clone()
-                        .ok_or_else(|| anyhow!("Missing value for argument #{} with no default value provided", slot.argument_index))?;
+                if type_definition.arguments[argument_index as usize].argument_type != slot.value_type {
+                    bail!("Incompatible value type for slot and argument at index #{}", argument_index);
+                }
+                let resolved_value = if argument_index as usize >= args.len() {
+                    let static_value = type_definition.arguments[argument_index as usize].default_value.clone()
+                        .ok_or_else(|| anyhow!("Missing value for argument #{} with no default value provided", argument_index))?;
                     self.resolve_static_value(&static_value, recursion_counter)?
                 } else {
-                    args[slot.argument_index as usize].clone()
+                    args[argument_index as usize].clone()
                 };
-                if resolved_value.value_type() != type_definition.arguments[slot.argument_index as usize].argument_type {
+                if resolved_value.value_type() != type_definition.arguments[argument_index as usize].argument_type {
                     bail!("Incompatible value type for argument type and provided value");
                 }
                 Ok(Some(resolved_value))
@@ -1282,23 +1275,27 @@ impl GospelVMContainer {
         }
     }
     fn resolve_struct_template(self: &Rc<Self>, struct_index: &GospelObjectIndex) -> anyhow::Result<Rc<GospelVMStructTemplate>> {
-        if struct_index.is_external() {
-            if struct_index.index() as usize >= self.container.external_structs.len() {
-                bail!("Invalid external struct index #{} out of bounds (num external struct references in container: {})", struct_index.index(), self.container.external_structs.len());
+        match struct_index {
+            GospelObjectIndex::External(external_index) => {
+                if *external_index as usize >= self.container.external_structs.len() {
+                    bail!("Invalid external struct index #{} out of bounds (num external struct references in container: {})", *external_index, self.container.external_structs.len());
+                }
+                let external_struct = &self.container.external_structs[*external_index as usize];
+                if external_struct.import_index as usize >= self.external_references.len() {
+                    bail!("Invalid external container reference index #{} out of bounds (num external container references: {})", external_struct.import_index, self.external_references.len());
+                }
+                let source_container = &self.external_references[external_struct.import_index as usize];
+                let struct_name = self.container.strings.get(external_struct.object_name)?;
+                source_container.find_named_struct(struct_name)
+                    .ok_or_else(|| { anyhow!("Imported named struct {} does not exist in container {}", self.container_name().unwrap(), struct_name.to_string()) })
             }
-            let external_struct = &self.container.external_structs[struct_index.index() as usize];
-            if external_struct.import_index as usize >= self.external_references.len() {
-                bail!("Invalid external container reference index #{} out of bounds (num external container references: {})", external_struct.import_index, self.external_references.len());
+            GospelObjectIndex::Local(local_index) => {
+                if *local_index as usize >= self.struct_templates.len() {
+                    bail!("Invalid struct index #{} out of bounds (num structs in container: {})", *local_index, self.struct_templates.len());
+                }
+                Ok(self.struct_templates[*local_index as usize].clone())
             }
-            let source_container = &self.external_references[external_struct.import_index as usize];
-            let struct_name = self.container.strings.get(external_struct.object_name)?;
-            return source_container.find_named_struct(struct_name)
-                .ok_or_else(|| { anyhow!("Imported named struct {} does not exist in container {}", self.container_name().unwrap(), struct_name.to_string()) });
         }
-        if struct_index.index() as usize >= self.struct_templates.len() {
-            bail!("Invalid struct index #{} out of bounds (num structs in container: {})", struct_index.index(), self.struct_templates.len());
-        }
-        Ok(self.struct_templates[struct_index.index() as usize].clone())
     }
     fn execute_function_internal(self: &Rc<Self>, index: u32, args: &Vec<GospelVMValue>, recursion_counter: usize) -> anyhow::Result<GospelVMValue> {
         if index as usize >= self.container.functions.len() {

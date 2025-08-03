@@ -3,12 +3,13 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::rc::Rc;
 use anyhow::{anyhow, bail};
+use serde::{Deserialize, Serialize};
 use crate::bytecode::{GospelInstruction, GospelOpcode};
 use crate::container::{GospelContainer, GospelContainerImport, GospelContainerVersion, GospelGlobalDefinition};
-use crate::gospel_type::{GospelExternalObjectReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelStaticValueType, GospelFunctionArgument, GospelFunctionDefinition, GospelObjectIndex, GospelValueType, GospelLazyValue, GospelObjectIndexNamePair, GospelStructDefinition, GospelStructNameInfo};
+use crate::gospel_type::{GospelExternalObjectReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelFunctionArgument, GospelFunctionDefinition, GospelObjectIndex, GospelValueType, GospelLazyValue, GospelObjectIndexNamePair, GospelStructDefinition, GospelStructNameInfo};
 
 /// Represents a reference to a function
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct GospelSourceObjectReference {
     pub module_name: String,
     pub local_name: String,
@@ -20,7 +21,7 @@ impl Display for GospelSourceObjectReference {
 }
 
 /// Represents a static value
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GospelSourceStaticValue {
     /// signed integer literal
     Integer(i32),
@@ -46,7 +47,7 @@ impl GospelSourceStaticValue {
 }
 
 /// Represents a lazily evaluated value created by calling the provided function with the given set of arguments
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GospelSourceLazyValue {
     pub function_reference: GospelSourceObjectReference,
     pub return_value_type: GospelValueType,
@@ -54,14 +55,14 @@ pub struct GospelSourceLazyValue {
 }
 
 /// Definition of a field in a struct
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GospelSourceStructField {
     pub field_name: Option<String>,
     pub field_type: GospelValueType,
 }
 
 /// Definition of a named struct potentially local to the module
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GospelSourceStructDefinition {
     pub name: GospelSourceObjectReference,
     pub hidden: bool,
@@ -69,7 +70,7 @@ pub struct GospelSourceStructDefinition {
 }
 
 /// Represents a value with which a slot is populated before type layout calculation occurs
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GospelSourceSlotBinding {
     /// slot is not initialized with a value, and must be written to before value can be read from it
     #[default]
@@ -80,7 +81,7 @@ pub enum GospelSourceSlotBinding {
     ArgumentValue(u32),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct GospelSourceSlotDefinition {
     slot_type: GospelValueType,
     slot_biding: GospelSourceSlotBinding,
@@ -103,7 +104,7 @@ impl GospelSourceFunctionDeclaration {
     /// Creates a function declaration. When hidden is true, the function will not be visible outside the current container by name
     pub fn create(function_name: GospelSourceObjectReference, hidden: bool) -> Self {
         Self{
-            function_name: function_name,
+            function_name,
             hidden,
             ..GospelSourceFunctionDeclaration::default()
         }
@@ -379,18 +380,18 @@ impl GospelContainerWriter {
         match source {
             GospelSourceSlotBinding::Uninitialized => {
                 Ok(GospelSlotDefinition{
-                    value_type, binding: GospelSlotBinding::StaticValue, static_value: None, argument_index: 0,
+                    value_type, binding: GospelSlotBinding::Uninitialized,
                 })
             },
             GospelSourceSlotBinding::StaticValue(source_value) => {
                 let static_value = self.convert_static_value(source_value)?;
                 Ok(GospelSlotDefinition{
-                    value_type, binding: GospelSlotBinding::StaticValue, static_value: Some(static_value), argument_index: 0,
+                    value_type, binding: GospelSlotBinding::StaticValue(static_value),
                 })
             },
             GospelSourceSlotBinding::ArgumentValue(argument_index) => {
                 Ok(GospelSlotDefinition{
-                    value_type, binding: GospelSlotBinding::ArgumentValue, static_value: None, argument_index: *argument_index,
+                    value_type, binding: GospelSlotBinding::ArgumentValue(*argument_index),
                 })
             }
         }
@@ -456,31 +457,23 @@ impl GospelContainerWriter {
     }
     fn find_locally_defined_function_index(&self, function_name: &str) -> anyhow::Result<GospelObjectIndex> {
         self.function_lookup.get(function_name).map(|function_index| {
-            GospelObjectIndex::create_local(*function_index)
+            GospelObjectIndex::Local(*function_index)
         }).ok_or_else(|| anyhow!("Failed to find locally defined function {}", function_name.to_string()))
     }
     fn convert_function_reference(&mut self, source: &GospelSourceObjectReference) -> anyhow::Result<GospelObjectIndex> {
         if source.module_name == self.container_name {
             self.find_locally_defined_function_index(source.local_name.as_str())
         } else {
-            Ok(GospelObjectIndex::create_external(self.find_or_define_external_function(source.module_name.as_str(), source.local_name.as_str())))
+            Ok(GospelObjectIndex::External(self.find_or_define_external_function(source.module_name.as_str(), source.local_name.as_str())))
         }
     }
     fn convert_static_value(&mut self, source: &GospelSourceStaticValue) -> anyhow::Result<GospelStaticValue> {
         match source {
             GospelSourceStaticValue::Integer(integer_value) => {
-                Ok(GospelStaticValue{
-                    value_type: GospelValueType::Integer,
-                    static_type: GospelStaticValueType::Integer,
-                    data: *integer_value as u32,
-                })
+                Ok(GospelStaticValue::Integer(*integer_value))
             }
             GospelSourceStaticValue::FunctionId(type_reference) => {
-                Ok(GospelStaticValue{
-                    value_type: GospelValueType::Closure,
-                    static_type: GospelStaticValueType::FunctionIndex,
-                    data: self.convert_function_reference(type_reference)?.raw_value(),
-                })
+                Ok(GospelStaticValue::FunctionIndex(self.convert_function_reference(type_reference)?))
             }
             GospelSourceStaticValue::LazyValue(lazy_value) => {
                 let function_index = self.convert_function_reference(&lazy_value.function_reference)?;
@@ -490,32 +483,20 @@ impl GospelContainerWriter {
                     arguments.push(self.convert_static_value(argument)?);
                 }
                 let lazy_value_index = self.find_or_add_lazy_value(function_index, arguments);
-                Ok(GospelStaticValue{
-                    value_type: lazy_value.return_value_type,
-                    static_type: GospelStaticValueType::LazyValue,
-                    data: lazy_value_index,
-                })
+                Ok(GospelStaticValue::LazyValue(lazy_value_index))
             }
             GospelSourceStaticValue::PlatformConfigProperty(property) => {
-                Ok(GospelStaticValue{
-                    value_type: GospelValueType::Integer,
-                    static_type: GospelStaticValueType::PlatformConfigProperty,
-                    data: *property as u32,
-                })
+                Ok(GospelStaticValue::PlatformConfigProperty(*property))
             },
             GospelSourceStaticValue::GlobalVariableValue(global_variable_name) => {
                 let global_variable_index = self.find_or_define_global(global_variable_name.as_str(), None)?;
-                Ok(GospelStaticValue{
-                    value_type: GospelValueType::Integer,
-                    static_type: GospelStaticValueType::GlobalVariableValue,
-                    data: global_variable_index,
-                })
+                Ok(GospelStaticValue::GlobalVariableValue(global_variable_index))
             }
         }
     }
     fn find_locally_defined_struct_index(&self, struct_name: &str) -> anyhow::Result<GospelObjectIndex> {
         self.struct_lookup.get(struct_name).map(|struct_index| {
-            GospelObjectIndex::create_local(*struct_index)
+            GospelObjectIndex::Local(*struct_index)
         }).ok_or_else(|| anyhow!("Failed to find locally defined struct {}", struct_name.to_string()))
     }
     fn find_or_define_external_struct(&mut self, container_name: &str, struct_name: &str) -> u32 {
@@ -538,7 +519,7 @@ impl GospelContainerWriter {
         if source.module_name == self.container_name {
             self.find_locally_defined_struct_index(source.local_name.as_str())
         } else {
-            Ok(GospelObjectIndex::create_external(self.find_or_define_external_struct(source.module_name.as_str(), source.local_name.as_str())))
+            Ok(GospelObjectIndex::External(self.find_or_define_external_struct(source.module_name.as_str(), source.local_name.as_str())))
         }
     }
 }

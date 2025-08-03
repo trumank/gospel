@@ -1,9 +1,8 @@
-﻿use std::io::{Read, Write};
-use std::str::FromStr;
+﻿use std::str::FromStr;
 use strum_macros::{Display, EnumProperty, EnumString, FromRepr};
-use crate::ser::{ReadExt, Readable, WriteExt, Writeable};
 use std::string::ToString;
 use anyhow::bail;
+use serde::{Deserialize, Serialize};
 use strum::EnumProperty;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, FromRepr, EnumProperty, Display, EnumString)]
@@ -23,9 +22,9 @@ pub enum GospelOpcode {
     Equals = 0x05, // ; [pop stack] [pop stack] -> [push stack]
     #[strum(props(stack_in_count = "1"))]
     ReturnValue = 0x06, // [pop stack] ->
-    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1", stack_variable_input_count_immediate = "0"))]
     Call = 0x07, // <imm>; [pop stack] [pop stack] x <imm> -> [push stack]
-    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1", stack_variable_input_count_immediate = "0"))]
     BindClosure = 0x08, // <imm>; [pop stack] [pop stack] x <imm> -> [push stack]
     #[strum(props(immediate_count = "1"))]
     Abort = 0x09, // <imm>; ->
@@ -155,63 +154,21 @@ pub enum GospelOpcode {
     StructSetNamedTypedField = 0x98, // <imm> <imm>; [pop stack], [pop stack] -> [push stack]
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-#[repr(transparent)]
-pub struct GospelInstructionEncoding(u8);
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
+pub struct GospelInstructionEncoding {
+    immediate_count: u8,
+}
 
 impl GospelInstructionEncoding {
-    const IMMEDIATE_COUNT_BIT_SHIFT: u8 = 0;
-    const IMMEDIATE_COUNT_BIT_COUNT: u8 = 2;
-    const STACK_IN_BIT_SHIFT: u8 = Self::IMMEDIATE_COUNT_BIT_SHIFT + Self::IMMEDIATE_COUNT_BIT_COUNT;
-    const STACK_IN_BIT_COUNT: u8 = 2;
-    const STACK_OUT_BIT_SHIFT: u8 = Self::STACK_IN_BIT_SHIFT + Self::STACK_IN_BIT_COUNT;
-    const STACK_OUT_BIT_COUNT: u8 = 2;
-    const MAX_IMMEDIATE_COUNT: usize = (1 << Self::IMMEDIATE_COUNT_BIT_COUNT) - 1;
-
-    pub fn raw(self) -> u8 { self.0 }
-    pub fn from_raw(raw: u8) -> GospelInstructionEncoding {
-        Self(raw)
-    }
-    pub fn from_components(immediate_count: usize, stack_in: usize, stack_out: usize) -> GospelInstructionEncoding {
-        Self::from_raw(
-        ((immediate_count as u8 & ((1 << Self::IMMEDIATE_COUNT_BIT_COUNT) - 1)) << Self::IMMEDIATE_COUNT_BIT_SHIFT) |
-            ((stack_in as u8 & ((1 << Self::STACK_IN_BIT_COUNT) - 1)) << Self::STACK_IN_BIT_SHIFT) |
-            ((stack_out as u8 & ((1 << Self::STACK_OUT_BIT_COUNT) - 1)) << Self::STACK_OUT_BIT_SHIFT)
-        )
-    }
+    const MAX_IMMEDIATE_COUNT: usize = 4;
     pub fn from_opcode(opcode: GospelOpcode) -> GospelInstructionEncoding {
-        Self::from_components(
-            opcode.get_str("immediate_count").map(|x| usize::from_str(x).unwrap()).unwrap_or(0),
-            opcode.get_str("stack_in_count").map(|x| usize::from_str(x).unwrap()).unwrap_or(0),
-            opcode.get_str("stack_out_count").map(|x| usize::from_str(x).unwrap()).unwrap_or(0),
-        )
-    }
-
-    pub fn immediate_count(self) -> usize {
-        ((self.0 >> Self::IMMEDIATE_COUNT_BIT_SHIFT) & ((1 << Self::IMMEDIATE_COUNT_BIT_COUNT) - 1)) as usize
-    }
-    pub fn stack_in_count(self) -> usize {
-        ((self.0 >> Self::STACK_IN_BIT_SHIFT) & ((1 << Self::STACK_IN_BIT_COUNT) - 1)) as usize
-    }
-    pub fn stack_out_count(self) -> usize {
-        ((self.0 >> Self::STACK_OUT_BIT_SHIFT) & ((1 << Self::STACK_OUT_BIT_COUNT) - 1)) as usize
+        let immediate_count = opcode.get_str("immediate_count").map(|x| u8::from_str(x).unwrap()).unwrap_or(0);
+        assert!(immediate_count <= Self::MAX_IMMEDIATE_COUNT as u8);
+        Self{immediate_count}
     }
 }
 
-impl Readable for GospelInstructionEncoding {
-    fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
-        Ok(GospelInstructionEncoding::from_raw(stream.de()?))
-    }
-}
-impl Writeable for GospelInstructionEncoding {
-    fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
-        let value = self.raw();
-        stream.ser(&value)?;
-        Ok({})
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct GospelInstruction {
     raw_opcode: u8,
     instruction_encoding: GospelInstructionEncoding,
@@ -222,20 +179,20 @@ impl GospelInstruction {
     pub fn raw_opcode(&self) -> u8 { self.raw_opcode }
     pub fn opcode(&self) -> Option<GospelOpcode> { GospelOpcode::from_repr(self.raw_opcode) }
     pub fn instruction_encoding(&self) -> GospelInstructionEncoding { self.instruction_encoding }
-    pub fn immediate_operands(&self) -> &[u32] { &self.immediate_operands[0..self.instruction_encoding.immediate_count()] }
-    pub fn immediate_operand_at(&self, index: usize) -> Option<u32> { if index < self.instruction_encoding.immediate_count() { Some(self.immediate_operands[index]) } else { None } }
+    pub fn immediate_operands(&self) -> &[u32] { &self.immediate_operands[0..(self.instruction_encoding.immediate_count as usize)] }
+    pub fn immediate_operand_at(&self, index: usize) -> Option<u32> { if index < self.instruction_encoding.immediate_count as usize { Some(self.immediate_operands[index]) } else { None } }
     pub fn set_immediate_operand(&mut self, operand_index: usize, new_value: u32) -> anyhow::Result<()> {
-        if operand_index >= self.instruction_encoding.immediate_count() {
-            bail!("Operand index #{} out of bounds (number of operands: {})", operand_index, self.instruction_encoding.immediate_count());
+        if operand_index >= self.instruction_encoding.immediate_count as usize {
+            bail!("Operand index #{} out of bounds (number of operands: {})", operand_index, self.instruction_encoding.immediate_count);
         }
         self.immediate_operands[operand_index] = new_value;
         Ok({})
     }
     pub fn create(opcode: GospelOpcode, immediate_operands: &[u32]) -> anyhow::Result<GospelInstruction> {
         let instruction_encoding = GospelInstructionEncoding::from_opcode(opcode);
-        if instruction_encoding.immediate_count() != immediate_operands.len() {
+        if instruction_encoding.immediate_count as usize != immediate_operands.len() {
             bail!("Operand count mismatch for opcode {}: expected {} immediate operands, but {} operands were provided",
-                   opcode.to_string(), instruction_encoding.immediate_count(), immediate_operands.len());
+                   opcode.to_string(), instruction_encoding.immediate_count, immediate_operands.len());
         }
         let mut result_immediate_operands: [u32; GospelInstructionEncoding::MAX_IMMEDIATE_COUNT] = [0; GospelInstructionEncoding::MAX_IMMEDIATE_COUNT];
         for index in 0..immediate_operands.len() {
@@ -244,37 +201,14 @@ impl GospelInstruction {
         Ok(Self{raw_opcode: opcode as u8, instruction_encoding, immediate_operands: result_immediate_operands })
     }
     pub fn create_raw(raw_opcode: u8, encoding: GospelInstructionEncoding, immediate_operands: &[u32]) -> anyhow::Result<GospelInstruction> {
-        if encoding.immediate_count() != immediate_operands.len() {
+        if encoding.immediate_count as usize != immediate_operands.len() {
             bail!("Operand count mismatch: expected {} immediate operands, but {} operands were provided",
-                encoding.immediate_count(), immediate_operands.len());
+                encoding.immediate_count, immediate_operands.len());
         }
         let mut result_immediate_operands: [u32; GospelInstructionEncoding::MAX_IMMEDIATE_COUNT] = [0; GospelInstructionEncoding::MAX_IMMEDIATE_COUNT];
         for index in 0..immediate_operands.len() {
             result_immediate_operands[index] = immediate_operands[index];
         }
         Ok(Self{raw_opcode, instruction_encoding: encoding, immediate_operands: result_immediate_operands })
-    }
-}
-
-impl Readable for GospelInstruction {
-    fn de<S: Read>(stream: &mut S) -> anyhow::Result<Self> {
-        let raw_opcode: u8 = stream.de()?;
-        let instruction_encoding = GospelInstructionEncoding::from_raw(stream.de()?);
-        let mut immediate_operands: [u32; GospelInstructionEncoding::MAX_IMMEDIATE_COUNT] = [0; GospelInstructionEncoding::MAX_IMMEDIATE_COUNT];
-
-        for immediate_operand_index in 0..instruction_encoding.immediate_count() {
-            immediate_operands[immediate_operand_index] = stream.de()?;
-        }
-        Ok(Self::create_raw(raw_opcode, instruction_encoding, &immediate_operands[0..instruction_encoding.immediate_count()])?)
-    }
-}
-impl Writeable for GospelInstruction {
-    fn ser<S: Write>(&self, stream: &mut S) -> anyhow::Result<()> {
-        stream.ser(&self.raw_opcode)?;
-        stream.ser(&self.instruction_encoding.raw())?;
-        for immediate_operand_index in 0..self.instruction_encoding.immediate_count() {
-            stream.ser(&self.immediate_operands[immediate_operand_index])?;
-        }
-        Ok({})
     }
 }
