@@ -460,16 +460,7 @@ impl GospelAssembler {
             let argument_type = Self::parse_value_type_token(&current_argument_token)
                 .ok_or_else(|| ctx.fail(format!("Expected value type, got {}", current_argument_token)))?;
             current_argument_token = ctx.next_checked()?;
-            let mut argument_default_value: Option<GospelSourceStaticValue> = None;
-
-            // If we have a default value for this argument, parse it
-            if current_argument_token == AssemblerToken::AssignmentOperator {
-                let default_value_start_token = ctx.next_checked()?;
-                let default_value = GospelAssembler::parse_static_value_constant(default_value_start_token, ctx, Some(module_name.as_str()))?;
-                argument_default_value = Some(default_value);
-                current_argument_token = ctx.next_checked()?;
-            }
-            let argument_index = function_declaration.add_function_argument(argument_type, argument_default_value)?;
+            let argument_index = function_declaration.add_function_argument(argument_type)?;
             if let Some(argument_name) = maybe_argument_name {
                 argument_name_map.insert(argument_name, argument_index);
             }

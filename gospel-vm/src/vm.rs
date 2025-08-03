@@ -1261,9 +1261,7 @@ impl GospelVMContainer {
                     bail!("Incompatible value type for slot and argument at index #{}", argument_index);
                 }
                 let resolved_value = if argument_index as usize >= args.len() {
-                    let static_value = type_definition.arguments[argument_index as usize].default_value.clone()
-                        .ok_or_else(|| anyhow!("Missing value for argument #{} with no default value provided", argument_index))?;
-                    self.resolve_static_value(&static_value, recursion_counter)?
+                    bail!("Missing value for argument #{}", argument_index);
                 } else {
                     args[argument_index as usize].clone()
                 };

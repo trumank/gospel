@@ -106,7 +106,6 @@ pub(crate) struct GospelSlotDefinition {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub(crate) struct GospelFunctionArgument {
     pub argument_type: GospelValueType, // type of the argument
-    pub default_value: Option<GospelStaticValue>, // default value for the argument, if available
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

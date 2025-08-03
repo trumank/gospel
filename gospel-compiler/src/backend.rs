@@ -171,11 +171,11 @@ impl CompilerFunctionBuilder {
             if let Some(implicit_parameter) = weak_implicit_parameter.upgrade() {
                 match &implicit_parameter.class {
                     CompilerLexicalDeclarationClass::Parameter(parameter_type) => {
-                        function_declaration.add_function_argument(CompilerInstance::convert_value_type(parameter_type.clone()), None).with_source_context(&function_scope.source_context)?;
+                        function_declaration.add_function_argument(CompilerInstance::convert_value_type(parameter_type.clone())).with_source_context(&function_scope.source_context)?;
                         argument_source_declarations.push(implicit_parameter);
                     }
                     CompilerLexicalDeclarationClass::LocalVariable(local_variable) => {
-                        function_declaration.add_function_argument(CompilerInstance::convert_value_type(local_variable.variable_type.clone()), None).with_source_context(&function_scope.source_context)?;
+                        function_declaration.add_function_argument(CompilerInstance::convert_value_type(local_variable.variable_type.clone())).with_source_context(&function_scope.source_context)?;
                         argument_source_declarations.push(implicit_parameter);
                     }
                     _ => { compiler_bail!(&function_scope.source_context, "Internal error: expected Parameter or LocalVariable declaration as implicit function parameters, got {}", implicit_parameter.class); }
@@ -188,7 +188,7 @@ impl CompilerFunctionBuilder {
         if let Some(explicit_function_parameters) = &function_reference.signature.explicit_parameters {
             for explicit_function_parameter in explicit_function_parameters {
                 if let Some(parameter_declaration) = explicit_function_parameter.parameter_declaration.upgrade() {
-                    function_declaration.add_function_argument(CompilerInstance::convert_value_type(explicit_function_parameter.parameter_type.clone()), None).with_source_context(&function_scope.source_context)?;
+                    function_declaration.add_function_argument(CompilerInstance::convert_value_type(explicit_function_parameter.parameter_type.clone())).with_source_context(&function_scope.source_context)?;
                     argument_source_declarations.push(parameter_declaration);
                 } else {
                     compiler_bail!(&function_scope.source_context, "Internal error: lost reference to the explicit function parameter");

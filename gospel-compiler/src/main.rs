@@ -238,11 +238,7 @@ fn do_action_reflect(action: ActionReflectModule) -> anyhow::Result<()> {
     }
     for function_info in module_reflector.enumerate_functions()? {
         let arguments: Vec<String> = function_info.arguments.iter().enumerate().map(|(index, argument)| {
-            if argument.has_default_value {
-                format!("${}: {} = $default", index, argument.argument_type)
-            } else {
-                format!("${}: {}", index, argument.argument_type)
-            }
+            format!("${}: {}", index, argument.argument_type)
         }).collect();
         let function_declaration = if arguments.is_empty() {
             format!("{} -> {}", function_info.name, function_info.return_value_type)

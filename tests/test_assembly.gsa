@@ -65,7 +65,7 @@ function BitfieldStructTest -> TypeLayout {
 constant uint32_t = lazy u32 -> TypeLayout;
 constant lazy_global = global test_global;
 
-function ForwarderType forward: TypeLayout = constant uint32_t -> TypeLayout -> TypeLayout {
+function ForwarderType forward: TypeLayout -> TypeLayout {
     LoadSlot forward;
     ReturnValue;
 };

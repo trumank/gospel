@@ -13,7 +13,6 @@ pub struct GospelReflectedGlobalInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GospelReflectedFunctionArgumentInfo {
     pub argument_type: GospelValueType,
-    pub has_default_value: bool,
 }
 
 /// Reflected information about a function defined by a module
@@ -72,7 +71,7 @@ impl GospelContainerReflector {
         let name = self.container.strings.get(name_pair.object_name)?.to_string();
         let return_value_type = function_descriptor.return_value_type;
         let arguments: Vec<GospelReflectedFunctionArgumentInfo> = function_descriptor.arguments.iter().map(|x| GospelReflectedFunctionArgumentInfo{
-            argument_type: x.argument_type, has_default_value: x.default_value.is_some(),
+            argument_type: x.argument_type,
         }).collect();
         Ok(GospelReflectedFunctionInfo{name, return_value_type, arguments})
     }

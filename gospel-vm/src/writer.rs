@@ -89,7 +89,6 @@ struct GospelSourceSlotDefinition {
 #[derive(Debug, Clone)]
 pub struct GospelSourceFunctionArgument {
     pub argument_type: GospelValueType,
-    pub default_value: Option<GospelSourceStaticValue>,
 }
 
 /// Allows building declarations of functions to be added to the container writer later
@@ -117,14 +116,10 @@ impl GospelSourceFunctionDeclaration {
             Some(self.arguments[index as usize].argument_type)
         } else { None }
     }
-    pub fn add_function_argument(&mut self, value_type: GospelValueType, default_value: Option<GospelSourceStaticValue>) -> anyhow::Result<u32> {
-        if default_value.is_some() && default_value.as_ref().unwrap().value_type() != value_type {
-            bail!("Incompatible default value type for function argument");
-        }
+    pub fn add_function_argument(&mut self, value_type: GospelValueType) -> anyhow::Result<u32> {
         let new_argument_index = self.arguments.len() as u32;
         self.arguments.push(GospelSourceFunctionArgument {
             argument_type: value_type,
-            default_value,
         });
         Ok(new_argument_index)
     }
@@ -551,13 +546,8 @@ impl GospelModuleVisitor for GospelContainerWriter {
         }
         let mut arguments: Vec<GospelFunctionArgument> = Vec::with_capacity(source.declaration.arguments.len());
         for argument in &source.declaration.arguments {
-            let default_value = if argument.default_value.is_some() {
-                Some(self.convert_static_value(argument.default_value.as_ref().unwrap())?)
-            } else { None };
-
             arguments.push(GospelFunctionArgument {
                 argument_type: argument.argument_type,
-                default_value,
             })
         }
 
@@ -647,15 +637,10 @@ impl GospelModuleVisitor for GospelReferenceContainerWriter {
     fn define_global(&mut self, name: &str, _value: i32) -> anyhow::Result<()> {
         self.container_writer.declare_global(name)
     }
-    fn declare_function(&mut self, mut source: GospelSourceFunctionDeclaration) -> anyhow::Result<()> {
+    fn declare_function(&mut self, source: GospelSourceFunctionDeclaration) -> anyhow::Result<()> {
         if source.return_value_type.is_none() {
             bail!("Function does not have a valid return value type; all functions must return a value");
         }
-        source.arguments.iter_mut().for_each(|argument| {
-            if argument.default_value.is_some() {
-                argument.default_value = Some(GospelSourceStaticValue::Integer(0))
-            }
-        });
         if !source.hidden {
             let mut function_definition = GospelSourceFunctionDefinition::create(source);
             function_definition.add_string_instruction(GospelOpcode::Abort, "Attempting to execute a function stub")?;
