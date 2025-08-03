@@ -17,14 +17,13 @@ pub(crate) struct GospelContainerHeader {
     pub(crate) file_magic: u32,
     pub(crate) version: GospelContainerVersion,
     pub(crate) container_name: u32, // name of this container without extension, index to the string table
-    pub(crate) is_reference_container: bool, // true if this container only defines public interface and does not contain executable code
 }
 impl GospelContainerHeader {
     pub(crate) const FILE_MAGIC: u32 = 0x4C505347;
 }
 impl Default for GospelContainerHeader {
     fn default() -> Self {
-        Self{file_magic: Self::FILE_MAGIC, version: GospelContainerVersion::current_version(), container_name: 0, is_reference_container: false}
+        Self{file_magic: Self::FILE_MAGIC, version: GospelContainerVersion::current_version(), container_name: 0}
     }
 }
 

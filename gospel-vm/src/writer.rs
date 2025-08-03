@@ -1,7 +1,5 @@
-﻿use std::cell::RefCell;
-use std::collections::HashMap;
+﻿use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
-use std::rc::Rc;
 use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
 use crate::bytecode::{GospelInstruction, GospelOpcode};
@@ -275,55 +273,6 @@ pub trait GospelModuleVisitor : Debug {
     fn define_struct(&mut self, source: GospelSourceStructDefinition) -> anyhow::Result<()>;
 }
 
-/// A frontend for plugging multiple container visitors into a single object
-#[derive(Debug, Default)]
-pub struct GospelMultiContainerVisitor {
-    pub visitors: Vec<Rc<RefCell<dyn GospelModuleVisitor>>>,
-}
-impl GospelMultiContainerVisitor {
-    pub fn create() -> Self {
-        Self::default()
-    }
-    pub fn add_visitor(&mut self, visitor: Rc<RefCell<dyn GospelModuleVisitor>>) {
-        self.visitors.push(visitor);
-    }
-}
-impl GospelModuleVisitor for GospelMultiContainerVisitor {
-    fn module_name(&self) -> Option<String> {
-        self.visitors.iter().find_map(|x| x.borrow().module_name())
-    }
-    fn declare_global(&mut self, name: &str) -> anyhow::Result<()> {
-        for visitor in &mut self.visitors {
-            visitor.borrow_mut().declare_global(name)?;
-        }
-        Ok({})
-    }
-    fn define_global(&mut self, name: &str, value: i32) -> anyhow::Result<()> {
-        for visitor in &mut self.visitors {
-            visitor.borrow_mut().define_global(name, value)?;
-        }
-        Ok({})
-    }
-    fn declare_function(&mut self, source: GospelSourceFunctionDeclaration) -> anyhow::Result<()> {
-        for visitor in &mut self.visitors {
-            visitor.borrow_mut().declare_function(source.clone())?
-        }
-        Ok({})
-    }
-    fn define_function(&mut self, source: GospelSourceFunctionDefinition) -> anyhow::Result<()> {
-        for visitor in &mut self.visitors {
-            visitor.borrow_mut().define_function(source.clone())?
-        }
-        Ok({})
-    }
-    fn define_struct(&mut self, source: GospelSourceStructDefinition) -> anyhow::Result<()> {
-        for visitor in &mut self.visitors {
-            visitor.borrow_mut().define_struct(source.clone())?
-        }
-        Ok({})
-    }
-}
-
 /// Implemented by all module visitors that build the containers
 pub trait GospelContainerBuilder {
     fn build(&mut self) -> GospelContainer;
@@ -578,53 +527,5 @@ impl GospelModuleVisitor for GospelContainerWriter {
 impl GospelContainerBuilder for GospelContainerWriter {
     fn build(&mut self) -> GospelContainer {
         std::mem::take(&mut self.container)
-    }
-}
-
-/// Implementation of the visitor that writes reference containers. Reference containers do not contain implementations or private types
-#[derive(Debug, Clone)]
-pub struct GospelReferenceContainerWriter {
-    container_writer: GospelContainerWriter,
-}
-impl GospelReferenceContainerWriter {
-    /// Creates a new reference container writer
-    pub fn create(container_name: &str) -> Self {
-        let mut writer = GospelContainerWriter::create(container_name);
-        writer.container.header.is_reference_container = true;
-        Self{container_writer: writer}
-    }
-}
-impl GospelModuleVisitor for GospelReferenceContainerWriter {
-    fn module_name(&self) -> Option<String> {
-        self.container_writer.module_name()
-    }
-    fn declare_global(&mut self, name: &str) -> anyhow::Result<()> {
-        self.container_writer.declare_global(name)
-    }
-    fn define_global(&mut self, name: &str, _value: i32) -> anyhow::Result<()> {
-        self.container_writer.declare_global(name)
-    }
-    fn declare_function(&mut self, source: GospelSourceFunctionDeclaration) -> anyhow::Result<()> {
-        if source.return_value_type.is_none() {
-            bail!("Function does not have a valid return value type; all functions must return a value");
-        }
-        if !source.hidden {
-            let mut function_definition = GospelSourceFunctionDefinition::create(source);
-            function_definition.add_string_instruction(GospelOpcode::Abort, "Attempting to execute a function stub")?;
-            self.container_writer.define_function(function_definition)
-        } else { Ok({}) }
-    }
-    fn define_function(&mut self, source: GospelSourceFunctionDefinition) -> anyhow::Result<()> {
-        self.declare_function(source.declaration)
-    }
-    fn define_struct(&mut self, source: GospelSourceStructDefinition) -> anyhow::Result<()> {
-        if !source.hidden {
-            self.container_writer.define_struct(source)
-        } else { Ok({}) }
-    }
-}
-impl GospelContainerBuilder for GospelReferenceContainerWriter {
-    fn build(&mut self) -> GospelContainer {
-        self.container_writer.build()
     }
 }

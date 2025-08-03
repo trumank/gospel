@@ -10,7 +10,7 @@ use clap::Parser;
 use gospel_vm::container::{GospelContainer};
 use gospel_vm::reflection::{GospelContainerReflector, GospelModuleReflector};
 use gospel_vm::vm::{GospelVMContainer, GospelVMState, GospelVMTargetTriplet, GospelVMValue};
-use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter, GospelMultiContainerVisitor, GospelReferenceContainerWriter};
+use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter};
 use crate::assembler::GospelAssembler;
 use crate::backend::{CompilerInstance, CompilerResultTrait};
 use crate::parser::parse_source_file;
@@ -29,14 +29,6 @@ struct ActionAssembleModule {
     /// Name of the container output file to write. Default is container_name.gso
     #[arg(short, long)]
     output: Option<PathBuf>,
-    /// When provided, produce a reference container with public module definitions instead of a full module container
-    /// Assembly files are allowed to have function declarations in this mode, otherwise only function definitions are allowed
-    #[arg(long)]
-    interface: bool,
-    /// Normally, assemble will produce a module container as well as a sidecar file with public definitions for the assembled module
-    /// When this option is given, no public definitions container is produced.
-    #[arg(long)]
-    no_ref_container: bool,
     /// Assembly files to compile to the container
     #[arg(index = 2)]
     files: Vec<PathBuf>,
@@ -113,23 +105,8 @@ struct Args {
 }
 
 fn do_action_assemble(action: ActionAssembleModule) -> anyhow::Result<()> {
-    let composite_writer = RefCell::new(GospelMultiContainerVisitor::default());
-
-    // Add writers for the main module definition container and the public interface container
-    let mut container_writer: Option<Rc<RefCell<dyn GospelContainerBuilder>>> = None;
-    let mut reference_container_writer: Option<Rc<RefCell<dyn GospelContainerBuilder>>> = None;
-    if !action.interface {
-        let writer = Rc::new(RefCell::new(GospelContainerWriter::create(action.module_name.as_str())));
-        container_writer = Some(writer.clone());
-        composite_writer.borrow_mut().add_visitor(writer);
-    }
-    if action.interface || !action.no_ref_container {
-        let writer = Rc::new(RefCell::new(GospelReferenceContainerWriter::create(action.module_name.as_str())));
-        reference_container_writer = Some(writer.clone());
-        composite_writer.borrow_mut().add_visitor(writer);
-    }
-
-    let mut assembler = GospelAssembler::create(Rc::new(composite_writer));
+    let writer = Rc::new(RefCell::new(GospelContainerWriter::create(action.module_name.as_str())));
+    let mut assembler = GospelAssembler::create(writer.clone());
     for source_file_name in &action.files {
         let file_contents = read_to_string(source_file_name)
             .map_err(|x| anyhow!("Failed to open source file {}: {}", source_file_name.to_string_lossy(), x.to_string()))?;
@@ -139,30 +116,12 @@ fn do_action_assemble(action: ActionAssembleModule) -> anyhow::Result<()> {
         assembler.assemble_file_contents(file_name.as_str(), file_contents.as_str())?;
     }
 
-    if !action.interface {
-        let result_container = container_writer.unwrap().borrow_mut().build();
-        let output_file_name = action.output.unwrap_or_else(|| PathBuf::from(format!("{}.gso", action.module_name)));
-        let container_serialized_data = result_container.write()
-            .map_err(|x| anyhow!("Failed to serialize container: {}", x.to_string()))?;
-        write(output_file_name.clone(), container_serialized_data)
-            .map_err(|x| anyhow!("Failed to write container file {}: {}", output_file_name.to_string_lossy(), x.to_string()))?;
-
-        if !action.no_ref_container {
-            let result_ref_container = reference_container_writer.unwrap().borrow_mut().build();
-            let ref_output_file_name = output_file_name.with_extension("gsr");
-            let ref_container_serialized_data = result_ref_container.write()
-                .map_err(|x| anyhow!("Failed to serialize reference container: {}", x.to_string()))?;
-            write(ref_output_file_name.clone(), ref_container_serialized_data)
-                .map_err(|x| anyhow!("Failed to write reference container file {}: {}", ref_output_file_name.to_string_lossy(), x.to_string()))?;
-        }
-    } else {
-        let result_container = reference_container_writer.unwrap().borrow_mut().build();
-        let output_file_name = action.output.unwrap_or_else(|| PathBuf::from(format!("{}.gsr", action.module_name)));
-        let container_serialized_data = result_container.write()
-            .map_err(|x| anyhow!("Failed to serialize interface container: {}", x.to_string()))?;
-        write(output_file_name.clone(), container_serialized_data)
-            .map_err(|x| anyhow!("Failed to write interface container file {}: {}", output_file_name.to_string_lossy(), x.to_string()))?;
-    }
+    let result_container = writer.borrow_mut().build();
+    let output_file_name = action.output.unwrap_or_else(|| PathBuf::from(format!("{}.gso", action.module_name)));
+    let container_serialized_data = result_container.write()
+        .map_err(|x| anyhow!("Failed to serialize container: {}", x.to_string()))?;
+    write(output_file_name.clone(), container_serialized_data)
+        .map_err(|x| anyhow!("Failed to write container file {}: {}", output_file_name.to_string_lossy(), x.to_string()))?;
     Ok({})
 }
 

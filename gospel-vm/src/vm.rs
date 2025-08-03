@@ -1350,9 +1350,6 @@ impl GospelVMState {
         if self.containers_by_name.get(&container_name).is_some() {
             bail!("Container with name {} is already mounted", container_name);
         }
-        if wrapped_container.header.is_reference_container {
-            bail!("Container {} is a reference container, reference containers cannot be mounted", container_name);
-        }
 
         // Resolve imports necessary to construct external types down the line
         let mut external_references: Vec<Rc<GospelVMContainer>> = Vec::new();
