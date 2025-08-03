@@ -8,7 +8,7 @@ use strum_macros::Display;
 use crate::bytecode::{GospelInstruction, GospelOpcode};
 use crate::container::GospelContainer;
 use crate::gospel_type::{GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelTargetArch, GospelTargetEnv, GospelTargetOS, GospelFunctionDefinition, GospelObjectIndex, GospelValueType};
-use crate::writer::{GospelSourceObjectReference, GospelSourceLazyValue, GospelSourceStaticValue};
+use crate::writer::{GospelSourceObjectReference, GospelSourceStaticValue};
 use std::str::FromStr;
 use serde::{Deserialize, Serialize, Serializer};
 use serde::ser::SerializeStruct;
@@ -1197,15 +1197,7 @@ impl GospelVMContainer {
             }
         }
     }
-    fn resolve_lazy_value(self: &Rc<Self>, index: u32, recursion_counter: usize) -> anyhow::Result<GospelVMValue> {
-        if index as usize >= self.container.lazy_values.len() {
-            bail!("Invalid lazy value index #{} out of bounds (num static type instances in container: {})", index, self.container.lazy_values.len());
-        }
-        let lazy_value = &self.container.lazy_values[index as usize];
-        let type_reference = self.resolve_function_index(lazy_value.function_index)?;
-        type_reference.container.execute_function_static(type_reference.function_index, &lazy_value.arguments, recursion_counter)
-    }
-    fn resolve_static_value(self: &Rc<Self>, value: &GospelStaticValue, recursion_counter: usize) -> anyhow::Result<GospelVMValue> {
+    fn resolve_static_value(self: &Rc<Self>, value: &GospelStaticValue) -> anyhow::Result<GospelVMValue> {
         match value {
             GospelStaticValue::Integer(integer_value) => {
                 Ok(GospelVMValue::Integer(*integer_value))
@@ -1213,10 +1205,6 @@ impl GospelVMContainer {
             GospelStaticValue::FunctionIndex(function_index) => {
                 let reference = self.resolve_function_index(*function_index)?;
                 Ok(GospelVMValue::Closure(reference))
-            }
-            GospelStaticValue::LazyValue(lazy_value_index) => {
-                let resolved_value = self.resolve_lazy_value(*lazy_value_index, recursion_counter)?;
-                Ok(resolved_value)
             }
             GospelStaticValue::GlobalVariableValue(global_variable_index) => {
                 let global_variable = self.global_lookup_by_id.get(&(*global_variable_index as usize))
@@ -1232,22 +1220,13 @@ impl GospelVMContainer {
             }
         }
     }
-    fn execute_function_static(self: &Rc<Self>, index: u32, args: &Vec<GospelStaticValue>, recursion_counter: usize) -> anyhow::Result<GospelVMValue> {
-        let mut resolved_args: Vec<GospelVMValue> = Vec::new();
-        for argument_index in 0..args.len() {
-            let resolved_value = self.resolve_static_value(&args[argument_index], recursion_counter)
-                .map_err(|x| anyhow!("Failed to resolve template argument #{} value: {}", argument_index, x.to_string()))?;
-            resolved_args.push(resolved_value)
-        }
-        self.execute_function_internal(index, &resolved_args, recursion_counter)
-    }
-    fn resolve_slot_binding(self: &Rc<Self>, type_definition: &GospelFunctionDefinition, slot: &GospelSlotDefinition, args: &Vec<GospelVMValue>, recursion_counter: usize) -> anyhow::Result<Option<GospelVMValue>> {
+    fn resolve_slot_binding(self: &Rc<Self>, type_definition: &GospelFunctionDefinition, slot: &GospelSlotDefinition, args: &Vec<GospelVMValue>) -> anyhow::Result<Option<GospelVMValue>> {
         match slot.binding {
             GospelSlotBinding::Uninitialized => {
                 Ok(None)
             }
             GospelSlotBinding::StaticValue(static_value) => {
-                let resolved_value = self.resolve_static_value(&static_value, recursion_counter)?;
+                let resolved_value = self.resolve_static_value(&static_value)?;
                 if slot.value_type != resolved_value.value_type() {
                     bail!("Slot value type is not compatible with static value type specified")
                 }
@@ -1321,7 +1300,7 @@ impl GospelVMContainer {
 
         // Populate slots with their initial values
         for slot_index in 0..function_definition.slots.len() {
-            let slot_value = self.resolve_slot_binding(function_definition, &function_definition.slots[slot_index], args, recursion_counter)
+            let slot_value = self.resolve_slot_binding(function_definition, &function_definition.slots[slot_index], args)
             .map_err(|x| anyhow!("Failed to bind slot #{} value: {}", slot_index, x.to_string()))?;
             vm_state.slots.push(slot_value)
         }
@@ -1503,27 +1482,7 @@ impl GospelVMState {
             GospelSourceStaticValue::PlatformConfigProperty(config_property) => {
                 Ok(GospelVMValue::Integer(self.target_triplet.resolve_platform_config_property(*config_property)))
             }
-            GospelSourceStaticValue::LazyValue(lazy_value) => {
-                self.eval_lazy_value(lazy_value)
-            }
         }
-    }
-
-    /// Allows evaluating a source lazy value without building a container first (REPL-like API)
-    pub fn eval_lazy_value(&self, value: &GospelSourceLazyValue) -> anyhow::Result<GospelVMValue> {
-        let function_pointer = self.find_function_by_reference(&value.function_reference)
-            .ok_or_else(|| anyhow!("Failed to find function {} to evaluate the lazy value", value.function_reference))?;
-
-        let mut compiled_function_arguments: Vec<GospelVMValue> = Vec::with_capacity(value.arguments.len());
-        for source_argument in &value.arguments {
-            let argument_value = self.eval_source_value(source_argument)?;
-            compiled_function_arguments.push(argument_value);
-        }
-        let eval_result = function_pointer.execute(compiled_function_arguments)?;
-        if eval_result.value_type() != value.return_value_type {
-            bail!("Function returned value of incompatible type {} (expected: {})", eval_result.value_type(), value.return_value_type);
-        }
-        Ok(eval_result)
     }
 
     fn find_or_create_global(&mut self, name: &str, initial_value: Option<i32>) -> anyhow::Result<Rc<GospelGlobalStorage>> {

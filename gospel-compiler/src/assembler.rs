@@ -7,7 +7,7 @@ use logos::{Lexer, Logos};
 use strum_macros::Display;
 use gospel_vm::bytecode::{GospelInstruction, GospelOpcode};
 use gospel_vm::gospel_type::{GospelPlatformConfigProperty, GospelValueType};
-use gospel_vm::writer::{GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceObjectReference, GospelSourceLazyValue, GospelSourceSlotBinding, GospelSourceStaticValue, GospelSourceStructDefinition, GospelSourceStructField};
+use gospel_vm::writer::{GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceObjectReference, GospelSourceSlotBinding, GospelSourceStaticValue, GospelSourceStructDefinition, GospelSourceStructField};
 use std::str::FromStr;
 use crate::lex_util::get_line_number_and_offset_from_index;
 
@@ -39,9 +39,6 @@ enum AssemblerToken {
     #[token("global")]
     #[strum(to_string = "global")]
     GlobalVariableSpecifier,
-    #[token("lazy")]
-    #[strum(to_string = "lazy")]
-    LazyValueSpecifier,
     #[token("structure")]
     #[strum(to_string = "structure")]
     StructureSpecifier,
@@ -390,47 +387,7 @@ impl GospelAssembler {
 
                 Ok(GospelSourceStaticValue::FunctionId(function_reference))
             }
-            AssemblerToken::ConstantSpecifier => {
-                // Constant specifiers are syntactic sugar for lazy values with no arguments
-                let constant_name = ctx.next_identifier()?;
-                let constant_reference = Self::convert_identifier_to_function_reference(constant_name, module_name)?;
-
-                // Expect return value separator immediately, since constants cannot have arguments
-                ctx.next_expect_token(AssemblerToken::ReturnValueSeparator)?;
-
-                // Parse constant type now
-                let return_value_token = ctx.next_checked()?;
-                let return_value_type = Self::parse_value_type_token(&return_value_token)
-                    .ok_or_else(|| ctx.fail(format!("Expected lazy value type, got {}", return_value_token)))?;
-
-                Ok(GospelSourceStaticValue::LazyValue(GospelSourceLazyValue{
-                    function_reference: constant_reference,
-                    return_value_type,
-                    arguments: Vec::new()
-                }))
-            }
-            AssemblerToken::LazyValueSpecifier => {
-                // Lazy value, next identifier is a function name, followed by static arguments, followed by return value type
-                let function_name = ctx.next_identifier()?;
-                let function_reference = Self::convert_identifier_to_function_reference(function_name, module_name)?;
-
-                // Parse arguments until we encounter the return value separator
-                let mut arguments: Vec<GospelSourceStaticValue> = Vec::new();
-                let mut current_token = ctx.next_checked()?;
-                while current_token != AssemblerToken::ReturnValueSeparator {
-                    let function_argument = Self::parse_static_value_constant(current_token, ctx, module_name)?;
-                    arguments.push(function_argument);
-                    current_token = ctx.next_checked()?;
-                }
-
-                // Parse return value type now
-                let return_value_token = ctx.next_checked()?;
-                let return_value_type = Self::parse_value_type_token(&return_value_token)
-                    .ok_or_else(|| ctx.fail(format!("Expected lazy value type, got {}", return_value_token)))?;
-
-                Ok(GospelSourceStaticValue::LazyValue(GospelSourceLazyValue{function_reference, return_value_type, arguments}))
-            }
-            other => Err(ctx.fail(format!("Expected integer literal or platform, global, lazy value or function specifier followed by name, got {}", other)))
+            other => Err(ctx.fail(format!("Expected integer literal or platform, global or function specifier followed by name, got {}", other)))
         }
     }
     fn parse_function_definition(&mut self, ctx: &mut GospelLexerContext, attributes: AssemblerAttributeList) -> anyhow::Result<()> {

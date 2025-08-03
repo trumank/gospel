@@ -1,4 +1,4 @@
-﻿use crate::gospel_type::{GospelExternalObjectReference, GospelFunctionDefinition, GospelLazyValue, GospelObjectIndexNamePair, GospelStructDefinition, GospelStructNameInfo};
+﻿use crate::gospel_type::{GospelExternalObjectReference, GospelFunctionDefinition, GospelObjectIndexNamePair, GospelStructDefinition, GospelStructNameInfo};
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
 
@@ -68,7 +68,6 @@ pub struct GospelContainer {
     pub(crate) struct_names: Vec<GospelStructNameInfo>,
     pub(crate) external_functions: Vec<GospelExternalObjectReference>,
     pub(crate) external_structs: Vec<GospelExternalObjectReference>,
-    pub(crate) lazy_values: Vec<GospelLazyValue>,
     pub(crate) strings: GospelStringTable,
 }
 impl GospelContainer {

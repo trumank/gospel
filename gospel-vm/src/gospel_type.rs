@@ -85,7 +85,6 @@ pub enum GospelPlatformConfigProperty {
 pub(crate) enum GospelStaticValue {
     Integer(i32),
     FunctionIndex(GospelObjectIndex), // value is a closure with no arguments captured, data is an ID of the function to create a closure from
-    LazyValue(u32), // data is an ID of a lazy value, value is returned by evaluation of the value expression
     PlatformConfigProperty(GospelPlatformConfigProperty), // platform config property value, interpret data as GospelPlatformConfigProperty
     GlobalVariableValue(u32), // global variable value by name, interpret data as name index
 }
@@ -122,12 +121,6 @@ pub(crate) struct GospelFunctionDefinition {
 pub(crate) enum GospelObjectIndex {
     Local(u32),
     External(u32),
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Hash, Serialize, Deserialize)]
-pub(crate) struct GospelLazyValue {
-    pub function_index: GospelObjectIndex, // index of the function
-    pub arguments: Vec<GospelStaticValue>, // argument values for the function invocation
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]

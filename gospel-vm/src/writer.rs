@@ -6,7 +6,7 @@ use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
 use crate::bytecode::{GospelInstruction, GospelOpcode};
 use crate::container::{GospelContainer, GospelContainerImport, GospelContainerVersion, GospelGlobalDefinition};
-use crate::gospel_type::{GospelExternalObjectReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelFunctionArgument, GospelFunctionDefinition, GospelObjectIndex, GospelValueType, GospelLazyValue, GospelObjectIndexNamePair, GospelStructDefinition, GospelStructNameInfo};
+use crate::gospel_type::{GospelExternalObjectReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelFunctionArgument, GospelFunctionDefinition, GospelObjectIndex, GospelValueType, GospelObjectIndexNamePair, GospelStructDefinition, GospelStructNameInfo};
 
 /// Represents a reference to a function
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -27,8 +27,6 @@ pub enum GospelSourceStaticValue {
     Integer(i32),
     /// pointer to the function with the provided name
     FunctionId(GospelSourceObjectReference),
-    /// result of the evaluation of function with provided arguments
-    LazyValue(GospelSourceLazyValue),
     /// value of the provided platform config property
     PlatformConfigProperty(GospelPlatformConfigProperty),
     /// value of a global variable with the specified name
@@ -39,19 +37,10 @@ impl GospelSourceStaticValue {
         match self {
             GospelSourceStaticValue::Integer(_) => GospelValueType::Integer,
             GospelSourceStaticValue::FunctionId(_) => GospelValueType::Closure,
-            GospelSourceStaticValue::LazyValue(value) => value.return_value_type,
             GospelSourceStaticValue::PlatformConfigProperty(_) => GospelValueType::Integer,
             GospelSourceStaticValue::GlobalVariableValue(_) => GospelValueType::Integer,
         }
     }
-}
-
-/// Represents a lazily evaluated value created by calling the provided function with the given set of arguments
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct GospelSourceLazyValue {
-    pub function_reference: GospelSourceObjectReference,
-    pub return_value_type: GospelValueType,
-    pub arguments: Vec<GospelSourceStaticValue>,
 }
 
 /// Definition of a field in a struct
@@ -350,7 +339,6 @@ pub struct GospelContainerWriter {
     function_lookup: HashMap<String, u32>,
     container_lookup: HashMap<String, u32>,
     import_container_function_lookup: Vec<HashMap<String, u32>>,
-    lazy_value_lookup: HashMap<GospelLazyValue, u32>,
     struct_lookup: HashMap<String, u32>,
     import_container_struct_lookup: Vec<HashMap<String, u32>>,
 }
@@ -439,17 +427,6 @@ impl GospelContainerWriter {
             new_external_function_index
         }
     }
-    fn find_or_add_lazy_value(&mut self, function_index: GospelObjectIndex, arguments: Vec<GospelStaticValue>) -> u32 {
-        let lazy_value = GospelLazyValue{ function_index, arguments };
-        if let Some(existing_lazy_value_index) = self.lazy_value_lookup.get(&lazy_value) {
-            *existing_lazy_value_index
-        } else {
-            let new_lazy_value_index = self.container.lazy_values.len() as u32;
-            self.container.lazy_values.push(lazy_value.clone());
-            self.lazy_value_lookup.insert(lazy_value, new_lazy_value_index);
-            new_lazy_value_index
-        }
-    }
     fn find_locally_defined_function_index(&self, function_name: &str) -> anyhow::Result<GospelObjectIndex> {
         self.function_lookup.get(function_name).map(|function_index| {
             GospelObjectIndex::Local(*function_index)
@@ -469,16 +446,6 @@ impl GospelContainerWriter {
             }
             GospelSourceStaticValue::FunctionId(type_reference) => {
                 Ok(GospelStaticValue::FunctionIndex(self.convert_function_reference(type_reference)?))
-            }
-            GospelSourceStaticValue::LazyValue(lazy_value) => {
-                let function_index = self.convert_function_reference(&lazy_value.function_reference)?;
-
-                let mut arguments: Vec<GospelStaticValue> = Vec::with_capacity(lazy_value.arguments.len());
-                for argument in &lazy_value.arguments {
-                    arguments.push(self.convert_static_value(argument)?);
-                }
-                let lazy_value_index = self.find_or_add_lazy_value(function_index, arguments);
-                Ok(GospelStaticValue::LazyValue(lazy_value_index))
             }
             GospelSourceStaticValue::PlatformConfigProperty(property) => {
                 Ok(GospelStaticValue::PlatformConfigProperty(*property))
