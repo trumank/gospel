@@ -104,29 +104,32 @@ pub(crate) struct GospelSlotDefinition {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub(crate) struct GospelFunctionArgument {
-    pub argument_type: GospelValueType, // type of the argument
+    pub(crate) argument_type: GospelValueType, // type of the argument
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct GospelFunctionDebugData {
+    pub(crate) source_file_name: u32, // index to the string table
+    pub(crate) instruction_line_numbers: Vec<i32>, // index is the instruction index, value is the line number. -1 if not known
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct GospelFunctionDefinition {
-    pub arguments: Vec<GospelFunctionArgument>, // arguments for this function
-    pub return_value_type: GospelValueType, // type of the function return value
-    pub slots: Vec<GospelSlotDefinition>, // slots to bind to the code
-    pub code: Vec<GospelInstruction>, // bytecode for the VM
-    pub referenced_strings: Vec<u32>, // indices of strings referenced by the bytecode
-    pub referenced_structs: Vec<GospelObjectIndex>, // indices of structures referenced by the bytecode
+    pub(crate) name: u32, // name of the function
+    pub(crate) exported: bool, // true if function is visible by name outside its container
+    pub(crate) arguments: Vec<GospelFunctionArgument>, // arguments for this function
+    pub(crate) return_value_type: GospelValueType, // type of the function return value
+    pub(crate) slots: Vec<GospelSlotDefinition>, // slots to bind to the code
+    pub(crate) code: Vec<GospelInstruction>, // bytecode for the VM
+    pub(crate) referenced_strings: Vec<u32>, // indices of strings referenced by the bytecode
+    pub(crate) referenced_structs: Vec<GospelObjectIndex>, // indices of structures referenced by the bytecode
+    pub(crate) debug_data: Option<GospelFunctionDebugData>, // optional debug data for the function
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash, EnumString, Serialize, Deserialize)]
 pub(crate) enum GospelObjectIndex {
     Local(u32),
     External(u32),
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
-pub(crate) struct GospelObjectIndexNamePair {
-    pub(crate) object_index: u32, // index of an object
-    pub(crate) object_name: u32, // name of the object, index to the string table
 }
 
 #[derive(Debug, PartialEq, Clone, Hash, Serialize, Deserialize)]
@@ -136,13 +139,14 @@ pub(crate) struct GospelExternalObjectReference {
 }
 
 #[derive(Debug, PartialEq, Clone, Hash, Serialize, Deserialize)]
-pub(crate) struct GospelStructDefinition {
-    pub(crate) fields: Vec<GospelValueType>, // fields of the struct
+pub(crate) struct GospelStructFieldDefinition {
+    pub(crate) field_type: GospelValueType,
+    pub(crate) field_name: u32,
 }
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub(crate) struct GospelStructNameInfo {
-    pub(crate) struct_index: u32, // index of the struct in structs
-    pub(crate) struct_name: u32, // name of the struct, index in the string table
-    pub(crate) field_names: Vec<GospelObjectIndexNamePair>, // names of the struct fields
+#[derive(Debug, PartialEq, Clone, Hash, Serialize, Deserialize)]
+pub(crate) struct GospelStructDefinition {
+    pub(crate) name: u32, // name of the struct, index in the string table
+    pub(crate) exported: bool, // true if struct is visible by name outside its container
+    pub(crate) fields: Vec<GospelStructFieldDefinition>, // fields of the struct
 }

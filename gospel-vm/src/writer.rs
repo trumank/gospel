@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
 use crate::bytecode::{GospelInstruction, GospelOpcode};
 use crate::container::{GospelContainer, GospelContainerImport, GospelContainerVersion, GospelGlobalDefinition};
-use crate::gospel_type::{GospelExternalObjectReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelFunctionArgument, GospelFunctionDefinition, GospelObjectIndex, GospelValueType, GospelObjectIndexNamePair, GospelStructDefinition, GospelStructNameInfo};
+use crate::gospel_type::{GospelExternalObjectReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelFunctionArgument, GospelFunctionDefinition, GospelObjectIndex, GospelValueType, GospelStructDefinition, GospelFunctionDebugData, GospelStructFieldDefinition};
 
 /// Represents a reference to a function
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -52,7 +52,7 @@ pub struct GospelSourceStructField {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GospelSourceStructDefinition {
     pub name: GospelSourceObjectReference,
-    pub hidden: bool,
+    pub exported: bool,
     pub fields: Vec<GospelSourceStructField>,
 }
 
@@ -82,16 +82,18 @@ pub struct GospelSourceFunctionArgument {
 #[derive(Debug, Clone, Default)]
 pub struct GospelSourceFunctionDeclaration {
     pub function_name: GospelSourceObjectReference,
-    pub hidden: bool,
+    pub exported: bool,
     pub arguments: Vec<GospelSourceFunctionArgument>,
     pub return_value_type: Option<GospelValueType>,
+    pub source_file_name: String,
 }
 impl GospelSourceFunctionDeclaration {
-    /// Creates a function declaration. When hidden is true, the function will not be visible outside the current container by name
-    pub fn create(function_name: GospelSourceObjectReference, hidden: bool) -> Self {
+    /// Creates a function declaration. When exported is false, the function will not be visible outside the current container by name
+    pub fn create(function_name: GospelSourceObjectReference, exported: bool, source_file_name: String) -> Self {
         Self{
             function_name,
-            hidden,
+            exported,
+            source_file_name,
             ..GospelSourceFunctionDeclaration::default()
         }
     }
@@ -129,6 +131,7 @@ pub struct GospelSourceFunctionDefinition {
     referenced_structs: Vec<GospelSourceObjectReference>,
     referenced_string_lookup: HashMap<String, u32>,
     referenced_structs_lookup: HashMap<GospelSourceObjectReference, u32>,
+    debug_instruction_line_numbers: Vec<i32>,
 }
 impl GospelSourceFunctionDefinition {
     /// Creates a named function from a declaration
@@ -184,37 +187,38 @@ impl GospelSourceFunctionDefinition {
         self.code.len() as u32
     }
     /// Note that this function should generally not be used, and other forms of add_X_instruction should be used instead
-    pub fn add_instruction_internal(&mut self, instruction: GospelInstruction) -> u32 {
+    pub fn add_instruction_internal(&mut self, instruction: GospelInstruction, line_number: i32) -> u32 {
         let new_instruction_index = self.code.len() as u32;
         self.code.push(instruction);
+        self.debug_instruction_line_numbers.push(line_number);
         new_instruction_index
     }
-    pub fn add_simple_instruction(&mut self, instruction: GospelOpcode) -> anyhow::Result<u32> {
-        Ok(self.add_instruction_internal(GospelInstruction::create(instruction, &[])?))
+    pub fn add_simple_instruction(&mut self, instruction: GospelOpcode, line_number: i32) -> anyhow::Result<u32> {
+        Ok(self.add_instruction_internal(GospelInstruction::create(instruction, &[])?, line_number))
     }
-    pub fn add_slot_instruction(&mut self, opcode: GospelOpcode, slot_index: u32) -> anyhow::Result<u32> {
+    pub fn add_slot_instruction(&mut self, opcode: GospelOpcode, slot_index: u32, line_number: i32) -> anyhow::Result<u32> {
         if slot_index as usize >= self.slots.len() {
             bail!("Invalid slot index #{} out of bounds (number of slots: {})", slot_index, self.slots.len());
         }
         if opcode != GospelOpcode::LoadSlot && opcode != GospelOpcode::StoreSlot && opcode != GospelOpcode::TakeSlot {
             bail!("Invalid opcode for slot instruction (LoadSlot, StoreSlot and TakeSlot are allowed)");
         }
-        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[slot_index])?))
+        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[slot_index])?, line_number))
     }
-    pub fn add_int_constant_instruction(&mut self, value: i32) -> anyhow::Result<u32> {
-        Ok(self.add_instruction_internal(GospelInstruction::create(GospelOpcode::IntConstant, &[value as u32])?))
+    pub fn add_int_constant_instruction(&mut self, value: i32, line_number: i32) -> anyhow::Result<u32> {
+        Ok(self.add_instruction_internal(GospelInstruction::create(GospelOpcode::IntConstant, &[value as u32])?, line_number))
     }
-    pub fn add_control_flow_instruction_no_fixup(&mut self, opcode: GospelOpcode, target_instruction_index: u32) -> anyhow::Result<u32> {
+    pub fn add_control_flow_instruction_no_fixup(&mut self, opcode: GospelOpcode, target_instruction_index: u32, line_number: i32) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::Branch && opcode != GospelOpcode::Branchz {
             bail!("Invalid opcode for control flow instruction (Branch and BranchIfNot are allowed)");
         }
-        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[target_instruction_index])?))
+        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[target_instruction_index])?, line_number))
     }
-    pub fn add_control_flow_instruction(&mut self, opcode: GospelOpcode) -> anyhow::Result<(u32, GospelJumpLabelFixup)> {
+    pub fn add_control_flow_instruction(&mut self, opcode: GospelOpcode, line_number: i32) -> anyhow::Result<(u32, GospelJumpLabelFixup)> {
         if opcode != GospelOpcode::Branch && opcode != GospelOpcode::Branchz {
             bail!("Invalid opcode for control flow instruction (Branch and BranchIfNot are allowed)");
         }
-        let jump_instruction = self.add_instruction_internal(GospelInstruction::create(opcode, &[u32::MAX])?);
+        let jump_instruction = self.add_instruction_internal(GospelInstruction::create(opcode, &[u32::MAX])?, line_number);
         Ok((jump_instruction, GospelJumpLabelFixup{instruction_index: jump_instruction, operand_index: 0}))
     }
     pub fn fixup_control_flow_instruction(&mut self, fixup: GospelJumpLabelFixup, target_instruction_index: u32) -> anyhow::Result<()> {
@@ -223,7 +227,7 @@ impl GospelSourceFunctionDefinition {
         }
         self.code[fixup.instruction_index as usize].set_immediate_operand(fixup.operand_index as usize, target_instruction_index)
     }
-    pub fn add_string_instruction(&mut self, opcode: GospelOpcode, string: &str) -> anyhow::Result<u32> {
+    pub fn add_string_instruction(&mut self, opcode: GospelOpcode, string: &str, line_number: i32) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::TypeLayoutDefineMember && opcode != GospelOpcode::TypeLayoutDoesMemberExist &&
             opcode != GospelOpcode::TypeLayoutGetMemberOffset && opcode != GospelOpcode::TypeLayoutGetMemberSize &&
             opcode != GospelOpcode::TypeLayoutGetMemberTypeLayout && opcode != GospelOpcode::TypeLayoutAllocate &&
@@ -231,35 +235,35 @@ impl GospelSourceFunctionDefinition {
             bail!("Invalid opcode for named instruction (TypeLayoutAllocate, TypeLayoutDefineMember, TypeLayoutDoesMemberExist, TypeLayoutGetMemberOffset, TypeLayoutGetMemberSize, TypeLayoutGetMemberTypeLayout and Abort are allowed)");
         }
         let string_index = self.add_string_reference_internal(string);
-        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[string_index])?))
+        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[string_index])?, line_number))
     }
-    pub fn add_struct_instruction(&mut self, opcode: GospelOpcode, struct_reference: GospelSourceObjectReference) -> anyhow::Result<u32> {
+    pub fn add_struct_instruction(&mut self, opcode: GospelOpcode, struct_reference: GospelSourceObjectReference, line_number: i32) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::StructAllocate && opcode != GospelOpcode::StructIsStructOfType {
             bail!("Invalid opcode for typed member access instruction (expected StructAllocate or StructIsStructOfType)");
         }
         let struct_index = self.add_struct_reference_internal(struct_reference);
-        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[struct_index])?))
+        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[struct_index])?, line_number))
     }
-    pub fn add_struct_local_member_access_instruction(&mut self, opcode: GospelOpcode, struct_reference: GospelSourceObjectReference, field_index: u32) -> anyhow::Result<u32> {
+    pub fn add_struct_local_member_access_instruction(&mut self, opcode: GospelOpcode, struct_reference: GospelSourceObjectReference, field_index: u32, line_number: i32) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::StructGetLocalField && opcode != GospelOpcode::StructSetLocalField {
             bail!("Invalid opcode for typed member access instruction (expected StructGetNamedTypedField or StructSetNamedTypedField)");
         }
         let struct_index = self.add_struct_reference_internal(struct_reference);
-        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[struct_index, field_index])?))
+        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[struct_index, field_index])?, line_number))
     }
-    pub fn add_typed_member_access_instruction(&mut self, opcode: GospelOpcode, field_name: &str, field_type: GospelValueType) -> anyhow::Result<u32> {
+    pub fn add_typed_member_access_instruction(&mut self, opcode: GospelOpcode, field_name: &str, field_type: GospelValueType, line_number: i32) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::StructGetNamedTypedField && opcode != GospelOpcode::StructSetNamedTypedField {
             bail!("Invalid opcode for typed member access instruction (expected StructGetNamedTypedField or StructSetNamedTypedField)");
         }
         let field_type_value = field_type as u32;
         let member_name_index = self.add_string_reference_internal(field_name);
-        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[field_type_value, member_name_index])?))
+        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[field_type_value, member_name_index])?, line_number))
     }
-    pub fn add_variadic_instruction(&mut self, opcode: GospelOpcode, argument_count: u32) -> anyhow::Result<u32> {
+    pub fn add_variadic_instruction(&mut self, opcode: GospelOpcode, argument_count: u32, line_number: i32) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::Call && opcode != GospelOpcode::BindClosure {
             bail!("Invalid opcode for variadic instruction (only Call is allowed)");
         }
-        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[argument_count])?))
+        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[argument_count])?, line_number))
     }
 }
 
@@ -481,16 +485,19 @@ impl GospelModuleVisitor for GospelContainerWriter {
 
         let function_index = self.container.functions.len() as u32;
         let function_name_string = source.declaration.function_name.local_name.clone();
-        if !source.declaration.hidden {
-            let function_name = self.store_string(source.declaration.function_name.local_name.as_str());
-            self.container.function_names.push(GospelObjectIndexNamePair { object_index: function_index, object_name: function_name });
-        }
+        let function_name = self.store_string(source.declaration.function_name.local_name.as_str());
+        let debug_data = GospelFunctionDebugData{
+            source_file_name: self.store_string(source.declaration.source_file_name.as_str()),
+            instruction_line_numbers: source.debug_instruction_line_numbers,
+        };
         self.container.functions.push(GospelFunctionDefinition {
-            arguments, slots,
+            name: function_name, arguments, slots,
+            exported: source.declaration.exported,
             return_value_type: source.declaration.return_value_type.unwrap(),
             code: source.code,
             referenced_strings,
             referenced_structs,
+            debug_data: Some(debug_data),
         });
         self.function_lookup.insert(function_name_string, function_index);
         Ok({})
@@ -503,23 +510,12 @@ impl GospelModuleVisitor for GospelContainerWriter {
             bail!("Struct {} is already defined in this container", source.name.local_name);
         }
         let struct_index = self.container.structs.len() as u32;
-        if !source.hidden {
-            let struct_name = self.store_string(source.name.local_name.as_str());
-            let field_names: Vec<GospelObjectIndexNamePair> = source.fields.iter()
-                .enumerate()
-                .filter(|(_, data)| data.field_name.is_some())
-                .map(|(index, data)| (index, self.store_string(data.field_name.as_ref().unwrap())))
-                .map(|(index, name_index)| GospelObjectIndexNamePair{ object_index: index as u32, object_name: name_index })
-                .collect();
-            self.container.struct_names.push(GospelStructNameInfo{
-                struct_index,
-                struct_name,
-                field_names,
-            })
-        }
-        self.container.structs.push(GospelStructDefinition {
-            fields: source.fields.iter().map(|x| x.field_type).collect(),
-        });
+        let struct_name = self.store_string(source.name.local_name.as_str());
+        let fields = source.fields.iter().enumerate().map(|(index, x)| GospelStructFieldDefinition{
+            field_type: x.field_type,
+            field_name: self.store_string(&x.field_name.clone().unwrap_or_else(|| format!("<unnamed@{}>", index))),
+        }).collect();
+        self.container.structs.push(GospelStructDefinition { name: struct_name, exported: source.exported, fields });
         self.struct_lookup.insert(source.name.local_name.clone(), struct_index);
         Ok({})
     }

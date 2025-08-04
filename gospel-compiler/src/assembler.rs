@@ -119,6 +119,11 @@ impl GospelLexerContext<'_> {
         let file_name = self.file_name.to_string();
         anyhow!("{} (file: {} line {} offset {})", error.as_ref(), file_name, line_number + 1, line_offset)
     }
+    fn get_current_line_number(&self) -> usize {
+        let start_offset = self.lex.span().start;
+        let (line_number, _) = get_line_number_and_offset_from_index(self.lex.source(), start_offset);
+        line_number
+    }
     fn next_or_eof(&mut self) -> anyhow::Result<Option<AssemblerToken>> {
         if let Some(wrapped_token) = self.lex.next() {
             match wrapped_token {
@@ -199,6 +204,7 @@ impl FunctionCodeAssembler<'_> {
     fn parse_code_instruction(&mut self, instruction_name: &str, start_token: AssemblerToken, ctx: &mut GospelLexerContext) -> anyhow::Result<u32> {
         let instruction_opcode: GospelOpcode = GospelOpcode::from_str(instruction_name)
             .map_err(|_| ctx.fail(format!("Unknown instruction opcode: {}", instruction_name)))?;
+        let line_number = ctx.get_current_line_number();
         let mut current_token = start_token;
         let mut instruction_immediate_operands: Vec<u32> = Vec::new();
 
@@ -265,7 +271,7 @@ impl FunctionCodeAssembler<'_> {
         // Add the resulting instruction with the immediate values
         let result_instruction = GospelInstruction::create(instruction_opcode, &instruction_immediate_operands)
             .map_err(|x| ctx.fail(x.to_string()))?;
-        Ok(self.function_definition.add_instruction_internal(result_instruction))
+        Ok(self.function_definition.add_instruction_internal(result_instruction, line_number as i32))
     }
     fn parse_slot_directive(&mut self, start_token: AssemblerToken, ctx: &mut GospelLexerContext) -> anyhow::Result<u32> {
         // Parse type of the slot as the first token
@@ -398,7 +404,7 @@ impl GospelAssembler {
         let function_name = ctx.next_local_identifier()?;
 
         let module_name = self.visitor.borrow().module_name().ok_or_else(|| anyhow!("Cannot compile declarations for unknown module name"))?;
-        let mut function_declaration = GospelSourceFunctionDeclaration::create(GospelSourceObjectReference{module_name: module_name.clone(), local_name: function_name.clone()}, is_function_hidden);
+        let mut function_declaration = GospelSourceFunctionDeclaration::create(GospelSourceObjectReference{module_name: module_name.clone(), local_name: function_name.clone()}, !is_function_hidden, ctx.file_name.to_string());
         let mut argument_name_map: HashMap<String, u32> = HashMap::new();
 
         let mut current_argument_token = ctx.next_checked()?;
@@ -509,6 +515,7 @@ impl GospelAssembler {
         }
         let is_constant_hidden = attributes.intersects(AssemblerAttributeList::Hidden);
         let constant_name = ctx.next_local_identifier()?;
+        let line_number = ctx.get_current_line_number();
 
         // Constant must always be initialized with a static value
         ctx.next_expect_token(AssemblerToken::AssignmentOperator)?;
@@ -521,15 +528,15 @@ impl GospelAssembler {
         ctx.next_expect_token(AssemblerToken::StatementSeparator)?;
 
         let module_name = self.visitor.borrow().module_name().ok_or_else(|| anyhow!("Cannot compile declarations for unknown module name"))?;
-        let mut constant_declaration = GospelSourceFunctionDeclaration::create(GospelSourceObjectReference{module_name, local_name: constant_name.clone()}, is_constant_hidden);
+        let mut constant_declaration = GospelSourceFunctionDeclaration::create(GospelSourceObjectReference{module_name, local_name: constant_name.clone()}, !is_constant_hidden, ctx.file_name.to_string());
         constant_declaration.set_return_value_type(return_value_type);
         self.local_function_names.insert(constant_name.clone());
 
         // Constants are simple syntactic sugar for declaring functions with no arguments that return a static value
         let mut constant_definition = GospelSourceFunctionDefinition::create(constant_declaration);
         let constant_slot_index = constant_definition.add_slot(return_value_type, GospelSourceSlotBinding::StaticValue(constant_value)).map_err(|x| ctx.fail(x.to_string()))?;
-        constant_definition.add_slot_instruction(GospelOpcode::LoadSlot, constant_slot_index).map_err(|x| ctx.fail(x.to_string()))?;
-        constant_definition.add_simple_instruction(GospelOpcode::ReturnValue).map_err(|x| ctx.fail(x.to_string()))?;
+        constant_definition.add_slot_instruction(GospelOpcode::LoadSlot, constant_slot_index, line_number as i32).map_err(|x| ctx.fail(x.to_string()))?;
+        constant_definition.add_simple_instruction(GospelOpcode::ReturnValue, line_number as i32).map_err(|x| ctx.fail(x.to_string()))?;
 
         self.visitor.borrow_mut().define_function(constant_definition)
             .map_err(|x| ctx.fail(x.to_string()))
@@ -545,7 +552,7 @@ impl GospelAssembler {
         let module_name = self.visitor.borrow().module_name().ok_or_else(|| anyhow!("Cannot compile declarations for unknown module name"))?;
         let mut struct_builder = GospelSourceStructDefinition{
             name: GospelSourceObjectReference{module_name, local_name: struct_name.clone()},
-            hidden: is_struct_hidden,
+            exported: !is_struct_hidden,
             fields: Vec::new(),
         };
         let mut current_token = ctx.next_checked()?;

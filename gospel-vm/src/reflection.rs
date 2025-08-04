@@ -39,7 +39,7 @@ pub trait GospelModuleReflector {
 pub struct GospelContainerReflector {
     container: Rc<GospelContainer>,
     global_name_lookup: HashMap<String, u32>,
-    function_name_pair_name_lookup: HashMap<String, u32>,
+    function_name_lookup: HashMap<String, u32>,
 }
 impl GospelContainerReflector {
     /// Creates a new reflector instance from a container object
@@ -53,22 +53,21 @@ impl GospelContainerReflector {
         }
 
         // Build function name pair lookup
-        let mut function_name_pair_name_lookup: HashMap<String, u32> = HashMap::with_capacity(container.function_names.len());
-        for function_name_pair_index in 0..container.function_names.len() {
-            let function_name = container.strings.get(container.function_names[function_name_pair_index].object_name)?;
-            function_name_pair_name_lookup.insert(function_name.to_string(), function_name_pair_index as u32);
+        let mut function_name_lookup: HashMap<String, u32> = HashMap::with_capacity(container.functions.len());
+        for function_index in 0..container.functions.len() {
+            let function_name = container.strings.get(container.functions[function_index].name)?;
+            function_name_lookup.insert(function_name.to_string(), function_index as u32);
         }
-        Ok(Self{container, global_name_lookup, function_name_pair_name_lookup})
+        Ok(Self{container, global_name_lookup, function_name_lookup})
     }
     fn make_global_info(&self, global_index: u32) -> anyhow::Result<GospelReflectedGlobalInfo> {
         let global_descriptor = &self.container.globals[global_index as usize];
         let name = self.container.strings.get(global_descriptor.name)?.to_string();
         Ok(GospelReflectedGlobalInfo{name})
     }
-    fn make_function_info(&self, function_name_pair_index: u32) -> anyhow::Result<GospelReflectedFunctionInfo> {
-        let name_pair = &self.container.function_names[function_name_pair_index as usize];
-        let function_descriptor = &self.container.functions[name_pair.object_index as usize];
-        let name = self.container.strings.get(name_pair.object_name)?.to_string();
+    fn make_function_info(&self, function_index: u32) -> anyhow::Result<GospelReflectedFunctionInfo> {
+        let function_descriptor = &self.container.functions[function_index as usize];
+        let name = self.container.strings.get(function_descriptor.name)?.to_string();
         let return_value_type = function_descriptor.return_value_type;
         let arguments: Vec<GospelReflectedFunctionArgumentInfo> = function_descriptor.arguments.iter().map(|x| GospelReflectedFunctionArgumentInfo{
             argument_type: x.argument_type,
@@ -93,15 +92,15 @@ impl GospelModuleReflector for GospelContainerReflector {
         } else { Ok(None) }
     }
     fn enumerate_functions(&self) -> anyhow::Result<Vec<GospelReflectedFunctionInfo>> {
-        let mut result: Vec<GospelReflectedFunctionInfo> = Vec::with_capacity(self.container.function_names.len());
-        for function_name_pair_index in 0..self.container.function_names.len() {
-            result.push(self.make_function_info(function_name_pair_index as u32)?);
+        let mut result: Vec<GospelReflectedFunctionInfo> = Vec::with_capacity(self.container.functions.len());
+        for function_index in 0..self.container.functions.len() {
+            result.push(self.make_function_info(function_index as u32)?);
         }
         Ok(result)
     }
     fn find_function(&self, name: &str) -> anyhow::Result<Option<GospelReflectedFunctionInfo>> {
-        if let Some(function_name_pair_index) = self.function_name_pair_name_lookup.get(name) {
-            Ok(Some(self.make_function_info(*function_name_pair_index)?))
+        if let Some(function_index) = self.function_name_lookup.get(name) {
+            Ok(Some(self.make_function_info(*function_index)?))
         } else { Ok(None) }
     }
 }

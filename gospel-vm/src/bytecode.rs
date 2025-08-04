@@ -5,7 +5,7 @@ use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use strum::EnumProperty;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, FromRepr, EnumProperty, Display, EnumString)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, FromRepr, EnumProperty, Display, EnumString, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum GospelOpcode {
     // Basic opcodes
@@ -170,14 +170,13 @@ impl GospelInstructionEncoding {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct GospelInstruction {
-    raw_opcode: u8,
+    opcode: GospelOpcode,
     instruction_encoding: GospelInstructionEncoding,
     immediate_operands: [u32; GospelInstructionEncoding::MAX_IMMEDIATE_COUNT]
 }
 
 impl GospelInstruction {
-    pub fn raw_opcode(&self) -> u8 { self.raw_opcode }
-    pub fn opcode(&self) -> Option<GospelOpcode> { GospelOpcode::from_repr(self.raw_opcode) }
+    pub fn opcode(&self) -> GospelOpcode { self.opcode }
     pub fn instruction_encoding(&self) -> GospelInstructionEncoding { self.instruction_encoding }
     pub fn immediate_operands(&self) -> &[u32] { &self.immediate_operands[0..(self.instruction_encoding.immediate_count as usize)] }
     pub fn immediate_operand_at(&self, index: usize) -> Option<u32> { if index < self.instruction_encoding.immediate_count as usize { Some(self.immediate_operands[index]) } else { None } }
@@ -198,17 +197,6 @@ impl GospelInstruction {
         for index in 0..immediate_operands.len() {
             result_immediate_operands[index] = immediate_operands[index];
         }
-        Ok(Self{raw_opcode: opcode as u8, instruction_encoding, immediate_operands: result_immediate_operands })
-    }
-    pub fn create_raw(raw_opcode: u8, encoding: GospelInstructionEncoding, immediate_operands: &[u32]) -> anyhow::Result<GospelInstruction> {
-        if encoding.immediate_count as usize != immediate_operands.len() {
-            bail!("Operand count mismatch: expected {} immediate operands, but {} operands were provided",
-                encoding.immediate_count, immediate_operands.len());
-        }
-        let mut result_immediate_operands: [u32; GospelInstructionEncoding::MAX_IMMEDIATE_COUNT] = [0; GospelInstructionEncoding::MAX_IMMEDIATE_COUNT];
-        for index in 0..immediate_operands.len() {
-            result_immediate_operands[index] = immediate_operands[index];
-        }
-        Ok(Self{raw_opcode, instruction_encoding: encoding, immediate_operands: result_immediate_operands })
+        Ok(Self{opcode, instruction_encoding, immediate_operands: result_immediate_operands })
     }
 }

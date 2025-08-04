@@ -4,10 +4,10 @@ use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
 use std::fmt::{Display, Formatter};
 use strum_macros::Display;
-use fancy_regex::Regex;
+use fancy_regex::{Captures, Regex};
 
 #[derive(Logos, Debug, Clone, PartialEq, Display)]
-#[logos(skip r"[ \r\t\n\f\u{feff}]+")]
+#[logos(skip r"[ \r\t\n\u{feff}]+")]
 enum CompilerToken {
     #[token("import")]
     #[strum(to_string = "import")]
@@ -386,7 +386,10 @@ struct CompilerParserInstance<'a> {
 impl<'a> CompilerParserInstance<'a> {
     fn preprocess_input_text(input: &str) -> anyhow::Result<String> {
         let comment_regex = Regex::new(r#"/\*(?:(?!\*/)[\S\s])*\*/|//.*"#).map_err(|x| anyhow!(x.to_string()))?;
-        Ok(comment_regex.replace_all(input, "").to_string())
+        Ok(comment_regex.replace_all(input, |captures: &Captures| -> String {
+            // We cannot simply replace comments with empty string because that would shift the line numbers and offsets, so we preserve the character subset ignored by the parser and replace everything else with whitespaces
+            captures.get(0).unwrap().as_str().chars().map(|char| if char == '\r' || char == '\t' || char == '\n' || char == '\u{feff}' { char } else { ' ' }).collect()
+        }).to_string())
     }
     fn take_parse_case(self) -> ExactParseCase<'a, ()> {
         ExactParseCase{ parser: self, data: () }
