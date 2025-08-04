@@ -155,7 +155,7 @@ struct CompilerFunctionBuilder {
 }
 impl CompilerFunctionBuilder {
     fn create(function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<CompilerFunctionBuilder> {
-        let function_reference = if let CompilerLexicalScopeClass::Data(function_closure) = &function_scope.class {
+        let function_reference = if let CompilerLexicalScopeClass::Function(function_closure) = &function_scope.class {
             let borrowed_closure = function_closure.borrow();
             borrowed_closure.function_reference.clone()
         } else {
@@ -684,7 +684,7 @@ impl CompilerFunctionBuilder {
             }
             CompilerLexicalNode::Scope(scope_declaration) => {
                 match &scope_declaration.class {
-                    CompilerLexicalScopeClass::Data(data_closure) => {
+                    CompilerLexicalScopeClass::Function(data_closure) => {
                         self.compile_static_function_call(scope, &data_closure.borrow().function_reference, &source_context, expression.template_arguments.as_ref(), false)
                     }
                     _ => Err(compiler_error!(&source_context, "Scope {} does not name a data or struct declaration", scope_declaration.name))
@@ -1277,14 +1277,14 @@ impl CompilerInstance {
         }
         Ok({})
     }
-    fn compile_function_argument(source_function_scope: &Rc<CompilerLexicalScope>, source_function_closure: &RefCell<CompilerDataDeclaration>, template_argument: &TemplateArgument) -> CompilerResult<Rc<CompilerLexicalDeclaration>> {
+    fn compile_function_argument(source_function_scope: &Rc<CompilerLexicalScope>, source_function_closure: &RefCell<CompilerFunctionDeclaration>, template_argument: &TemplateArgument) -> CompilerResult<Rc<CompilerLexicalDeclaration>> {
         let source_context = CompilerSourceContext{file_name: source_function_scope.file_name(), line_context: template_argument.source_context.clone()};
 
         let default_value_closure = if let Some(argument_default_value_expression) = &template_argument.default_value {
             let argument_index = source_function_closure.borrow().function_reference.signature.explicit_parameters.as_ref().unwrap().len();
             let function_name = format!("{}@default_value@{}", source_function_scope.name.as_str(), argument_index);
 
-            let function_closure = Rc::new(RefCell::new(CompilerDataDeclaration{
+            let function_closure = Rc::new(RefCell::new(CompilerFunctionDeclaration {
                 block_range: None,
                 function_reference: CompilerFunctionReference{
                     function: GospelSourceObjectReference::default(),
@@ -1292,7 +1292,7 @@ impl CompilerInstance {
                 }
             }));
             let function_parent_scope = source_function_scope.parent_scope().unwrap();
-            let function_scope = function_parent_scope.declare_scope(function_name.as_str(), CompilerLexicalScopeClass::Data(function_closure.clone()), source_function_scope.visibility, &source_context.line_context)?;
+            let function_scope = function_parent_scope.declare_scope(function_name.as_str(), CompilerLexicalScopeClass::Function(function_closure.clone()), source_function_scope.visibility, &source_context.line_context)?;
 
             function_closure.borrow_mut().function_reference.function = GospelSourceObjectReference{module_name: function_scope.module_name(), local_name: function_scope.full_scope_name()};
             function_closure.borrow_mut().function_reference.signature.return_value_type = template_argument.value_type;
@@ -1322,14 +1322,14 @@ impl CompilerInstance {
         let actual_source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: source_context.clone()};
 
         let implicit_parameters = scope.collect_implicit_scope_parameters();
-        let function_closure = Rc::new(RefCell::new(CompilerDataDeclaration{
+        let function_closure = Rc::new(RefCell::new(CompilerFunctionDeclaration {
             block_range: None,
             function_reference: CompilerFunctionReference{
                 function: GospelSourceObjectReference::default(),
                 signature: CompilerFunctionSignature{ return_value_type, implicit_parameters, explicit_parameters: None }
             }
         }));
-        let function_scope = scope.declare_scope(function_name, CompilerLexicalScopeClass::Data(function_closure.clone()), visibility, &actual_source_context.line_context)?;
+        let function_scope = scope.declare_scope(function_name, CompilerLexicalScopeClass::Function(function_closure.clone()), visibility, &actual_source_context.line_context)?;
         function_closure.borrow_mut().function_reference.function = GospelSourceObjectReference{module_name: scope.module_name(), local_name: function_scope.full_scope_name()};
 
         if let Some(template_arguments) = template_declaration {
@@ -1345,7 +1345,7 @@ impl CompilerInstance {
         let visibility = statement.access_specifier.map(|x| Self::convert_access_specifier(x)).unwrap_or(default_visibility);
         let mut function_builder = Self::compile_function_declaration(scope, statement.name.as_str(), visibility, statement.value_type, statement.template_declaration.as_ref(), &statement.source_context)?;
         function_builder.compile_return_value_expression(&function_builder.function_scope.clone(), &statement.source_context, &statement.initializer)?;
-        if let CompilerLexicalScopeClass::Data(function_closure) = &function_builder.function_scope.class {
+        if let CompilerLexicalScopeClass::Function(function_closure) = &function_builder.function_scope.class {
             function_closure.borrow_mut().block_range = Some(CompilerInstructionRange{
                 start_instruction_index: 0,
                 end_instruction_index: function_builder.function_definition.current_instruction_count(),
@@ -1442,7 +1442,7 @@ impl CompilerInstance {
         }).chain_compiler_result(|| compiler_error!(&source_context, "Failed to compile struct definition"))?;
 
         function_builder.compile_type_layout_finalization(type_layout_slot_index, type_layout_metadata_slot_index, &source_context)?;
-        if let CompilerLexicalScopeClass::Data(function_closure) = &function_builder.function_scope.class {
+        if let CompilerLexicalScopeClass::Function(function_closure) = &function_builder.function_scope.class {
             function_closure.borrow_mut().block_range = Some(CompilerInstructionRange{
                 start_instruction_index: 0,
                 end_instruction_index: function_builder.function_definition.current_instruction_count(),
@@ -1538,7 +1538,7 @@ struct CompilerBlockDeclaration {
 }
 
 #[derive(Debug, Clone, Default)]
-struct CompilerDataDeclaration {
+struct CompilerFunctionDeclaration {
     block_range: Option<CompilerInstructionRange>,
     function_reference: CompilerFunctionReference,
 }
@@ -1557,8 +1557,8 @@ enum CompilerLexicalScopeClass {
     SourceFile(String),
     #[strum(to_string = "namespace")]
     Namespace,
-    #[strum(to_string = "data")]
-    Data(Rc<RefCell<CompilerDataDeclaration>>),
+    #[strum(to_string = "function")]
+    Function(Rc<RefCell<CompilerFunctionDeclaration>>),
     #[strum(to_string = "block")]
     Block(Rc<RefCell<CompilerBlockDeclaration>>),
 }
