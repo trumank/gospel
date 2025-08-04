@@ -233,7 +233,7 @@ impl CompilerFunctionBuilder {
             BuiltinIdentifier::TargetArch => GospelSourceStaticValue::PlatformConfigProperty(GospelPlatformConfigProperty::TargetArch),
         };
         let constant_slot_index = self.find_or_define_constant_slot(GospelValueType::Integer, GospelSourceSlotBinding::StaticValue(static_value), &source_context)?;
-        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, constant_slot_index).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, &source_context, self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, constant_slot_index).with_source_context(&source_context)?);
         Ok(ExpressionValueType::Int)
     }
     fn compile_struct_declaration_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &StructStatement) -> CompilerResult<ExpressionValueType> {
@@ -243,16 +243,17 @@ impl CompilerFunctionBuilder {
         let struct_reference = CompilerInstance::compile_struct_statement(scope, expression, Some(struct_function_name.as_str()), DeclarationVisibility::Private)?;
         self.compile_static_function_call(scope, &struct_reference, &source_context, None, true)
     }
-    fn emit_runtime_typecheck(&mut self, source_context: &CompilerSourceContext, expected_expression_type: ExpressionValueType) -> CompilerResult<()> {
-        self.function_definition.add_simple_instruction(GospelOpcode::Dup).with_source_context(source_context)?;
+    fn emit_runtime_typecheck(&mut self, scope: &Rc<CompilerLexicalScope>, source_context: &CompilerSourceContext, expected_expression_type: ExpressionValueType) -> CompilerResult<()> {
+        Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Dup).with_source_context(source_context)?);
 
         // if typeof(x) == expected_expression_type { jump to end } else { abort }
-        self.function_definition.add_simple_instruction(GospelOpcode::Typeof).with_source_context(source_context)?;
-        self.function_definition.add_int_constant_instruction(CompilerInstance::convert_value_type(expected_expression_type) as i32).with_source_context(source_context)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::Sub).with_source_context(source_context)?;
+        Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Typeof).with_source_context(source_context)?);
+        Self::attach_source_context(scope, source_context, self.function_definition.add_int_constant_instruction(CompilerInstance::convert_value_type(expected_expression_type) as i32).with_source_context(source_context)?);
+        Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Sub).with_source_context(source_context)?);
 
-        let jump_to_end_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz).with_source_context(source_context)?;
-        self.function_definition.add_string_instruction(GospelOpcode::Abort, format!("Runtime typecheck failed: Expected {}", expected_expression_type).as_str()).with_source_context(source_context)?;
+        let (jump_instruction_index, jump_to_end_fixup) = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz).with_source_context(source_context)?;
+        Self::attach_source_context(scope, source_context, jump_instruction_index);
+        Self::attach_source_context(scope, source_context, self.function_definition.add_string_instruction(GospelOpcode::Abort, format!("Runtime typecheck failed: Expected {}", expected_expression_type).as_str()).with_source_context(source_context)?);
 
         let end_instruction_index = self.function_definition.current_instruction_count();
         self.function_definition.fixup_control_flow_instruction(jump_to_end_fixup, end_instruction_index).with_source_context(source_context)?;
@@ -263,22 +264,22 @@ impl CompilerFunctionBuilder {
 
         let target_expression_type = self.compile_expression(scope, &expression.type_expression)?;
         Self::check_expression_type(&source_context, ExpressionValueType::Typename, target_expression_type)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutGetMetadata).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, &source_context, self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutGetMetadata).with_source_context(&source_context)?);
 
         if let Some(template_arguments) = &expression.template_arguments {
             // Member access expression is a closure call, so we need to read the value as the closure and then call it
-            self.function_definition.add_typed_member_access_instruction(GospelOpcode::StructGetNamedTypedField, expression.member_name.as_str(), GospelValueType::Closure).with_source_context(&source_context)?;
+            Self::attach_source_context(scope, &source_context, self.function_definition.add_typed_member_access_instruction(GospelOpcode::StructGetNamedTypedField, expression.member_name.as_str(), GospelValueType::Closure).with_source_context(&source_context)?);
             for function_argument_expression in template_arguments {
                 self.compile_expression(scope, function_argument_expression)?;
             }
-            self.function_definition.add_variadic_instruction(GospelOpcode::Call, template_arguments.len() as u32).with_source_context(&source_context)?;
+            Self::attach_source_context(scope, &source_context, self.function_definition.add_variadic_instruction(GospelOpcode::Call, template_arguments.len() as u32).with_source_context(&source_context)?);
             // Closure return value is not known compile time, so we need to emit a runtime type check
-            self.emit_runtime_typecheck(&source_context, expression.member_type)?;
+            self.emit_runtime_typecheck(scope, &source_context, expression.member_type)?;
             Ok(expression.member_type)
         } else {
             // Member access expression is just a read from the metadata struct, not a closure call. StructGetNamedTypedField will do a runtime typecheck for us
             let member_field_type = CompilerInstance::convert_value_type(expression.member_type);
-            self.function_definition.add_typed_member_access_instruction(GospelOpcode::StructGetNamedTypedField, expression.member_name.as_str(), member_field_type).with_source_context(&source_context)?;
+            Self::attach_source_context(scope, &source_context, self.function_definition.add_typed_member_access_instruction(GospelOpcode::StructGetNamedTypedField, expression.member_name.as_str(), member_field_type).with_source_context(&source_context)?);
             Ok(expression.member_type)
         }
     }
@@ -288,24 +289,24 @@ impl CompilerFunctionBuilder {
     }
     fn compile_integer_constant_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &IntegerConstantExpression) -> CompilerResult<ExpressionValueType> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
-        self.function_definition.add_int_constant_instruction(expression.constant_value).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, &source_context, self.function_definition.add_int_constant_instruction(expression.constant_value).with_source_context(&source_context)?);
         Ok(ExpressionValueType::Int)
     }
     fn compile_block_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &BlockExpression) -> CompilerResult<ExpressionValueType> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
 
         // Compile all statements in the block and then push the return value expression on the stack
-        let block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
+        let block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{debug_data: Some(CompilerDebugData::default()), loop_codegen_data: None}));
         let block_scope = scope.declare_scope("block", CompilerLexicalScopeClass::Block(block_declaration.clone()), DeclarationVisibility::Private, &source_context.line_context)?;
         let block_start_instruction_index = self.function_definition.current_instruction_count();
         for statement in &expression.statements {
             self.compile_statement(&block_scope, statement)?;
         }
         let return_value_expression_type = self.compile_expression(&block_scope, &expression.return_value_expression)?;
-        block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
+        block_declaration.borrow_mut().debug_data.as_mut().unwrap().block_range = CompilerInstructionRange{
             start_instruction_index: block_start_instruction_index,
             end_instruction_index: self.function_definition.current_instruction_count(),
-        });
+        };
         Ok(return_value_expression_type)
     }
     fn compile_conditional_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &ConditionalExpression) -> CompilerResult<ExpressionValueType> {
@@ -314,30 +315,33 @@ impl CompilerFunctionBuilder {
         // Evaluate the condition, and jump to the else block if it is zero
         let condition_expression_type = self.compile_expression(scope, &expression.condition_expression)?;
         Self::check_expression_type(&source_context, ExpressionValueType::Int, condition_expression_type)?;
-        let jump_to_else_block_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz).with_source_context(&source_context)?;
+        let (jump_to_else_instruction_index, jump_to_else_block_fixup) = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, &source_context, jump_to_else_instruction_index);
 
         // We did not jump to the else block, which means the condition was true. Evaluate the true branch and jump to the end
-        let then_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
+        let then_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{debug_data: Some(CompilerDebugData::default()), loop_codegen_data: None}));
         let then_branch_block = scope.declare_scope("then", CompilerLexicalScopeClass::Block(then_block_declaration.clone()), DeclarationVisibility::Private, &source_context.line_context)?;
         let then_instruction_index = self.function_definition.current_instruction_count();
         let then_expression_type = self.compile_expression(&then_branch_block, &expression.true_expression)?;
-        let jump_to_end_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch).with_source_context(&source_context)?;
-        then_block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
+
+        let (jump_to_end_instruction_index, jump_to_end_fixup) = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch).with_source_context(&source_context)?;
+        Self::attach_source_context(&then_branch_block, &source_context, jump_to_end_instruction_index);
+        then_block_declaration.borrow_mut().debug_data.as_mut().unwrap().block_range = CompilerInstructionRange{
             start_instruction_index: then_instruction_index,
             end_instruction_index: self.function_definition.current_instruction_count(),
-        });
+        };
 
         let else_block_instruction_index = self.function_definition.current_instruction_count();
         self.function_definition.fixup_control_flow_instruction(jump_to_else_block_fixup, else_block_instruction_index).with_source_context(&source_context)?;
 
         // We jumped to the else block, evaluate the false branch
-        let else_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
+        let else_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{debug_data: Some(CompilerDebugData::default()), loop_codegen_data: None}));
         let else_branch_block = scope.declare_scope("else", CompilerLexicalScopeClass::Block(else_block_declaration.clone()), DeclarationVisibility::Private, &source_context.line_context)?;
         let else_expression_type = self.compile_expression(&else_branch_block, &expression.false_expression)?;
-        else_block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
+        else_block_declaration.borrow_mut().debug_data.as_mut().unwrap().block_range = CompilerInstructionRange{
             start_instruction_index: else_block_instruction_index,
             end_instruction_index: self.function_definition.current_instruction_count(),
-        });
+        };
 
         let end_instruction_index = self.function_definition.current_instruction_count();
         self.function_definition.fixup_control_flow_instruction(jump_to_end_fixup, end_instruction_index).with_source_context(&source_context)?;
@@ -348,7 +352,7 @@ impl CompilerFunctionBuilder {
         }
         Ok(then_expression_type)
     }
-    fn compile_binary_operator(&mut self, left_side_type: ExpressionValueType, right_side_type: ExpressionValueType, source_context: &CompilerSourceContext, operator: BinaryOperator) -> CompilerResult<ExpressionValueType> {
+    fn compile_binary_operator(&mut self, scope: &Rc<CompilerLexicalScope>, left_side_type: ExpressionValueType, right_side_type: ExpressionValueType, source_context: &CompilerSourceContext, operator: BinaryOperator) -> CompilerResult<ExpressionValueType> {
         if left_side_type != right_side_type {
             compiler_bail!(source_context, "Expression type mismatch: got expression of type {} on the left side of binary operator, and expression of type {} on the right side", left_side_type, right_side_type);
         }
@@ -356,105 +360,105 @@ impl CompilerFunctionBuilder {
             // Bitwise operators
             BinaryOperator::BitwiseOr => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::Or).with_source_context(source_context)?;
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Or).with_source_context(source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::BitwiseXor => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::Xor).with_source_context(source_context)?;
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Xor).with_source_context(source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::BitwiseAnd => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::And).with_source_context(source_context)?;
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::And).with_source_context(source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::BitwiseShiftLeft => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::Shl).with_source_context(source_context)?;
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Shl).with_source_context(source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::BitwiseShiftRight => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::Shr).with_source_context(source_context)?;
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Shr).with_source_context(source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             // Arithmetic operators
             BinaryOperator::ArithmeticAdd => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::Add).with_source_context(source_context)?;
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Add).with_source_context(source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::ArithmeticSubtract => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::Sub).with_source_context(source_context)?;
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Sub).with_source_context(source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::ArithmeticMultiply => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::Mul).with_source_context(source_context)?;
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Mul).with_source_context(source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::ArithmeticDivide => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::Div).with_source_context(source_context)?;
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Div).with_source_context(source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::ArithmeticRemainder => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::Rem).with_source_context(source_context)?;
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Rem).with_source_context(source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             // Logical operators
             BinaryOperator::LogicalLess => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
                 // left < right = (left - right) < 0
-                self.function_definition.add_simple_instruction(GospelOpcode::Sub).with_source_context(source_context)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::Lz).with_source_context(source_context)?;
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Sub).with_source_context(source_context)?);
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Lz).with_source_context(source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::LogicalMore => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
                 // left > right = (left - right) > 0 = (right - left) < 0
-                self.function_definition.add_simple_instruction(GospelOpcode::Permute).with_source_context(source_context)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::Sub).with_source_context(source_context)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::Lz).with_source_context(source_context)?;
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Permute).with_source_context(source_context)?);
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Sub).with_source_context(source_context)?);
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Lz).with_source_context(source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::LogicalLessEquals => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
                 // left <= right = (left - right) <= 0
-                self.function_definition.add_simple_instruction(GospelOpcode::Sub).with_source_context(source_context)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::Lez).with_source_context(source_context)?;
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Sub).with_source_context(source_context)?);
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Lez).with_source_context(source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::LogicalMoreEquals => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
                 // left >= right = (left - right) >= 0 = (right - left) <= 0
-                self.function_definition.add_simple_instruction(GospelOpcode::Permute).with_source_context(source_context)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::Sub).with_source_context(source_context)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::Lez).with_source_context(source_context)?;
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Permute).with_source_context(source_context)?);
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Sub).with_source_context(source_context)?);
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Lez).with_source_context(source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::Equals => {
                 // Use Ez for integer comparison, and generic Equals for everything else
                 if left_side_type == ExpressionValueType::Int {
-                    self.function_definition.add_simple_instruction(GospelOpcode::Sub).with_source_context(source_context)?;
-                    self.function_definition.add_simple_instruction(GospelOpcode::Ez).with_source_context(source_context)?;
+                    Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Sub).with_source_context(source_context)?);
+                    Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Ez).with_source_context(source_context)?);
                 } else {
-                    self.function_definition.add_simple_instruction(GospelOpcode::Equals).with_source_context(source_context)?;
+                    Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Equals).with_source_context(source_context)?);
                 }
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::NotEquals => {
                 // Use Ez for integer comparison, and generic Equals for everything else
                 if left_side_type == ExpressionValueType::Int {
-                    self.function_definition.add_simple_instruction(GospelOpcode::Sub).with_source_context(source_context)?;
-                    self.function_definition.add_simple_instruction(GospelOpcode::Ez).with_source_context(source_context)?;
+                    Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Sub).with_source_context(source_context)?);
+                    Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Ez).with_source_context(source_context)?);
                 } else {
-                    self.function_definition.add_simple_instruction(GospelOpcode::Equals).with_source_context(source_context)?;
+                    Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Equals).with_source_context(source_context)?);
                 }
-                self.function_definition.add_simple_instruction(GospelOpcode::Ez).with_source_context(source_context)?;
+                Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Ez).with_source_context(source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::ShortCircuitAnd => {
@@ -472,20 +476,21 @@ impl CompilerFunctionBuilder {
         Self::check_expression_type(&source_context, ExpressionValueType::Int, left_expression_type)?;
 
         // Duplicate the left side value
-        self.function_definition.add_simple_instruction(GospelOpcode::Dup).with_source_context(source_context)?;
+        Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Dup).with_source_context(source_context)?);
         if operator == BinaryOperator::ShortCircuitOr {
             // If the left side value is not zero, jump to the end of the operator (and return that value, which is non-zero in this case)
-            self.function_definition.add_simple_instruction(GospelOpcode::Ez).with_source_context(source_context)?;
+            Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Ez).with_source_context(source_context)?);
         } else if operator == BinaryOperator::ShortCircuitAnd {
             // If the left side value is zero, jump to the end of the operator (and return that value, which is zero in this case)
         } else {
             compiler_bail!(source_context, "Only short circuited operators are supported by compile_short_circuit_binary_operator");
         }
-        let jump_to_end_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz).with_source_context(source_context)?;
+        let (jump_to_end_instruction_index, jump_to_end_fixup) = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz).with_source_context(source_context)?;
+        Self::attach_source_context(scope, source_context, jump_to_end_instruction_index);
 
         // We will end up here if the left side value is not zero. Now we can execute the right side and return its value
         // Make sure to drop the duplicated left side beforehand though. We duplicate the value to remove the need to generate the else branch (since Branchz consumes the value)
-        self.function_definition.add_simple_instruction(GospelOpcode::Pop).with_source_context(source_context)?;
+        Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::Pop).with_source_context(source_context)?);
         let right_expression_type = self.compile_expression(scope, &right_side)?;
         Self::check_expression_type(&source_context, ExpressionValueType::Int, right_expression_type)?;
 
@@ -501,7 +506,7 @@ impl CompilerFunctionBuilder {
             let left_expression_type = self.compile_expression(scope, &expression.left_expression)?;
             let right_expression_type = self.compile_expression(scope, &expression.right_expression)?;
 
-            self.compile_binary_operator(left_expression_type, right_expression_type, &source_context, expression.operator)
+            self.compile_binary_operator(scope, left_expression_type, right_expression_type, &source_context, expression.operator)
         } else {
             // Use separate routine to handle short circuit operators
             self.compile_short_circuit_binary_operator(scope, &source_context, &expression.left_expression, &expression.right_expression, expression.operator)
@@ -514,32 +519,32 @@ impl CompilerFunctionBuilder {
         match expression.operator {
             UnaryOperator::StructAlignOf => {
                 Self::check_expression_type(&source_context, ExpressionValueType::Typename, inner_expression_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutGetAlignment).with_source_context(&source_context)?;
+                Self::attach_source_context(scope, &source_context, self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutGetAlignment).with_source_context(&source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             UnaryOperator::StructSizeOf => {
                 Self::check_expression_type(&source_context, ExpressionValueType::Typename, inner_expression_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutGetSize).with_source_context(&source_context)?;
+                Self::attach_source_context(scope, &source_context, self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutGetSize).with_source_context(&source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             UnaryOperator::StructMakePointer => {
                 Self::check_expression_type(&source_context, ExpressionValueType::Typename, inner_expression_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutCreatePointer).with_source_context(&source_context)?;
+                Self::attach_source_context(scope, &source_context, self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutCreatePointer).with_source_context(&source_context)?);
                 Ok(ExpressionValueType::Typename)
             }
             UnaryOperator::BoolNegate => {
                 Self::check_expression_type(&source_context, ExpressionValueType::Int, inner_expression_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::Ez).with_source_context(&source_context)?;
+                Self::attach_source_context(scope, &source_context, self.function_definition.add_simple_instruction(GospelOpcode::Ez).with_source_context(&source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             UnaryOperator::BitwiseInverse => {
                 Self::check_expression_type(&source_context, ExpressionValueType::Int, inner_expression_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::ReverseBits).with_source_context(&source_context)?;
+                Self::attach_source_context(scope, &source_context, self.function_definition.add_simple_instruction(GospelOpcode::ReverseBits).with_source_context(&source_context)?);
                 Ok(ExpressionValueType::Int)
             }
             UnaryOperator::ArithmeticNegate => {
                 Self::check_expression_type(&source_context, ExpressionValueType::Int, inner_expression_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::Neg).with_source_context(&source_context)?;
+                Self::attach_source_context(scope, &source_context, self.function_definition.add_simple_instruction(GospelOpcode::Neg).with_source_context(&source_context)?);
                 Ok(ExpressionValueType::Int)
             }
         }
@@ -552,7 +557,7 @@ impl CompilerFunctionBuilder {
         self.constant_slot_lookup.insert((slot_type, binding.clone()), new_slot_index);
         Ok(new_slot_index)
     }
-    fn compile_argument_value(&mut self, source_context: &CompilerSourceContext, argument_declaration: &Rc<CompilerLexicalDeclaration>, argument_type: ExpressionValueType) -> CompilerResult<ExpressionValueType> {
+    fn compile_argument_value(&mut self, scope: &Rc<CompilerLexicalScope>, source_context: &CompilerSourceContext, argument_declaration: &Rc<CompilerLexicalDeclaration>, argument_type: ExpressionValueType) -> CompilerResult<ExpressionValueType> {
         let argument_index = self.argument_source_declarations.iter()
             .enumerate()
             .find(|(_, parameter_declaration)| Rc::ptr_eq(*parameter_declaration, &argument_declaration))
@@ -562,29 +567,29 @@ impl CompilerFunctionBuilder {
         let slot_binding = GospelSourceSlotBinding::ArgumentValue(argument_index as u32);
         let slot_index = self.find_or_define_constant_slot(CompilerInstance::convert_value_type(argument_type), slot_binding, source_context)?;
 
-        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, slot_index).with_source_context(source_context)?;
+        Self::attach_source_context(scope, source_context, self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, slot_index).with_source_context(source_context)?);
         Ok(argument_type)
     }
-    fn compile_lexical_declaration_access(&mut self, source_context: &CompilerSourceContext, declaration: &Rc<CompilerLexicalDeclaration>) -> CompilerResult<ExpressionValueType> {
+    fn compile_lexical_declaration_access(&mut self, scope: &Rc<CompilerLexicalScope>, source_context: &CompilerSourceContext, declaration: &Rc<CompilerLexicalDeclaration>) -> CompilerResult<ExpressionValueType> {
         match &declaration.class {
             CompilerLexicalDeclarationClass::LocalVariable(local_variable) => {
                 // When compiling inline struct definitions, we can capture local variables from the current scope, which will be converted to implicit parameters
                 // Such local variables do not belong to the current function, and should be looked up as parameters instead. So only treat local variable as actual local variable if it is declared within this functions scope
                 if declaration.parent.upgrade().map(|x| x.is_child_of(&self.function_scope)).unwrap_or(false) {
-                    self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, local_variable.value_slot).with_source_context(source_context)?;
+                    Self::attach_source_context(scope, source_context, self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, local_variable.value_slot).with_source_context(source_context)?);
                     Ok(local_variable.variable_type)
                 } else {
-                    self.compile_argument_value(source_context, &declaration, local_variable.variable_type)
+                    self.compile_argument_value(scope, source_context, &declaration, local_variable.variable_type)
                 }
             }
             CompilerLexicalDeclarationClass::Parameter(parameter_type) => {
-                self.compile_argument_value(source_context, &declaration, parameter_type.clone())
+                self.compile_argument_value(scope, source_context, &declaration, parameter_type.clone())
             }
             CompilerLexicalDeclarationClass::GlobalData((global_variable_expression_type, global_variable_name)) => {
                 let slot_binding = GospelSourceSlotBinding::StaticValue(GospelSourceStaticValue::GlobalVariableValue(global_variable_name.clone()));
                 let slot_index = self.find_or_define_constant_slot(CompilerInstance::convert_value_type(*global_variable_expression_type), slot_binding, source_context)?;
 
-                self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, slot_index).with_source_context(source_context)?;
+                Self::attach_source_context(scope, source_context, self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, slot_index).with_source_context(source_context)?);
                 Ok(*global_variable_expression_type)
             }
             _ => Err(compiler_error!(source_context, "Declaration {} does not name a local or global variable or template parameter", declaration.name))
@@ -594,7 +599,7 @@ impl CompilerFunctionBuilder {
         // Load the function object from the constant slot
         let function_slot_binding = GospelSourceSlotBinding::StaticValue(GospelSourceStaticValue::FunctionId(function.function.clone()));
         let function_slot_index = self.find_or_define_constant_slot(GospelValueType::Closure, function_slot_binding, source_context)?;
-        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, function_slot_index).with_source_context(source_context)?;
+        Self::attach_source_context(scope, source_context, self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, function_slot_index).with_source_context(source_context)?);
 
         // Implicit parameters precede any explicit parameters
         for weak_implicit_parameter in &function.signature.implicit_parameters {
@@ -608,7 +613,7 @@ impl CompilerFunctionBuilder {
                 compiler_bail!(source_context, "Cannot access {} because it's implicit parameter {} from scope {} is not available in the current scope ({})",
                     function.function, implicit_parameter.name.as_str(), implicit_parameter_scope.full_scope_display_name(), scope.full_scope_display_name());
             }
-            self.compile_lexical_declaration_access(source_context, &implicit_parameter)?;
+            self.compile_lexical_declaration_access(scope, source_context, &implicit_parameter)?;
         }
         Ok(function.signature.implicit_parameters.len())
     }
@@ -653,7 +658,7 @@ impl CompilerFunctionBuilder {
 
         // Call the function finally with the argument values on the stack
         let function_parameter_count = implicit_parameter_count + explicit_parameter_count;
-        self.function_definition.add_variadic_instruction(GospelOpcode::Call, function_parameter_count as u32).with_source_context(source_context)?;
+        Self::attach_source_context(scope, source_context, self.function_definition.add_variadic_instruction(GospelOpcode::Call, function_parameter_count as u32).with_source_context(source_context)?);
         Ok(function.signature.return_value_type)
     }
     fn compile_implicitly_bound_function_closure_or_call(&mut self, scope: &Rc<CompilerLexicalScope>, function: &CompilerFunctionReference, source_context: &CompilerSourceContext) -> CompilerResult<ExpressionValueType> {
@@ -662,11 +667,11 @@ impl CompilerFunctionBuilder {
 
         // If this function has explicit parameters, we have to bind the closure with implicit values and return it directly
         if function.signature.explicit_parameters.is_some() {
-            self.function_definition.add_variadic_instruction(GospelOpcode::BindClosure, implicit_parameter_count as u32).with_source_context(source_context)?;
-            Ok(ExpressionValueType::Template)
+            Self::attach_source_context(scope, source_context, self.function_definition.add_variadic_instruction(GospelOpcode::BindClosure, implicit_parameter_count as u32).with_source_context(source_context)?);
+            Ok(ExpressionValueType::Closure)
         } else {
             // This function has no implicit parameters, so we can call it immediately to retrieve its value
-            self.function_definition.add_variadic_instruction(GospelOpcode::Call, implicit_parameter_count as u32).with_source_context(source_context)?;
+            Self::attach_source_context(scope, source_context, self.function_definition.add_variadic_instruction(GospelOpcode::Call, implicit_parameter_count as u32).with_source_context(source_context)?);
             Ok(function.signature.return_value_type)
         }
     }
@@ -680,7 +685,7 @@ impl CompilerFunctionBuilder {
                 if expression.template_arguments.is_some() {
                     compiler_bail!(&source_context, "Did not expect template arguments for local variable, template parameter or global variable access");
                 }
-                self.compile_lexical_declaration_access(&source_context, &declaration)
+                self.compile_lexical_declaration_access(scope, &source_context, &declaration)
             }
             CompilerLexicalNode::Scope(scope_declaration) => {
                 match &scope_declaration.class {
@@ -708,7 +713,7 @@ impl CompilerFunctionBuilder {
         let actual_source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: source_context.clone()};
         let return_value_type = self.compile_expression(scope, expression)?;
         Self::check_expression_type(&scope.source_context, return_value_type, self.function_closure.signature.return_value_type)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::ReturnValue).with_source_context(&actual_source_context)?;
+        Self::attach_source_context(scope, &actual_source_context, self.function_definition.add_simple_instruction(GospelOpcode::ReturnValue).with_source_context(&actual_source_context)?);
         Ok({})
     }
     fn compile_assignment_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &AssignmentStatement) -> CompilerResult<()> {
@@ -726,17 +731,17 @@ impl CompilerFunctionBuilder {
 
             if let Some(assignment_operator) = statement.assignment_operator {
                 // This is a synthetic binary operator assignment, we need to load the old value first, then the new value, and then run a binary operator on them, and write the result to variable
-                self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, local_variable.value_slot).with_source_context(&source_context)?;
+                Self::attach_source_context(scope, &source_context, self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, local_variable.value_slot).with_source_context(&source_context)?);
                 let right_side_type = self.compile_expression(scope, &statement.assignment_expression)?;
-                let operator_result_type = self.compile_binary_operator(local_variable.variable_type, right_side_type, &source_context, assignment_operator)?;
+                let operator_result_type = self.compile_binary_operator(scope, local_variable.variable_type, right_side_type, &source_context, assignment_operator)?;
 
                 Self::check_expression_type(&source_context, local_variable.variable_type, operator_result_type)?;
-                self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, local_variable.value_slot).with_source_context(&source_context)?;
+                Self::attach_source_context(scope, &source_context, self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, local_variable.value_slot).with_source_context(&source_context)?);
             } else {
                 // This is a direct assignment
                 let right_side_type = self.compile_expression(scope, &statement.assignment_expression)?;
                 Self::check_expression_type(&source_context, local_variable.variable_type, right_side_type)?;
-                self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, local_variable.value_slot).with_source_context(&source_context)?;
+                Self::attach_source_context(scope, &source_context, self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, local_variable.value_slot).with_source_context(&source_context)?);
             }
             Ok({})
         } else {
@@ -745,45 +750,48 @@ impl CompilerFunctionBuilder {
     }
     fn compile_declaration_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &DeclarationStatement) -> CompilerResult<()> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
-        let slot_index = self.function_definition.add_slot(CompilerInstance::convert_value_type(statement.value_type), GospelSourceSlotBinding::Uninitialized).with_source_context(&source_context)?;
 
+        let slot_index = self.function_definition.add_slot(CompilerInstance::convert_value_type(statement.value_type), GospelSourceSlotBinding::Uninitialized).with_source_context(&source_context)?;
         let local_variable = CompilerLocalVariable{value_slot: slot_index, variable_type: statement.value_type};
         scope.declare(statement.name.as_str(), CompilerLexicalDeclarationClass::LocalVariable(local_variable), DeclarationVisibility::Private, &statement.source_context)?;
 
         if let Some(variable_initializer) = &statement.initializer {
             let initializer_type = self.compile_expression(scope, variable_initializer)?;
             Self::check_expression_type(&source_context, statement.value_type, initializer_type)?;
-            self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, slot_index).with_source_context(&source_context)?;
+            Self::attach_source_context(scope, &source_context, self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, slot_index).with_source_context(&source_context)?);
         }
         Ok({})
     }
     fn compile_conditional_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &ConditionalStatement) -> CompilerResult<()> {
-        let then_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
-        let then_scope = scope.declare_scope_generated_name("then", CompilerLexicalScopeClass::Block(then_block_declaration.clone()), &statement.source_context)?;
-
+        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
         let condition_value_type = self.compile_expression(scope, &statement.condition_expression)?;
-        Self::check_expression_type(&then_scope.source_context, condition_value_type, ExpressionValueType::Int)?;
+        Self::check_expression_type(&scope.source_context, condition_value_type, ExpressionValueType::Int)?;
 
-        let condition_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz).with_source_context(&then_scope.source_context)?;
+        let (condition_instruction_index, condition_fixup) = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, &source_context, condition_instruction_index);
+
+        let then_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{debug_data: Some(CompilerDebugData::default()), loop_codegen_data: None}));
+        let then_scope = scope.declare_scope_generated_name("then", CompilerLexicalScopeClass::Block(then_block_declaration.clone()), &source_context.line_context)?;
         let then_instruction_index=  self.function_definition.current_instruction_count();
         self.compile_statement(&then_scope, &statement.then_statement)?;
-        then_block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
-            start_instruction_index: then_instruction_index,
-            end_instruction_index: self.function_definition.current_instruction_count(),
-        });
 
         if let Some(else_statement) = &statement.else_statement {
             // We have an else statement, so we need to jump to the end of the conditional statement after then branch is done
-            let then_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch).with_source_context(&then_scope.source_context)?;
-
-            let else_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
-            let else_scope = scope.declare_scope_generated_name("else", CompilerLexicalScopeClass::Block(else_block_declaration.clone()), &statement.source_context)?;
+            let (then_instruction_index, then_fixup) = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch).with_source_context(&then_scope.source_context)?;
+            Self::attach_source_context(&then_scope, &source_context, then_instruction_index);
             let else_branch_instruction_index = self.function_definition.current_instruction_count();
+            then_block_declaration.borrow_mut().debug_data.as_mut().unwrap().block_range = CompilerInstructionRange{
+                start_instruction_index: then_instruction_index,
+                end_instruction_index: else_branch_instruction_index,
+            };
+
+            let else_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{debug_data: Some(CompilerDebugData::default()), loop_codegen_data: None}));
+            let else_scope = scope.declare_scope_generated_name("else", CompilerLexicalScopeClass::Block(else_block_declaration.clone()), &statement.source_context)?;
             self.compile_statement(&else_scope, &else_statement)?;
-            else_block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
+            else_block_declaration.borrow_mut().debug_data.as_mut().unwrap().block_range = CompilerInstructionRange{
                 start_instruction_index: else_branch_instruction_index,
                 end_instruction_index: self.function_definition.current_instruction_count(),
-            });
+            };
 
             self.function_definition.fixup_control_flow_instruction(condition_fixup, else_branch_instruction_index).with_source_context(&then_scope.source_context)?;
             let condition_end_instruction_index = self.function_definition.current_instruction_count();
@@ -791,36 +799,41 @@ impl CompilerFunctionBuilder {
         } else {
             // No else statement, just fix up condition to jump to the end of then branch if it is zero
             let condition_end_instruction_index = self.function_definition.current_instruction_count();
+            then_block_declaration.borrow_mut().debug_data.as_mut().unwrap().block_range = CompilerInstructionRange{
+                start_instruction_index: then_instruction_index,
+                end_instruction_index: condition_end_instruction_index,
+            };
             self.function_definition.fixup_control_flow_instruction(condition_fixup, condition_end_instruction_index).with_source_context(&then_scope.source_context)?;
         }
         Ok({})
     }
     fn compile_block_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &BlockStatement) -> CompilerResult<()> {
-        let block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
+        let block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{debug_data: Some(CompilerDebugData::default()), loop_codegen_data: None}));
         let block_scope = scope.declare_scope_generated_name("block", CompilerLexicalScopeClass::Block(block_declaration.clone()), &statement.source_context)?;
         let block_start_instruction_index = self.function_definition.current_instruction_count();
         for inner_statement in &statement.statements {
             self.compile_statement(&block_scope, inner_statement)?;
         }
-        block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
+        block_declaration.borrow_mut().debug_data.as_mut().unwrap().block_range = CompilerInstructionRange{
             start_instruction_index: block_start_instruction_index,
             end_instruction_index: self.function_definition.current_instruction_count(),
-        });
+        };
         Ok({})
     }
     fn compile_while_loop_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &WhileLoopStatement) -> CompilerResult<()> {
-        let loop_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
-        loop_declaration.borrow_mut().loop_codegen_data = Some(CompilerLoopCodegenData::default());
-        let loop_scope = scope.declare_scope_generated_name("loop", CompilerLexicalScopeClass::Block(loop_declaration.clone()), &statement.source_context)?;
-
+        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
         let loop_start_instruction_index = self.function_definition.current_instruction_count();
-        let loop_condition_value_type = self.compile_expression(scope, &statement.condition_expression)?;
-        Self::check_expression_type(&loop_scope.source_context, loop_condition_value_type, ExpressionValueType::Int)?;
 
-        let loop_condition_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz).with_source_context(&loop_scope.source_context)?;
+        let loop_condition_value_type = self.compile_expression(scope, &statement.condition_expression)?;
+        Self::check_expression_type(&source_context, loop_condition_value_type, ExpressionValueType::Int)?;
+        let (loop_condition_instruction_index, loop_condition_fixup) = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, &source_context, loop_condition_instruction_index);
+
+        let loop_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{debug_data: Some(CompilerDebugData::default()), loop_codegen_data: Some(CompilerLoopCodegenData::default())}));
+        let loop_scope = scope.declare_scope_generated_name("loop", CompilerLexicalScopeClass::Block(loop_declaration.clone()), &source_context.line_context)?;
         self.compile_statement(&loop_scope, &statement.loop_body_statement)?;
 
-        self.function_definition.add_control_flow_instruction_no_fixup(GospelOpcode::Branch, loop_start_instruction_index).with_source_context(&loop_scope.source_context)?;
+        Self::attach_source_context(scope, &source_context, self.function_definition.add_control_flow_instruction_no_fixup(GospelOpcode::Branch, loop_start_instruction_index).with_source_context(&loop_scope.source_context)?);
         let loop_end_instruction_index = self.function_definition.current_instruction_count();
 
         self.function_definition.fixup_control_flow_instruction(loop_condition_fixup, loop_end_instruction_index).with_source_context(&loop_scope.source_context)?;
@@ -840,7 +853,8 @@ impl CompilerFunctionBuilder {
             .find(|x| x.borrow().loop_codegen_data.is_some())
             .ok_or_else(|| compiler_error!(source_context, "break; cannot be used outside the loop body"))?;
 
-        let break_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch).with_source_context(&source_context)?;
+        let (break_instruction_index, break_fixup) = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, &source_context, break_instruction_index);
         innermost_loop_statement.borrow_mut().loop_codegen_data.as_mut().unwrap().loop_finish_fixups.push(break_fixup);
         Ok({})
     }
@@ -851,24 +865,29 @@ impl CompilerFunctionBuilder {
             .find(|x| x.borrow().loop_codegen_data.is_some())
             .ok_or_else(|| compiler_error!(source_context, "continue; cannot be used outside the loop body"))?;
 
-        let continue_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch).with_source_context(&source_context)?;
+        let (continue_instruction_index, continue_fixup) = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, &source_context, continue_instruction_index);
         innermost_loop_statement.borrow_mut().loop_codegen_data.as_mut().unwrap().loop_start_fixups.push(continue_fixup);
         Ok({})
     }
-    fn compile_type_layout_initialization(&mut self, type_name: &str) -> CompilerResult<u32> {
+    fn compile_type_layout_initialization(&mut self, scope: &Rc<CompilerLexicalScope>, type_name: &str) -> CompilerResult<u32> {
         let source_context = self.function_scope.source_context.clone();
         let slot_index = self.function_definition.add_slot(GospelValueType::TypeLayout, GospelSourceSlotBinding::Uninitialized).with_source_context(&source_context)?;
+        let local_variable = CompilerLocalVariable{value_slot: slot_index, variable_type: ExpressionValueType::Typename};
+        scope.declare("@struct", CompilerLexicalDeclarationClass::LocalVariable(local_variable), DeclarationVisibility::Private, &source_context.line_context)?;
 
-        self.function_definition.add_string_instruction(GospelOpcode::TypeLayoutAllocate, type_name).with_source_context(&source_context)?;
-        self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, slot_index).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, &source_context, self.function_definition.add_string_instruction(GospelOpcode::TypeLayoutAllocate, type_name).with_source_context(&source_context)?);
+        Self::attach_source_context(scope, &source_context, self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, slot_index).with_source_context(&source_context)?);
         Ok(slot_index)
     }
-    fn compile_type_layout_metadata_struct_initialization(&mut self, struct_meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<u32> {
+    fn compile_type_layout_metadata_struct_initialization(&mut self, scope: &Rc<CompilerLexicalScope>, struct_meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<u32> {
         let source_context = self.function_scope.source_context.clone();
         let slot_index = self.function_definition.add_slot(GospelValueType::Struct, GospelSourceSlotBinding::Uninitialized).with_source_context(&source_context)?;
+        let local_variable = CompilerLocalVariable{value_slot: slot_index, variable_type: ExpressionValueType::MetaStruct };
+        scope.declare("@metastruct", CompilerLexicalDeclarationClass::LocalVariable(local_variable), DeclarationVisibility::Private, &source_context.line_context)?;
 
-        self.function_definition.add_struct_instruction(GospelOpcode::StructAllocate, struct_meta_layout.reference.clone()).with_source_context(&source_context)?;
-        self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, slot_index).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, &source_context, self.function_definition.add_struct_instruction(GospelOpcode::StructAllocate, struct_meta_layout.reference.clone()).with_source_context(&source_context)?);
+        Self::attach_source_context(scope, &source_context, self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, slot_index).with_source_context(&source_context)?);
         Ok(slot_index)
     }
     fn compile_coerce_alignment_expression(&mut self, scope: &Rc<CompilerLexicalScope>, alignment_expression: &Expression, source_context: &CompilerSourceContext) -> CompilerResult<ExpressionValueType> {
@@ -876,7 +895,7 @@ impl CompilerFunctionBuilder {
 
         // Typename is a valid parameter to alignas(T) operator, and should be automatically coerced to the integral alignment
         if source_alignment_expression_type == ExpressionValueType::Typename {
-            self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutGetAlignment).with_source_context(source_context)?;
+            Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutGetAlignment).with_source_context(source_context)?);
             Ok(ExpressionValueType::Int)
         } else {
             // Should be an integer alignment otherwise
@@ -885,65 +904,68 @@ impl CompilerFunctionBuilder {
         }
     }
     fn compile_type_layout_alignment_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, alignment_expression: &Expression, source_context: &CompilerSourceContext) -> CompilerResult<()> {
-        self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_slot_index).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, source_context, self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_slot_index).with_source_context(&source_context)?);
 
         let alignment_expression_type = self.compile_coerce_alignment_expression(scope, alignment_expression, source_context)?;
         Self::check_expression_type(source_context, ExpressionValueType::Int, alignment_expression_type)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutAlign).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutAlign).with_source_context(&source_context)?);
 
-        self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, type_layout_slot_index).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, source_context, self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, type_layout_slot_index).with_source_context(&source_context)?);
         Ok({})
     }
     fn compile_type_layout_base_class_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, base_class_expression: &Expression, source_context: &CompilerSourceContext) -> CompilerResult<()> {
-        self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_slot_index).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, source_context, self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_slot_index).with_source_context(&source_context)?);
 
         let base_class_expression_type = self.compile_expression(scope, base_class_expression)?;
         Self::check_expression_type(source_context, ExpressionValueType::Typename, base_class_expression_type)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutDefineBaseClass).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutDefineBaseClass).with_source_context(&source_context)?);
 
-        self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, type_layout_slot_index).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, source_context, self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, type_layout_slot_index).with_source_context(&source_context)?);
         Ok({})
     }
     fn compile_type_layout_block_declaration(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, type_layout_metadata_slot_index: u32, type_layout_metadata_struct: &CompilerStructMetaLayoutReference, declaration: &BlockDeclaration) -> CompilerResult<()> {
-        let block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
+        let block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{debug_data: Some(CompilerDebugData::default()), loop_codegen_data: None}));
         let block_scope = scope.declare_scope_generated_name("block", CompilerLexicalScopeClass::Block(block_declaration.clone()), &declaration.source_context)?;
         let block_instruction_index = self.function_definition.current_instruction_count();
         for inner_declaration in &declaration.declarations {
             self.compile_type_layout_inner_declaration(&block_scope, type_layout_slot_index, type_layout_metadata_slot_index, type_layout_metadata_struct, inner_declaration)?;
         }
-        block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
+        block_declaration.borrow_mut().debug_data.as_mut().unwrap().block_range = CompilerInstructionRange{
             start_instruction_index: block_instruction_index,
             end_instruction_index: self.function_definition.current_instruction_count(),
-        });
+        };
         Ok({})
     }
     fn compile_type_layout_conditional_declaration(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, type_layout_metadata_slot_index: u32, type_layout_metadata_struct: &CompilerStructMetaLayoutReference, declaration: &ConditionalDeclaration) -> CompilerResult<()> {
-        let then_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
-        let then_scope = scope.declare_scope_generated_name("then", CompilerLexicalScopeClass::Block(then_block_declaration.clone()), &declaration.source_context)?;
+        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: declaration.source_context.clone()};
 
         let condition_value_type = self.compile_expression(scope, &declaration.condition_expression)?;
-        Self::check_expression_type(&then_scope.source_context, condition_value_type, ExpressionValueType::Int)?;
+        Self::check_expression_type(&source_context, condition_value_type, ExpressionValueType::Int)?;
+        let (condition_instruction_index, condition_fixup) = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, &source_context, condition_instruction_index);
 
-        let condition_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz).with_source_context(&then_scope.source_context)?;
+        let then_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{debug_data: Some(CompilerDebugData::default()), loop_codegen_data: None}));
+        let then_scope = scope.declare_scope_generated_name("then", CompilerLexicalScopeClass::Block(then_block_declaration.clone()), &declaration.source_context)?;
         let then_branch_instruction_index = self.function_definition.current_instruction_count();
         self.compile_type_layout_inner_declaration(&then_scope, type_layout_slot_index, type_layout_metadata_slot_index, type_layout_metadata_struct, &declaration.then_branch)?;
-        then_block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
-            start_instruction_index: then_branch_instruction_index,
-            end_instruction_index: self.function_definition.current_instruction_count(),
-        });
 
         if let Some(else_statement) = &declaration.else_branch {
             // We have an else statement, so we need to jump to the end of the conditional statement after then branch is done
-            let then_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch).with_source_context(&then_scope.source_context)?;
-
-            let else_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
-            let else_scope = scope.declare_scope_generated_name("else", CompilerLexicalScopeClass::Block(else_block_declaration.clone()), &declaration.source_context)?;
+            let (then_instruction_index, then_fixup) = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch).with_source_context(&then_scope.source_context)?;
+            Self::attach_source_context(scope, &source_context, then_instruction_index);
             let else_branch_instruction_index = self.function_definition.current_instruction_count();
+            then_block_declaration.borrow_mut().debug_data.as_mut().unwrap().block_range = CompilerInstructionRange{
+                start_instruction_index: then_branch_instruction_index,
+                end_instruction_index: else_branch_instruction_index,
+            };
+
+            let else_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{debug_data: Some(CompilerDebugData::default()), loop_codegen_data: None}));
+            let else_scope = scope.declare_scope_generated_name("else", CompilerLexicalScopeClass::Block(else_block_declaration.clone()), &declaration.source_context)?;
             self.compile_type_layout_inner_declaration(&else_scope, type_layout_slot_index, type_layout_metadata_slot_index, type_layout_metadata_struct, &else_statement)?;
-            else_block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
+            else_block_declaration.borrow_mut().debug_data.as_mut().unwrap().block_range = CompilerInstructionRange{
                 start_instruction_index: else_branch_instruction_index,
                 end_instruction_index: self.function_definition.current_instruction_count(),
-            });
+            };
 
             self.function_definition.fixup_control_flow_instruction(condition_fixup, else_branch_instruction_index).with_source_context(&then_scope.source_context)?;
             let condition_end_instruction_index = self.function_definition.current_instruction_count();
@@ -951,21 +973,25 @@ impl CompilerFunctionBuilder {
         } else {
             // No else statement, just fix up condition to jump to the end of then branch if it is zero
             let condition_end_instruction_index = self.function_definition.current_instruction_count();
+            then_block_declaration.borrow_mut().debug_data.as_mut().unwrap().block_range = CompilerInstructionRange{
+                start_instruction_index: then_branch_instruction_index,
+                end_instruction_index: condition_end_instruction_index,
+            };
             self.function_definition.fixup_control_flow_instruction(condition_fixup, condition_end_instruction_index).with_source_context(&then_scope.source_context)?;
         }
         Ok({})
     }
     fn compile_type_layout_metadata_declaration(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_metadata_slot_index: u32, type_layout_metadata_struct: &CompilerStructMetaLayoutReference, field_name: &str, function_reference: &CompilerFunctionReference, source_context: &CompilerSourceContext) -> CompilerResult<()> {
         // Take metadata struct from the slot
-        self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_metadata_slot_index).with_source_context(source_context)?;
+        Self::attach_source_context(scope, source_context, self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_metadata_slot_index).with_source_context(source_context)?);
 
         // Push the struct closure or resolved type layout on the stack
         let metadata_field_value_type = self.compile_implicitly_bound_function_closure_or_call(scope, &function_reference, source_context)?;
         let metadata_field_index = type_layout_metadata_struct.signature.find_member_index_checked(field_name, metadata_field_value_type, source_context)?;
 
         // Set the meta struct field value and store the struct back to the slot
-        self.function_definition.add_struct_local_member_access_instruction(GospelOpcode::StructSetLocalField, type_layout_metadata_struct.reference.clone(), metadata_field_index as u32).with_source_context(source_context)?;
-        self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, type_layout_metadata_slot_index).with_source_context(source_context)?;
+        Self::attach_source_context(scope, source_context, self.function_definition.add_struct_local_member_access_instruction(GospelOpcode::StructSetLocalField, type_layout_metadata_struct.reference.clone(), metadata_field_index as u32).with_source_context(source_context)?);
+        Self::attach_source_context(scope, source_context, self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, type_layout_metadata_slot_index).with_source_context(source_context)?);
         Ok({})
     }
     fn compile_type_layout_struct_declaration(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_metadata_slot_index: u32, type_layout_metadata_struct: &CompilerStructMetaLayoutReference, declaration: &StructStatement) -> CompilerResult<()> {
@@ -983,13 +1009,13 @@ impl CompilerFunctionBuilder {
     }
     fn compile_type_layout_member_declaration(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, declaration: &MemberDeclaration) -> CompilerResult<()> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: declaration.source_context.clone()};
-        self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_slot_index).with_source_context(&source_context)?;
+        Self::attach_source_context(&scope, &source_context, self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_slot_index).with_source_context(&source_context)?);
 
         // Align the current offset to the required alignment first if one is present
         if let Some(alignment_expression) = &declaration.alignment_expression {
             let alignment_expression_type = self.compile_coerce_alignment_expression(scope, alignment_expression, &source_context)?;
             Self::check_expression_type(&source_context, ExpressionValueType::Int, alignment_expression_type)?;
-            self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutAlign).with_source_context(&source_context)?;
+            Self::attach_source_context(scope, &source_context, self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutAlign).with_source_context(&source_context)?);
         }
 
         // Compile member type expression
@@ -1000,20 +1026,20 @@ impl CompilerFunctionBuilder {
             // If there is array size expression, this is an array member
             let array_size_expression_type = self.compile_expression(scope, array_size_expression)?;
             Self::check_expression_type(&source_context, ExpressionValueType::Int, array_size_expression_type)?;
-            self.function_definition.add_string_instruction(GospelOpcode::TypeLayoutDefineArrayMember, declaration.name.as_str()).with_source_context(&source_context)?;
+            Self::attach_source_context(scope, &source_context, self.function_definition.add_string_instruction(GospelOpcode::TypeLayoutDefineArrayMember, declaration.name.as_str()).with_source_context(&source_context)?);
 
         } else if let Some(bitfield_width_expression) = &declaration.bitfield_width_expression {
             // If there is a bitfield width expression, this is a bitfield member
             let bitfield_width_expression_type = self.compile_expression(scope, bitfield_width_expression)?;
             Self::check_expression_type(&source_context, ExpressionValueType::Int, bitfield_width_expression_type)?;
-            self.function_definition.add_string_instruction(GospelOpcode::TypeLayoutDefineBitfieldMember, declaration.name.as_str()).with_source_context(&source_context)?;
+            Self::attach_source_context(scope, &source_context, self.function_definition.add_string_instruction(GospelOpcode::TypeLayoutDefineBitfieldMember, declaration.name.as_str()).with_source_context(&source_context)?);
 
         } else {
             // Otherwise, this is a normal member
-            self.function_definition.add_string_instruction(GospelOpcode::TypeLayoutDefineMember, declaration.name.as_str()).with_source_context(&source_context)?;
+            Self::attach_source_context(scope, &source_context, self.function_definition.add_string_instruction(GospelOpcode::TypeLayoutDefineMember, declaration.name.as_str()).with_source_context(&source_context)?);
         }
 
-        self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, type_layout_slot_index).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, &source_context, self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, type_layout_slot_index).with_source_context(&source_context)?);
         Ok({})
     }
     fn compile_type_layout_inner_declaration(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, type_layout_metadata_slot_index: u32, type_layout_metadata_struct: &CompilerStructMetaLayoutReference, inner_declaration: &StructInnerDeclaration) -> CompilerResult<()> {
@@ -1036,14 +1062,14 @@ impl CompilerFunctionBuilder {
             StructInnerDeclaration::EmptyDeclaration => { Ok({}) }
         }
     }
-    fn compile_type_layout_finalization(&mut self, type_layout_slot_index: u32, type_layout_metadata_slot_index: u32, source_context: &CompilerSourceContext) -> CompilerResult<()> {
-        self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_slot_index).with_source_context(&source_context)?;
+    fn compile_type_layout_finalization(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, type_layout_metadata_slot_index: u32, source_context: &CompilerSourceContext) -> CompilerResult<()> {
+        Self::attach_source_context(scope, source_context, self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_slot_index).with_source_context(&source_context)?);
 
-        self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_metadata_slot_index).with_source_context(&source_context)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutSetMetadata).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, source_context, self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_metadata_slot_index).with_source_context(&source_context)?);
+        Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutSetMetadata).with_source_context(&source_context)?);
 
-        self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutFinalize).with_source_context(&source_context)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::ReturnValue).with_source_context(&source_context)?;
+        Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutFinalize).with_source_context(&source_context)?);
+        Self::attach_source_context(scope, source_context, self.function_definition.add_simple_instruction(GospelOpcode::ReturnValue).with_source_context(&source_context)?);
         Ok({})
     }
     fn check_expression_type(context: &CompilerSourceContext, expected_type: ExpressionValueType, actual_type: ExpressionValueType) -> CompilerResult<()> {
@@ -1051,6 +1077,17 @@ impl CompilerFunctionBuilder {
             compiler_bail!(context, "Expression type mismatch: expected {}, got {}", expected_type, actual_type);
         }
         Ok({})
+    }
+    fn attach_source_context(scope: &Rc<CompilerLexicalScope>, source_context: &CompilerSourceContext, instruction_index: u32) {
+        if let CompilerLexicalScopeClass::Function(function_declaration) = &scope.class {
+            if let Some(debug_data) = &mut function_declaration.borrow_mut().debug_data {
+                debug_data.instruction_line_mappings.insert(instruction_index, source_context.line_context.line_number as u32);
+            }
+        } else if let CompilerLexicalScopeClass::Block(block_declaration) = &scope.class {
+            if let Some(debug_data) = &mut block_declaration.borrow_mut().debug_data {
+                debug_data.instruction_line_mappings.insert(instruction_index, source_context.line_context.line_number as u32);
+            }
+        }
     }
     fn commit(self) -> CompilerResult<CompilerFunctionReference> {
         if let Some(module_visitor) = self.function_scope.module_visitor() {
@@ -1187,7 +1224,8 @@ impl CompilerInstance {
         match value_type {
             ExpressionValueType::Int => GospelValueType::Integer,
             ExpressionValueType::Typename => GospelValueType::TypeLayout,
-            ExpressionValueType::Template => GospelValueType::Closure,
+            ExpressionValueType::Closure => GospelValueType::Closure,
+            ExpressionValueType::MetaStruct => GospelValueType::Struct,
         }
     }
     fn convert_access_specifier(value_type: DeclarationAccessSpecifier) -> DeclarationVisibility {
@@ -1285,7 +1323,7 @@ impl CompilerInstance {
             let function_name = format!("{}@default_value@{}", source_function_scope.name.as_str(), argument_index);
 
             let function_closure = Rc::new(RefCell::new(CompilerFunctionDeclaration {
-                block_range: None,
+                debug_data: Some(CompilerDebugData::default()),
                 function_reference: CompilerFunctionReference{
                     function: GospelSourceObjectReference::default(),
                     signature: CompilerFunctionSignature{ implicit_parameters: source_function_closure.borrow().function_reference.signature.implicit_parameters.clone(), ..CompilerFunctionSignature::default() }
@@ -1301,10 +1339,10 @@ impl CompilerInstance {
 
             let mut function_builder = CompilerFunctionBuilder::create(&function_scope)?;
             function_builder.compile_return_value_expression(&function_builder.function_scope.clone(), &function_scope.source_context.line_context, argument_default_value_expression)?;
-            function_closure.borrow_mut().block_range = Some(CompilerInstructionRange{
+            function_closure.borrow_mut().debug_data.as_mut().unwrap().block_range = CompilerInstructionRange{
                 start_instruction_index: 0,
                 end_instruction_index: function_builder.function_definition.current_instruction_count(),
-            });
+            };
             Some(function_builder.commit()?)
         } else { None };
 
@@ -1323,7 +1361,7 @@ impl CompilerInstance {
 
         let implicit_parameters = scope.collect_implicit_scope_parameters();
         let function_closure = Rc::new(RefCell::new(CompilerFunctionDeclaration {
-            block_range: None,
+            debug_data: Some(CompilerDebugData::default()),
             function_reference: CompilerFunctionReference{
                 function: GospelSourceObjectReference::default(),
                 signature: CompilerFunctionSignature{ return_value_type, implicit_parameters, explicit_parameters: None }
@@ -1346,10 +1384,10 @@ impl CompilerInstance {
         let mut function_builder = Self::compile_function_declaration(scope, statement.name.as_str(), visibility, statement.value_type, statement.template_declaration.as_ref(), &statement.source_context)?;
         function_builder.compile_return_value_expression(&function_builder.function_scope.clone(), &statement.source_context, &statement.initializer)?;
         if let CompilerLexicalScopeClass::Function(function_closure) = &function_builder.function_scope.class {
-            function_closure.borrow_mut().block_range = Some(CompilerInstructionRange{
+            function_closure.borrow_mut().debug_data.as_mut().unwrap().block_range = CompilerInstructionRange{
                 start_instruction_index: 0,
                 end_instruction_index: function_builder.function_definition.current_instruction_count(),
-            })
+            };
         }
         function_builder.commit()
     }
@@ -1358,7 +1396,7 @@ impl CompilerInstance {
             StructInnerDeclaration::DataDeclaration(data_statement) => {
                 let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: data_statement.source_context.clone()};
                 if data_statement.template_declaration.is_some() {
-                    meta_layout.define_member_checked(data_statement.name.as_str(), ExpressionValueType::Template, &source_context)?;
+                    meta_layout.define_member_checked(data_statement.name.as_str(), ExpressionValueType::Closure, &source_context)?;
                 } else {
                     meta_layout.define_member_checked(data_statement.name.as_str(), data_statement.value_type, &source_context)?;
                 }
@@ -1368,7 +1406,7 @@ impl CompilerInstance {
                 let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: struct_statement.source_context.clone()};
                 let name = struct_statement.name.as_ref().ok_or_else(|| compiler_error!(&source_context, "Unnamed struct declaration in top level scope. All top level structs must have a name"))?;
                 if struct_statement.template_declaration.is_some() {
-                    meta_layout.define_member_checked(name.as_str(), ExpressionValueType::Template, &source_context)?;
+                    meta_layout.define_member_checked(name.as_str(), ExpressionValueType::Closure, &source_context)?;
                 } else {
                     meta_layout.define_member_checked(name.as_str(), ExpressionValueType::Typename, &source_context)?;
                 }
@@ -1428,8 +1466,8 @@ impl CompilerInstance {
         let struct_meta_layout = Self::compile_struct_meta_layout(&function_builder.function_scope, statement)?;
 
         let type_name = statement.name.clone().unwrap_or(String::from("<unnamed struct>"));
-        let type_layout_slot_index = function_builder.compile_type_layout_initialization(type_name.as_str())?;
-        let type_layout_metadata_slot_index = function_builder.compile_type_layout_metadata_struct_initialization(&struct_meta_layout)?;
+        let type_layout_slot_index = function_builder.compile_type_layout_initialization(&function_builder.function_scope.clone(), type_name.as_str())?;
+        let type_layout_metadata_slot_index = function_builder.compile_type_layout_metadata_struct_initialization(&function_builder.function_scope.clone(), &struct_meta_layout)?;
 
         if let Some(alignment_expression) = &statement.alignment_expression {
             function_builder.compile_type_layout_alignment_expression(&function_builder.function_scope.clone(), type_layout_slot_index, alignment_expression, &source_context)?;
@@ -1441,12 +1479,12 @@ impl CompilerInstance {
             function_builder.compile_type_layout_inner_declaration(&function_builder.function_scope.clone(), type_layout_slot_index, type_layout_metadata_slot_index, &struct_meta_layout, struct_inner_declaration)
         }).chain_compiler_result(|| compiler_error!(&source_context, "Failed to compile struct definition"))?;
 
-        function_builder.compile_type_layout_finalization(type_layout_slot_index, type_layout_metadata_slot_index, &source_context)?;
+        function_builder.compile_type_layout_finalization(&function_builder.function_scope.clone(), type_layout_slot_index, type_layout_metadata_slot_index, &source_context)?;
         if let CompilerLexicalScopeClass::Function(function_closure) = &function_builder.function_scope.class {
-            function_closure.borrow_mut().block_range = Some(CompilerInstructionRange{
+            function_closure.borrow_mut().debug_data.as_mut().unwrap().block_range = CompilerInstructionRange{
                 start_instruction_index: 0,
                 end_instruction_index: function_builder.function_definition.current_instruction_count(),
-            })
+            };
         }
         function_builder.commit()
     }
@@ -1477,11 +1515,7 @@ enum CompilerLexicalDeclarationClass {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum DeclarationVisibility {
     Public,
-    // TODO: These will become used once parser is extended to support access modifiers (default will become FileLocal, internal will become ModuleInternal, and pub will become Public)
-    #[allow(dead_code)]
     ModuleInternal,
-    // TODO: These will become used once parser is extended to support access modifiers (default will become FileLocal, internal will become ModuleInternal, and pub will become Public)
-    #[allow(dead_code)]
     FileLocal,
     Private,
 }
@@ -1526,20 +1560,27 @@ struct CompilerInstructionRange {
 }
 
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+struct CompilerDebugData {
+    block_range: CompilerInstructionRange,
+    instruction_line_mappings: HashMap<u32, u32>,
+}
+
+#[derive(Debug, Clone, Default)]
 struct CompilerLoopCodegenData {
     loop_start_fixups: Vec<GospelJumpLabelFixup>,
     loop_finish_fixups: Vec<GospelJumpLabelFixup>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct CompilerBlockDeclaration {
-    block_range: Option<CompilerInstructionRange>,
+    debug_data: Option<CompilerDebugData>,
     loop_codegen_data: Option<CompilerLoopCodegenData>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct CompilerFunctionDeclaration {
-    block_range: Option<CompilerInstructionRange>,
+    debug_data: Option<CompilerDebugData>,
     function_reference: CompilerFunctionReference,
 }
 

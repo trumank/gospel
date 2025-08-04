@@ -8,7 +8,8 @@ pub enum ExpressionValueType {
     #[default]
     Int,
     Typename,
-    Template,
+    Closure,
+    MetaStruct,
 }
 
 /// Describes a source level access specifier

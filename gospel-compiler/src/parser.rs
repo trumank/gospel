@@ -1675,8 +1675,9 @@ impl<'a> CompilerParserInstance<'a> {
     fn expression_value_type_to_source_text(value_type: ExpressionValueType, alt_form: bool) -> &'static str {
         match value_type {
             ExpressionValueType::Int => "int",
-            ExpressionValueType::Typename => if alt_form { "using" } else { "typename" },
-            ExpressionValueType::Template => "template",
+            ExpressionValueType::Typename => if alt_form { "type" } else { "typename" },
+            ExpressionValueType::Closure => "@closure",
+            ExpressionValueType::MetaStruct => "@metastruct",
         }
     }
     fn member_access_expression_to_source_text(expression: &MemberAccessExpression) -> String {
