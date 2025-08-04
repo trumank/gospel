@@ -157,7 +157,7 @@ impl CompilerFunctionBuilder {
     fn create(function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<CompilerFunctionBuilder> {
         let function_reference = if let CompilerLexicalScopeClass::Data(function_closure) = &function_scope.class {
             let borrowed_closure = function_closure.borrow();
-            borrowed_closure.clone()
+            borrowed_closure.function_reference.clone()
         } else {
             compiler_bail!(&function_scope.source_context, "Internal error: expected data scope in CompilerFunctionBuilder");
         };
@@ -295,11 +295,17 @@ impl CompilerFunctionBuilder {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
 
         // Compile all statements in the block and then push the return value expression on the stack
-        let block_scope = scope.declare_scope("block", CompilerLexicalScopeClass::Block, DeclarationVisibility::Private, &source_context.line_context)?;
+        let block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
+        let block_scope = scope.declare_scope("block", CompilerLexicalScopeClass::Block(block_declaration.clone()), DeclarationVisibility::Private, &source_context.line_context)?;
+        let block_start_instruction_index = self.function_definition.current_instruction_count();
         for statement in &expression.statements {
             self.compile_statement(&block_scope, statement)?;
         }
         let return_value_expression_type = self.compile_expression(&block_scope, &expression.return_value_expression)?;
+        block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
+            start_instruction_index: block_start_instruction_index,
+            end_instruction_index: self.function_definition.current_instruction_count(),
+        });
         Ok(return_value_expression_type)
     }
     fn compile_conditional_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &ConditionalExpression) -> CompilerResult<ExpressionValueType> {
@@ -311,16 +317,27 @@ impl CompilerFunctionBuilder {
         let jump_to_else_block_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz).with_source_context(&source_context)?;
 
         // We did not jump to the else block, which means the condition was true. Evaluate the true branch and jump to the end
-        let then_branch_block = scope.declare_scope("then", CompilerLexicalScopeClass::Block, DeclarationVisibility::Private, &source_context.line_context)?;
+        let then_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
+        let then_branch_block = scope.declare_scope("then", CompilerLexicalScopeClass::Block(then_block_declaration.clone()), DeclarationVisibility::Private, &source_context.line_context)?;
+        let then_instruction_index = self.function_definition.current_instruction_count();
         let then_expression_type = self.compile_expression(&then_branch_block, &expression.true_expression)?;
         let jump_to_end_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch).with_source_context(&source_context)?;
+        then_block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
+            start_instruction_index: then_instruction_index,
+            end_instruction_index: self.function_definition.current_instruction_count(),
+        });
 
         let else_block_instruction_index = self.function_definition.current_instruction_count();
         self.function_definition.fixup_control_flow_instruction(jump_to_else_block_fixup, else_block_instruction_index).with_source_context(&source_context)?;
 
         // We jumped to the else block, evaluate the false branch
-        let else_branch_block = scope.declare_scope("else", CompilerLexicalScopeClass::Block, DeclarationVisibility::Private, &source_context.line_context)?;
+        let else_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
+        let else_branch_block = scope.declare_scope("else", CompilerLexicalScopeClass::Block(else_block_declaration.clone()), DeclarationVisibility::Private, &source_context.line_context)?;
         let else_expression_type = self.compile_expression(&else_branch_block, &expression.false_expression)?;
+        else_block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
+            start_instruction_index: else_block_instruction_index,
+            end_instruction_index: self.function_definition.current_instruction_count(),
+        });
 
         let end_instruction_index = self.function_definition.current_instruction_count();
         self.function_definition.fixup_control_flow_instruction(jump_to_end_fixup, end_instruction_index).with_source_context(&source_context)?;
@@ -668,7 +685,7 @@ impl CompilerFunctionBuilder {
             CompilerLexicalNode::Scope(scope_declaration) => {
                 match &scope_declaration.class {
                     CompilerLexicalScopeClass::Data(data_closure) => {
-                        self.compile_static_function_call(scope, &data_closure.borrow(), &source_context, expression.template_arguments.as_ref(), false)
+                        self.compile_static_function_call(scope, &data_closure.borrow().function_reference, &source_context, expression.template_arguments.as_ref(), false)
                     }
                     _ => Err(compiler_error!(&source_context, "Scope {} does not name a data or struct declaration", scope_declaration.name))
                 }
@@ -741,21 +758,32 @@ impl CompilerFunctionBuilder {
         Ok({})
     }
     fn compile_conditional_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &ConditionalStatement) -> CompilerResult<()> {
-        let then_scope = scope.declare_scope_generated_name("then", CompilerLexicalScopeClass::Block, &statement.source_context)?;
+        let then_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
+        let then_scope = scope.declare_scope_generated_name("then", CompilerLexicalScopeClass::Block(then_block_declaration.clone()), &statement.source_context)?;
 
         let condition_value_type = self.compile_expression(scope, &statement.condition_expression)?;
         Self::check_expression_type(&then_scope.source_context, condition_value_type, ExpressionValueType::Int)?;
 
         let condition_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz).with_source_context(&then_scope.source_context)?;
+        let then_instruction_index=  self.function_definition.current_instruction_count();
         self.compile_statement(&then_scope, &statement.then_statement)?;
+        then_block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
+            start_instruction_index: then_instruction_index,
+            end_instruction_index: self.function_definition.current_instruction_count(),
+        });
 
         if let Some(else_statement) = &statement.else_statement {
             // We have an else statement, so we need to jump to the end of the conditional statement after then branch is done
             let then_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch).with_source_context(&then_scope.source_context)?;
 
-            let else_scope = scope.declare_scope_generated_name("else", CompilerLexicalScopeClass::Block, &statement.source_context)?;
+            let else_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
+            let else_scope = scope.declare_scope_generated_name("else", CompilerLexicalScopeClass::Block(else_block_declaration.clone()), &statement.source_context)?;
             let else_branch_instruction_index = self.function_definition.current_instruction_count();
             self.compile_statement(&else_scope, &else_statement)?;
+            else_block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
+                start_instruction_index: else_branch_instruction_index,
+                end_instruction_index: self.function_definition.current_instruction_count(),
+            });
 
             self.function_definition.fixup_control_flow_instruction(condition_fixup, else_branch_instruction_index).with_source_context(&then_scope.source_context)?;
             let condition_end_instruction_index = self.function_definition.current_instruction_count();
@@ -768,15 +796,22 @@ impl CompilerFunctionBuilder {
         Ok({})
     }
     fn compile_block_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &BlockStatement) -> CompilerResult<()> {
-        let block_scope = scope.declare_scope_generated_name("block", CompilerLexicalScopeClass::Block, &statement.source_context)?;
+        let block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
+        let block_scope = scope.declare_scope_generated_name("block", CompilerLexicalScopeClass::Block(block_declaration.clone()), &statement.source_context)?;
+        let block_start_instruction_index = self.function_definition.current_instruction_count();
         for inner_statement in &statement.statements {
             self.compile_statement(&block_scope, inner_statement)?;
         }
+        block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
+            start_instruction_index: block_start_instruction_index,
+            end_instruction_index: self.function_definition.current_instruction_count(),
+        });
         Ok({})
     }
     fn compile_while_loop_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &WhileLoopStatement) -> CompilerResult<()> {
-        let loop_statement = Rc::new(RefCell::new(CompilerLoopStatement::default()));
-        let loop_scope = scope.declare_scope_generated_name("loop", CompilerLexicalScopeClass::Loop(loop_statement.clone()), &statement.source_context)?;
+        let loop_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
+        loop_declaration.borrow_mut().loop_codegen_data = Some(CompilerLoopCodegenData::default());
+        let loop_scope = scope.declare_scope_generated_name("loop", CompilerLexicalScopeClass::Block(loop_declaration.clone()), &statement.source_context)?;
 
         let loop_start_instruction_index = self.function_definition.current_instruction_count();
         let loop_condition_value_type = self.compile_expression(scope, &statement.condition_expression)?;
@@ -789,32 +824,35 @@ impl CompilerFunctionBuilder {
         let loop_end_instruction_index = self.function_definition.current_instruction_count();
 
         self.function_definition.fixup_control_flow_instruction(loop_condition_fixup, loop_end_instruction_index).with_source_context(&loop_scope.source_context)?;
-        for loop_start_fixup in &loop_statement.borrow().loop_start_fixups {
+        for loop_start_fixup in &loop_declaration.borrow().loop_codegen_data.as_ref().unwrap().loop_start_fixups {
             self.function_definition.fixup_control_flow_instruction(loop_start_fixup.clone(), loop_start_instruction_index).with_source_context(&loop_scope.source_context)?;
         }
-        for loop_finish_fixup in &loop_statement.borrow().loop_finish_fixups {
+        for loop_finish_fixup in &loop_declaration.borrow().loop_codegen_data.as_ref().unwrap().loop_finish_fixups {
             self.function_definition.fixup_control_flow_instruction(loop_finish_fixup.clone(), loop_end_instruction_index).with_source_context(&loop_scope.source_context)?;
         }
+        loop_declaration.borrow_mut().loop_codegen_data = None;
         Ok({})
     }
     fn compile_break_loop_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &SimpleStatement) -> CompilerResult<()> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
         let innermost_loop_statement = scope.iterate_scope_chain_inner_first()
-            .find_map(|x| if let CompilerLexicalScopeClass::Loop(y) = &x.class { Some(y.clone()) } else { None })
+            .filter_map(|x| if let CompilerLexicalScopeClass::Block(y) = &x.class { Some(y.clone()) } else { None })
+            .find(|x| x.borrow().loop_codegen_data.is_some())
             .ok_or_else(|| compiler_error!(source_context, "break; cannot be used outside the loop body"))?;
 
         let break_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch).with_source_context(&source_context)?;
-        innermost_loop_statement.borrow_mut().loop_finish_fixups.push(break_fixup);
+        innermost_loop_statement.borrow_mut().loop_codegen_data.as_mut().unwrap().loop_finish_fixups.push(break_fixup);
         Ok({})
     }
     fn compile_continue_loop_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &SimpleStatement) -> CompilerResult<()> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
         let innermost_loop_statement = scope.iterate_scope_chain_inner_first()
-            .find_map(|x| if let CompilerLexicalScopeClass::Loop(y) = &x.class { Some(y.clone()) } else { None })
+            .filter_map(|x| if let CompilerLexicalScopeClass::Block(y) = &x.class { Some(y.clone()) } else { None })
+            .find(|x| x.borrow().loop_codegen_data.is_some())
             .ok_or_else(|| compiler_error!(source_context, "continue; cannot be used outside the loop body"))?;
 
         let continue_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch).with_source_context(&source_context)?;
-        innermost_loop_statement.borrow_mut().loop_start_fixups.push(continue_fixup);
+        innermost_loop_statement.borrow_mut().loop_codegen_data.as_mut().unwrap().loop_start_fixups.push(continue_fixup);
         Ok({})
     }
     fn compile_type_layout_initialization(&mut self, type_name: &str) -> CompilerResult<u32> {
@@ -867,28 +905,45 @@ impl CompilerFunctionBuilder {
         Ok({})
     }
     fn compile_type_layout_block_declaration(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, type_layout_metadata_slot_index: u32, type_layout_metadata_struct: &CompilerStructMetaLayoutReference, declaration: &BlockDeclaration) -> CompilerResult<()> {
-        let block_scope = scope.declare_scope_generated_name("block", CompilerLexicalScopeClass::Block, &declaration.source_context)?;
+        let block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
+        let block_scope = scope.declare_scope_generated_name("block", CompilerLexicalScopeClass::Block(block_declaration.clone()), &declaration.source_context)?;
+        let block_instruction_index = self.function_definition.current_instruction_count();
         for inner_declaration in &declaration.declarations {
             self.compile_type_layout_inner_declaration(&block_scope, type_layout_slot_index, type_layout_metadata_slot_index, type_layout_metadata_struct, inner_declaration)?;
         }
+        block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
+            start_instruction_index: block_instruction_index,
+            end_instruction_index: self.function_definition.current_instruction_count(),
+        });
         Ok({})
     }
     fn compile_type_layout_conditional_declaration(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, type_layout_metadata_slot_index: u32, type_layout_metadata_struct: &CompilerStructMetaLayoutReference, declaration: &ConditionalDeclaration) -> CompilerResult<()> {
-        let then_scope = scope.declare_scope_generated_name("then", CompilerLexicalScopeClass::Block, &declaration.source_context)?;
+        let then_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
+        let then_scope = scope.declare_scope_generated_name("then", CompilerLexicalScopeClass::Block(then_block_declaration.clone()), &declaration.source_context)?;
 
         let condition_value_type = self.compile_expression(scope, &declaration.condition_expression)?;
         Self::check_expression_type(&then_scope.source_context, condition_value_type, ExpressionValueType::Int)?;
 
         let condition_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz).with_source_context(&then_scope.source_context)?;
+        let then_branch_instruction_index = self.function_definition.current_instruction_count();
         self.compile_type_layout_inner_declaration(&then_scope, type_layout_slot_index, type_layout_metadata_slot_index, type_layout_metadata_struct, &declaration.then_branch)?;
+        then_block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
+            start_instruction_index: then_branch_instruction_index,
+            end_instruction_index: self.function_definition.current_instruction_count(),
+        });
 
         if let Some(else_statement) = &declaration.else_branch {
             // We have an else statement, so we need to jump to the end of the conditional statement after then branch is done
             let then_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch).with_source_context(&then_scope.source_context)?;
 
-            let else_scope = scope.declare_scope_generated_name("else", CompilerLexicalScopeClass::Block, &declaration.source_context)?;
+            let else_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration::default()));
+            let else_scope = scope.declare_scope_generated_name("else", CompilerLexicalScopeClass::Block(else_block_declaration.clone()), &declaration.source_context)?;
             let else_branch_instruction_index = self.function_definition.current_instruction_count();
             self.compile_type_layout_inner_declaration(&else_scope, type_layout_slot_index, type_layout_metadata_slot_index, type_layout_metadata_struct, &else_statement)?;
+            else_block_declaration.borrow_mut().block_range = Some(CompilerInstructionRange{
+                start_instruction_index: else_branch_instruction_index,
+                end_instruction_index: self.function_definition.current_instruction_count(),
+            });
 
             self.function_definition.fixup_control_flow_instruction(condition_fixup, else_branch_instruction_index).with_source_context(&then_scope.source_context)?;
             let condition_end_instruction_index = self.function_definition.current_instruction_count();
@@ -1222,36 +1277,41 @@ impl CompilerInstance {
         }
         Ok({})
     }
-    fn compile_function_argument(source_function_scope: &Rc<CompilerLexicalScope>, source_function_closure: &RefCell<CompilerFunctionReference>, template_argument: &TemplateArgument) -> CompilerResult<Rc<CompilerLexicalDeclaration>> {
+    fn compile_function_argument(source_function_scope: &Rc<CompilerLexicalScope>, source_function_closure: &RefCell<CompilerDataDeclaration>, template_argument: &TemplateArgument) -> CompilerResult<Rc<CompilerLexicalDeclaration>> {
         let source_context = CompilerSourceContext{file_name: source_function_scope.file_name(), line_context: template_argument.source_context.clone()};
 
         let default_value_closure = if let Some(argument_default_value_expression) = &template_argument.default_value {
-            let argument_index = source_function_closure.borrow().signature.explicit_parameters.as_ref().unwrap().len();
+            let argument_index = source_function_closure.borrow().function_reference.signature.explicit_parameters.as_ref().unwrap().len();
             let function_name = format!("{}@default_value@{}", source_function_scope.name.as_str(), argument_index);
 
-            let function_closure = Rc::new(RefCell::new(CompilerFunctionReference{
-                function: GospelSourceObjectReference::default(),
-                signature: CompilerFunctionSignature{ implicit_parameters: source_function_closure.borrow().signature.implicit_parameters.clone(), ..CompilerFunctionSignature::default() }
+            let function_closure = Rc::new(RefCell::new(CompilerDataDeclaration{
+                block_range: None,
+                function_reference: CompilerFunctionReference{
+                    function: GospelSourceObjectReference::default(),
+                    signature: CompilerFunctionSignature{ implicit_parameters: source_function_closure.borrow().function_reference.signature.implicit_parameters.clone(), ..CompilerFunctionSignature::default() }
+                }
             }));
             let function_parent_scope = source_function_scope.parent_scope().unwrap();
             let function_scope = function_parent_scope.declare_scope(function_name.as_str(), CompilerLexicalScopeClass::Data(function_closure.clone()), source_function_scope.visibility, &source_context.line_context)?;
-            {
-                let mut mutable_function_closure = function_closure.borrow_mut();
-                mutable_function_closure.function = GospelSourceObjectReference{module_name: function_scope.module_name(), local_name: function_scope.full_scope_name()};
-                mutable_function_closure.signature.return_value_type = template_argument.value_type;
-                mutable_function_closure.signature.implicit_parameters = source_function_closure.borrow().signature.implicit_parameters.clone();
-                mutable_function_closure.signature.explicit_parameters = source_function_closure.borrow().signature.explicit_parameters.clone();
-            }
+
+            function_closure.borrow_mut().function_reference.function = GospelSourceObjectReference{module_name: function_scope.module_name(), local_name: function_scope.full_scope_name()};
+            function_closure.borrow_mut().function_reference.signature.return_value_type = template_argument.value_type;
+            function_closure.borrow_mut().function_reference.signature.implicit_parameters = source_function_closure.borrow().function_reference.signature.implicit_parameters.clone();
+            function_closure.borrow_mut().function_reference.signature.explicit_parameters = source_function_closure.borrow().function_reference.signature.explicit_parameters.clone();
 
             let mut function_builder = CompilerFunctionBuilder::create(&function_scope)?;
             function_builder.compile_return_value_expression(&function_builder.function_scope.clone(), &function_scope.source_context.line_context, argument_default_value_expression)?;
+            function_closure.borrow_mut().block_range = Some(CompilerInstructionRange{
+                start_instruction_index: 0,
+                end_instruction_index: function_builder.function_definition.current_instruction_count(),
+            });
             Some(function_builder.commit()?)
         } else { None };
 
         let new_parameter_declaration = source_function_scope.declare(template_argument.name.as_str(),
           CompilerLexicalDeclarationClass::Parameter(template_argument.value_type), DeclarationVisibility::Private, &source_context.line_context)?;
 
-        source_function_closure.borrow_mut().signature.explicit_parameters.as_mut().unwrap().push(CompilerFunctionParameter{
+        source_function_closure.borrow_mut().function_reference.signature.explicit_parameters.as_mut().unwrap().push(CompilerFunctionParameter{
             parameter_type: template_argument.value_type,
             default_value: default_value_closure,
             parameter_declaration: Rc::downgrade(&new_parameter_declaration),
@@ -1262,15 +1322,18 @@ impl CompilerInstance {
         let actual_source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: source_context.clone()};
 
         let implicit_parameters = scope.collect_implicit_scope_parameters();
-        let function_closure = Rc::new(RefCell::new(CompilerFunctionReference{
-            function: GospelSourceObjectReference::default(),
-            signature: CompilerFunctionSignature{ return_value_type, implicit_parameters, explicit_parameters: None }
+        let function_closure = Rc::new(RefCell::new(CompilerDataDeclaration{
+            block_range: None,
+            function_reference: CompilerFunctionReference{
+                function: GospelSourceObjectReference::default(),
+                signature: CompilerFunctionSignature{ return_value_type, implicit_parameters, explicit_parameters: None }
+            }
         }));
         let function_scope = scope.declare_scope(function_name, CompilerLexicalScopeClass::Data(function_closure.clone()), visibility, &actual_source_context.line_context)?;
-        function_closure.borrow_mut().function = GospelSourceObjectReference{module_name: scope.module_name(), local_name: function_scope.full_scope_name()};
+        function_closure.borrow_mut().function_reference.function = GospelSourceObjectReference{module_name: scope.module_name(), local_name: function_scope.full_scope_name()};
 
         if let Some(template_arguments) = template_declaration {
-            function_closure.borrow_mut().signature.explicit_parameters = Some(Vec::new());
+            function_closure.borrow_mut().function_reference.signature.explicit_parameters = Some(Vec::new());
             for function_argument in &template_arguments.arguments {
                 Self::compile_function_argument(&function_scope, &function_closure, function_argument)?;
             }
@@ -1282,6 +1345,12 @@ impl CompilerInstance {
         let visibility = statement.access_specifier.map(|x| Self::convert_access_specifier(x)).unwrap_or(default_visibility);
         let mut function_builder = Self::compile_function_declaration(scope, statement.name.as_str(), visibility, statement.value_type, statement.template_declaration.as_ref(), &statement.source_context)?;
         function_builder.compile_return_value_expression(&function_builder.function_scope.clone(), &statement.source_context, &statement.initializer)?;
+        if let CompilerLexicalScopeClass::Data(function_closure) = &function_builder.function_scope.class {
+            function_closure.borrow_mut().block_range = Some(CompilerInstructionRange{
+                start_instruction_index: 0,
+                end_instruction_index: function_builder.function_definition.current_instruction_count(),
+            })
+        }
         function_builder.commit()
     }
     fn populate_struct_meta_layout_from_declaration_recursive(scope: &Rc<CompilerLexicalScope>, declaration: &StructInnerDeclaration, meta_layout: &mut CompilerStructMetaLayout) -> CompilerResult<()> {
@@ -1373,6 +1442,12 @@ impl CompilerInstance {
         }).chain_compiler_result(|| compiler_error!(&source_context, "Failed to compile struct definition"))?;
 
         function_builder.compile_type_layout_finalization(type_layout_slot_index, type_layout_metadata_slot_index, &source_context)?;
+        if let CompilerLexicalScopeClass::Data(function_closure) = &function_builder.function_scope.class {
+            function_closure.borrow_mut().block_range = Some(CompilerInstructionRange{
+                start_instruction_index: 0,
+                end_instruction_index: function_builder.function_definition.current_instruction_count(),
+            })
+        }
         function_builder.commit()
     }
 }
@@ -1444,9 +1519,28 @@ impl CompilerLexicalDeclaration {
 }
 
 #[derive(Debug, Clone, Default)]
-struct CompilerLoopStatement {
+#[allow(dead_code)]
+struct CompilerInstructionRange {
+    start_instruction_index: u32,
+    end_instruction_index: u32,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CompilerLoopCodegenData {
     loop_start_fixups: Vec<GospelJumpLabelFixup>,
     loop_finish_fixups: Vec<GospelJumpLabelFixup>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CompilerBlockDeclaration {
+    block_range: Option<CompilerInstructionRange>,
+    loop_codegen_data: Option<CompilerLoopCodegenData>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CompilerDataDeclaration {
+    block_range: Option<CompilerInstructionRange>,
+    function_reference: CompilerFunctionReference,
 }
 
 #[derive(Debug, Clone)]
@@ -1459,16 +1553,14 @@ struct CompilerModuleData {
 enum CompilerLexicalScopeClass {
     #[strum(to_string = "module")]
     Module(CompilerModuleData),
-    #[strum(to_string = "source file {0}")]
+    #[strum(to_string = "source file")]
     SourceFile(String),
     #[strum(to_string = "namespace")]
     Namespace,
     #[strum(to_string = "data")]
-    Data(Rc<RefCell<CompilerFunctionReference>>),
-    #[strum(to_string = "loop")]
-    Loop(Rc<RefCell<CompilerLoopStatement>>),
+    Data(Rc<RefCell<CompilerDataDeclaration>>),
     #[strum(to_string = "block")]
-    Block,
+    Block(Rc<RefCell<CompilerBlockDeclaration>>),
 }
 
 #[derive(Debug, Clone, Display)]
