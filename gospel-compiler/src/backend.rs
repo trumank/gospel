@@ -587,7 +587,7 @@ impl CompilerFunctionBuilder {
                 .ok_or_else(|| compiler_error!(source_context, "Internal error, reference to function declaration parent scope lost"))?;
 
             // Make sure the implicit parameter is actually available in the current scope. Implicit lexical parameters are only available in child scopes and only if their visibility context allows it
-            if !self.function_scope.is_child_of(&implicit_parameter_scope) || !implicit_parameter_scope.is_declaration_visible(implicit_parameter.visibility, Some(&self.function_scope.visibility_context())) {
+            if !self.function_scope.is_child_of(&implicit_parameter_scope) || !implicit_parameter_scope.is_declaration_visible(implicit_parameter.visibility, &self.function_scope.visibility_context()) {
                 compiler_bail!(source_context, "Cannot access {} because it's implicit parameter {} from scope {} is not available in the current scope ({})",
                     function.function, implicit_parameter.name.as_str(), implicit_parameter_scope.full_scope_display_name(), scope.full_scope_display_name());
             }
@@ -1501,7 +1501,7 @@ impl CompilerLexicalNode {
             CompilerLexicalNode::Declaration(decl) => decl.parent.upgrade(),
         }
     }
-    fn is_visible_from(&self, visibility_context: Option<&DeclarationVisibilityContext>) -> bool {
+    fn is_visible_from(&self, visibility_context: &DeclarationVisibilityContext) -> bool {
         if let Some(parent_scope) = self.node_parent() {
             match &self {
                 CompilerLexicalNode::Scope(scope) => { parent_scope.is_declaration_visible(scope.visibility, visibility_context) }
@@ -1549,7 +1549,7 @@ impl CompilerLexicalScope {
             unique_name_counter: RefCell::new(0),
         })
     }
-    fn declare_scope_non_unique_name_internal(self: &Rc<Self>, name: &str, class: CompilerLexicalScopeClass, visibility: DeclarationVisibility, source_context: &ASTSourceContext) -> CompilerResult<Rc<CompilerLexicalScope>> {
+    fn declare_scope_internal(self: &Rc<Self>, name: &str, class: CompilerLexicalScopeClass, visibility: DeclarationVisibility, source_context: &ASTSourceContext) -> CompilerResult<Rc<CompilerLexicalScope>> {
         let file_name_override = if let CompilerLexicalScopeClass::SourceFile(file_name) = &class { Some(file_name.clone()) } else { None };
         let new_scope = Rc::new(Self{
             parent: Some(Rc::downgrade(self)),
@@ -1562,22 +1562,26 @@ impl CompilerLexicalScope {
             unique_name_counter: RefCell::new(0),
         });
         self.children.borrow_mut().push(CompilerLexicalNode::Scope(new_scope.clone()));
+        self.child_lookup.borrow_mut().insert(name.to_string(), CompilerLexicalNode::Scope(new_scope.clone()));
         Ok(new_scope)
     }
     fn declare_scope_generated_name(self: &Rc<Self>, base_name: &str, class: CompilerLexicalScopeClass, source_context: &ASTSourceContext) -> CompilerResult<Rc<CompilerLexicalScope>> {
-        let scope_name = format!("{}@{}", base_name, self.unique_name_counter.borrow());
-        let new_scope = self.declare_scope_non_unique_name_internal(scope_name.as_str(), class, DeclarationVisibility::Private, source_context)?;
-        *self.unique_name_counter.borrow_mut() += 1;
-        Ok(new_scope)
+        let mut scope_name: String;
+        loop {
+            scope_name = format!("{}@gen@{}", base_name, self.unique_name_counter.borrow());
+            *self.unique_name_counter.borrow_mut() += 1;
+            if !self.child_lookup.borrow().contains_key(scope_name.as_str()) {
+                break;
+            }
+        }
+        self.declare_scope_internal(scope_name.as_str(), class, DeclarationVisibility::Private, source_context)
     }
     fn declare_scope(self: &Rc<Self>, name: &str, class: CompilerLexicalScopeClass, visibility: DeclarationVisibility, source_context: &ASTSourceContext) -> CompilerResult<Rc<CompilerLexicalScope>> {
         if let Some(existing_node) = self.child_lookup.borrow().get(name) {
             let actual_source_context = CompilerSourceContext{file_name: self.file_name(), line_context: source_context.clone()};
             compiler_bail!(&actual_source_context, "{} has already been declared as {} in scope {}", name, existing_node, self.full_scope_display_name());
         }
-        let new_scope = self.declare_scope_non_unique_name_internal(name, class, visibility, source_context)?;
-        self.child_lookup.borrow_mut().insert(name.to_string(), CompilerLexicalNode::Scope(new_scope.clone()));
-        Ok(new_scope)
+        self.declare_scope_internal(name, class, visibility, source_context)
     }
     fn declare(self: &Rc<Self>, name: &str, class: CompilerLexicalDeclarationClass, visibility: DeclarationVisibility, source_context: &ASTSourceContext) -> CompilerResult<Rc<CompilerLexicalDeclaration>> {
         if let Some(existing_node) = self.child_lookup.borrow().get(name) {
@@ -1654,12 +1658,12 @@ impl CompilerLexicalScope {
     fn visibility_context(self: &Rc<Self>) -> DeclarationVisibilityContext {
         DeclarationVisibilityContext{module_name: Some(self.module_name()), file_name: self.file_name(), source_scope: Some(self.clone())}
     }
-    fn is_declaration_visible(self: &Rc<Self>, visibility: DeclarationVisibility, visibility_context: Option<&DeclarationVisibilityContext>) -> bool {
+    fn is_declaration_visible(self: &Rc<Self>, visibility: DeclarationVisibility, visibility_context: &DeclarationVisibilityContext) -> bool {
         match visibility {
             DeclarationVisibility::Public => true,
-            DeclarationVisibility::ModuleInternal => visibility_context.map(|x| Some(self.module_name()) == x.module_name).unwrap_or(false),
-            DeclarationVisibility::FileLocal => visibility_context.map(|x| Some(self.module_name()) == x.module_name && x.file_name.is_some() && self.file_name() == x.file_name).unwrap_or(false),
-            DeclarationVisibility::Private => visibility_context.and_then(|x| x.source_scope.as_ref()).map(|x| x.is_child_of(self)).unwrap_or(false),
+            DeclarationVisibility::ModuleInternal => Some(self.module_name()) == visibility_context.module_name,
+            DeclarationVisibility::FileLocal => Some(self.module_name()) == visibility_context.module_name && self.file_name() == visibility_context.file_name,
+            DeclarationVisibility::Private => visibility_context.source_scope.as_ref().map(|x| x.is_child_of(self)).unwrap_or(false),
         }
     }
     fn find_unique_child(self: &Rc<Self>, name: &str) -> Option<CompilerLexicalNode> {
@@ -1667,7 +1671,7 @@ impl CompilerLexicalScope {
     }
     fn find_unique_child_check_access(self: &Rc<Self>, name: &str, visibility_context: Option<&DeclarationVisibilityContext>) -> Option<CompilerLexicalNode> {
         if let Some(found_child) = self.find_unique_child(name) {
-            if found_child.is_visible_from(visibility_context) {
+            if visibility_context.is_none() || found_child.is_visible_from(visibility_context.unwrap()) {
                 Some(found_child)
             } else { None }
         } else { None }
@@ -1706,3 +1710,5 @@ impl CompilerLexicalScope {
         }).collect()
     }
 }
+
+
