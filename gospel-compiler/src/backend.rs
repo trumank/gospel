@@ -1097,6 +1097,19 @@ impl CompilerModuleBuilder {
             ModuleTopLevelDeclaration::StructStatement(struct_statement) => { CompilerInstance::compile_struct_statement(&file_scope, struct_statement, None, DeclarationVisibility::Public)?; Ok({}) }
         }).chain_compiler_result(|| compiler_error!(&file_scope.source_context, "Failed to compile source file"))
     }
+    pub fn compile_expression(&self, function_name: &str, expression: &Expression) -> CompilerResult<GospelSourceObjectReference> {
+        let source_context = CompilerSourceContext::default();
+        let mut function_builder = CompilerInstance::compile_function_declaration(
+            &self.module_scope, function_name, DeclarationVisibility::Public, ExpressionValueType::Typename, None, &source_context.line_context)?;
+        let expression_value_type = function_builder.compile_expression(&function_builder.function_scope.clone(), expression)?;
+        // Have to conform return value type to the expression type since it is not known in advance
+        function_builder.function_closure.signature.return_value_type = expression_value_type;
+        if let CompilerLexicalScopeClass::Function(function_closure) = &function_builder.function_scope.class {
+            function_closure.borrow_mut().function_reference.signature.return_value_type = expression_value_type;
+        }
+        function_builder.function_definition.add_simple_instruction(GospelOpcode::ReturnValue, CompilerFunctionBuilder::get_line_number(&source_context)).with_source_context(&source_context)?;
+        Ok(function_builder.commit()?.function)
+    }
 }
 
 #[derive(Debug, Clone)]

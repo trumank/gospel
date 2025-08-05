@@ -11,7 +11,7 @@ use gospel_vm::vm::{GospelVMContainer, GospelVMState, GospelVMTargetTriplet, Gos
 use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter};
 use crate::assembler::GospelAssembler;
 use crate::backend::{CompilerInstance, CompilerResultTrait};
-use crate::parser::parse_source_file;
+use crate::parser::{parse_expression, parse_source_file};
 
 pub mod assembler;
 pub mod ast;
@@ -82,6 +82,22 @@ struct ActionCompileModule {
 }
 
 #[derive(Parser, Debug)]
+struct ActionEvalExpression {
+    /// Target triple to use as a platform config. When not provided, current platform will be used instead (environment is assumed to be native to the platform)
+    #[arg(long, short)]
+    target: Option<String>,
+    /// Name of the module to compile as. If not provided, name of the first input file is used
+    #[arg(long, short)]
+    module_name: Option<String>,
+    /// Files to compile into the module
+    #[arg(long, short)]
+    input: Vec<PathBuf>,
+    /// Expression to eval against the input
+    #[arg(long, short)]
+    expression: String,
+}
+
+#[derive(Parser, Debug)]
 enum Action {
     /// Assembles low level gospel assembly source files to a module container
     Assemble(ActionAssembleModule),
@@ -93,6 +109,8 @@ enum Action {
     Parse(ActionParseSourceFile),
     /// Compiles module files into a module container
     Compile(ActionCompileModule),
+    /// Compiles input files and evals an expression against them, and returns the result
+    Eval(ActionEvalExpression),
 }
 
 #[derive(Parser, Debug)]
@@ -123,7 +141,7 @@ fn do_action_assemble(action: ActionAssembleModule) -> anyhow::Result<()> {
     Ok({})
 }
 
-fn do_action_eval(action: ActionCallFunction) -> anyhow::Result<()> {
+fn do_action_call(action: ActionCallFunction) -> anyhow::Result<()> {
     // Parse target triplet
     let target_triplet = if let Some(target_triplet_name) = &action.target {
         GospelVMTargetTriplet::parse(target_triplet_name.as_str())
@@ -257,14 +275,67 @@ fn do_action_compile(action: ActionCompileModule) -> anyhow::Result<()> {
     Ok({})
 }
 
+fn do_action_eval(action: ActionEvalExpression) -> anyhow::Result<()> {
+    // Parse target triplet
+    let target_triplet = if let Some(target_triplet_name) = &action.target {
+        GospelVMTargetTriplet::parse(target_triplet_name.as_str())
+            .map_err(|x| anyhow!("Failed to parse provided target triplet: {}", x.to_string()))?
+    } else {
+        GospelVMTargetTriplet::current_target()
+            .ok_or_else(|| anyhow!("Current platform is not a valid target. Please specify target manually with --target "))?
+    };
+    if action.input.is_empty() {
+        bail!("No source files provided");
+    }
+    let first_file_base_name = action.input[0].file_stem().map(|x| x.to_string_lossy().to_string())
+        .ok_or_else(|| anyhow!("First source file name provided is not a valid file name"))?;
+    let module_name = action.module_name.unwrap_or(first_file_base_name);
+
+    let compiler_instance = CompilerInstance::create();
+    let module_writer = Rc::new(RefCell::new(GospelContainerWriter::create(module_name.as_str())));
+    let module_builder = compiler_instance.define_module(&module_name, Some(module_writer.clone())).to_simple_result()?;
+
+    // Compile provided source files first
+    for source_file_name in &action.input {
+        let file_contents = read_to_string(source_file_name)
+            .map_err(|x| anyhow!("Failed to open source file {}: {}", source_file_name.to_string_lossy(), x.to_string()))?;
+        let file_name = source_file_name.file_name()
+            .map(|x| x.to_string_lossy().to_string())
+            .unwrap_or(String::from("<unknown>"));
+
+        let module_source_file = parse_source_file(file_name.as_str(), file_contents.as_str())
+            .map_err(|x| anyhow!("Failed to parse source file {}: {}", file_name, x))?;
+        module_builder.compile_source_file(module_source_file).to_simple_result()
+            .map_err(|x| anyhow!("Failed to compile source file {}: {}", file_name, x))?;
+    }
+    // Compile the provided expression into a generated function
+    let parsed_expression = parse_expression("<stdin>", action.expression.as_str())
+        .map_err(|x| anyhow!("Failed to parse expression: {}", x))?;
+    let function_reference = module_builder.compile_expression("@stdin_repl", &parsed_expression)
+        .map_err(|x| anyhow!("Failed to compile expression: {}", x))?;
+
+    let mut vm_state = GospelVMState::create(target_triplet);
+    let mounted_container = vm_state.mount_container(module_writer.borrow_mut().build())?;
+    let compiled_expression = mounted_container.find_named_function(function_reference.local_name.as_str()).ok_or_else(|| anyhow!("Failed to find compiled expression function"))?;
+
+    // Evaluate the function
+    let function_result = compiled_expression.execute(Vec::new())
+        .map_err(|x| anyhow!("Failed to eval expression: {}", x.to_string()))?;
+    // Print the result now
+    let serialized_result = serde_json::to_string_pretty(&function_result)?;
+    println!("{}", serialized_result);
+    Ok({})
+}
+
 fn main() {
     let args = Args::parse();
     let result = match args.action {
         Action::Assemble(assemble_action) => do_action_assemble(assemble_action),
-        Action::Call(eval_action) => do_action_eval(eval_action),
+        Action::Call(call_action) => do_action_call(call_action),
         Action::Reflect(reflect_action) => do_action_reflect(reflect_action),
         Action::Parse(parse_action) => do_action_parse(parse_action),
         Action::Compile(compile_action) => do_action_compile(compile_action),
+        Action::Eval(eval_action) => do_action_eval(eval_action),
     };
     if let Err(error) = result {
         error.to_string().lines().for_each(|x| {

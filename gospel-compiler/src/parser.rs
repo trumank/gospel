@@ -629,7 +629,7 @@ impl<'a> CompilerParserInstance<'a> {
         let identifier = self.parse_partial_identifier()?;
         let source_context = self.ctx.source_context();
 
-        if self.ctx.peek()? == CompilerToken::LessOrArgumentListStart {
+        if self.ctx.peek_or_eof()? == Some(CompilerToken::LessOrArgumentListStart) {
             // This grammar is ambiguous, because this could be a logical less operator (or less or equals operator) or a template argument list
             // So we have to return both cases if they parse correctly
             self.take_parse_case().repeat(2).flat_map_result(|parser, (_, case_index)| {
