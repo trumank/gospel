@@ -406,6 +406,8 @@ impl<'a> CompilerParserInstance<'a> {
         let first_identifier_token = self.ctx.peek()?;
         let identifier_type = if first_identifier_token == CompilerToken::Module {
             self.ctx.discard_next()?;
+            let scope_separator_token = self.ctx.next()?;
+            self.ctx.check_token(scope_separator_token, CompilerToken::ScopeDelimiter)?;
             PartialIdentifierKind::ModuleRelative
         } else if first_identifier_token == CompilerToken::ScopeDelimiter {
             self.ctx.discard_next()?;
