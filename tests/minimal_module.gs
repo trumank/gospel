@@ -1,4 +1,5 @@
-﻿
+﻿import module::additional_module_file::MinimalStruct;
+
 struct void {};
 struct alignas(1) char {};
 struct alignas(4) float {};
@@ -57,3 +58,5 @@ internal type FArrayOfInt32 = TArray<int32_t>;
 
 type Test1 = TArray<int32_t>::typename TemplatedData<char>;
 type Test2 = TArray<float>::typename TemplatedData<char>;
+
+type AdditionalModuleAlias = MinimalStruct;
