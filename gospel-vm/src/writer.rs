@@ -1,4 +1,4 @@
-﻿use std::collections::HashMap;
+﻿use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
 use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -73,7 +73,7 @@ struct GospelSourceSlotDefinition {
     slot_type: GospelValueType,
     slot_biding: GospelSourceSlotBinding,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GospelSourceFunctionArgument {
     pub argument_type: GospelValueType,
 }
@@ -87,6 +87,12 @@ pub struct GospelSourceFunctionDeclaration {
     pub return_value_type: Option<GospelValueType>,
     pub source_file_name: String,
 }
+impl PartialEq for GospelSourceFunctionDeclaration {
+    fn eq(&self, other: &Self) -> bool {
+        self.arguments == other.arguments && self.return_value_type == other.return_value_type
+    }
+}
+impl Eq for GospelSourceFunctionDeclaration {}
 impl GospelSourceFunctionDeclaration {
     /// Creates a function declaration. When exported is false, the function will not be visible outside the current container by name
     pub fn create(function_name: GospelSourceObjectReference, exported: bool, source_file_name: String) -> Self {
@@ -279,7 +285,7 @@ pub trait GospelModuleVisitor : Debug {
 
 /// Implemented by all module visitors that build the containers
 pub trait GospelContainerBuilder {
-    fn build(&mut self) -> GospelContainer;
+    fn build(&mut self) -> anyhow::Result<GospelContainer>;
 }
 
 /// Implementation of visitor that produces GospelContainers
@@ -294,6 +300,8 @@ pub struct GospelContainerWriter {
     import_container_function_lookup: Vec<HashMap<String, u32>>,
     struct_lookup: HashMap<String, u32>,
     import_container_struct_lookup: Vec<HashMap<String, u32>>,
+    pending_function_declarations: HashSet<u32>,
+    function_signatures: HashMap<u32, GospelSourceFunctionDeclaration>,
 }
 impl GospelContainerWriter {
     /// Creates a new container writer for the container with the given name
@@ -452,14 +460,48 @@ impl GospelModuleVisitor for GospelContainerWriter {
         if source.function_name.module_name != self.container_name {
             return Ok({})
         }
-        bail!("Function declarations are only allowed when writing reference containers");
+        if source.return_value_type.is_none() {
+            bail!("Function does not have a valid return value type; all functions must return a value");
+        }
+        
+        if let Some(declared_or_defined_function_index) = self.function_lookup.get(&source.function_name.local_name) {
+            // Function with the same name has already been declared or defined, make sure the signature matches
+            let pending_function_declaration = self.function_signatures.get(declared_or_defined_function_index).unwrap();
+            if pending_function_declaration != &source {
+                bail!("Function with name {} has been pre-declared with conflicting signature (different argument types, argument count, or return value type)", source.function_name.local_name);
+            }
+        } else {
+            // This function has not been declared or defined yet, so declare it now
+            let mut arguments: Vec<GospelFunctionArgument> = Vec::with_capacity(source.arguments.len());
+            for argument in &source.arguments {
+                arguments.push(GospelFunctionArgument {
+                    argument_type: argument.argument_type,
+                })
+            }
+            let function_name = self.store_string(source.function_name.local_name.as_str());
+
+            let placeholder_function_definition = GospelFunctionDefinition {
+                name: function_name, arguments, slots: Vec::new(), 
+                exported: source.exported,
+                return_value_type: source.return_value_type.unwrap(),
+                code: Vec::new(),
+                referenced_strings: Vec::new(),
+                referenced_structs: Vec::new(),
+                debug_data: None,
+            };
+            let function_index = self.container.functions.len() as u32;
+            self.container.functions.push(placeholder_function_definition);
+            self.pending_function_declarations.insert(function_index);
+
+            let function_name_string = source.function_name.local_name.clone();
+            self.function_signatures.insert(function_index, source);
+            self.function_lookup.insert(function_name_string, function_index);
+        }
+        Ok({})
     }
     fn define_function(&mut self, source: GospelSourceFunctionDefinition) -> anyhow::Result<()> {
         if source.declaration.function_name.module_name != self.container_name {
             return Ok({})
-        }
-        if self.function_lookup.contains_key(source.declaration.function_name.local_name.as_str()) {
-            bail!("Function with name {} is already defined in this container", source.declaration.function_name.local_name);
         }
         if source.declaration.return_value_type.is_none() {
             bail!("Function does not have a valid return value type; all functions must return a value");
@@ -483,14 +525,13 @@ impl GospelModuleVisitor for GospelContainerWriter {
             .map(|x| self.convert_struct_reference(x))
             .collect::<anyhow::Result<Vec<GospelObjectIndex>>>()?;
 
-        let function_index = self.container.functions.len() as u32;
-        let function_name_string = source.declaration.function_name.local_name.clone();
         let function_name = self.store_string(source.declaration.function_name.local_name.as_str());
         let debug_data = GospelFunctionDebugData{
             source_file_name: self.store_string(source.declaration.source_file_name.as_str()),
             instruction_line_numbers: source.debug_instruction_line_numbers,
         };
-        self.container.functions.push(GospelFunctionDefinition {
+
+        let result_function_definition = GospelFunctionDefinition {
             name: function_name, arguments, slots,
             exported: source.declaration.exported,
             return_value_type: source.declaration.return_value_type.unwrap(),
@@ -498,8 +539,30 @@ impl GospelModuleVisitor for GospelContainerWriter {
             referenced_strings,
             referenced_structs,
             debug_data: Some(debug_data),
-        });
-        self.function_lookup.insert(function_name_string, function_index);
+        };
+
+        if let Some(existing_function_index) = self.function_lookup.get(&source.declaration.function_name.local_name) {
+            if self.pending_function_declarations.contains(existing_function_index) {
+                // There is a pending pre-declaration for this function. Make sure its signature is identical
+                let pending_function_declaration = self.function_signatures.get(existing_function_index).unwrap();
+                if pending_function_declaration != &source.declaration {
+                    bail!("Function with name {} has been pre-declared with conflicting signature (different argument types, argument count, or return value type)", source.declaration.function_name.local_name);
+                }
+                // Update the function definition now
+                self.container.functions[*existing_function_index as usize] = result_function_definition;
+            } else {
+                // No pending pre-declaration, this is a conflicting definition of a previously defined function
+                bail!("Function with name {} is already defined in this container", source.declaration.function_name.local_name);
+            }
+        } else {
+            // No existing function with the same, define the function now
+            let function_index = self.container.functions.len() as u32;
+            self.container.functions.push(result_function_definition);
+
+            let function_name_string = source.declaration.function_name.local_name.clone();
+            self.function_signatures.insert(function_index, source.declaration);
+            self.function_lookup.insert(function_name_string, function_index);
+        }
         Ok({})
     }
     fn define_struct(&mut self, source: GospelSourceStructDefinition) -> anyhow::Result<()> {
@@ -521,7 +584,14 @@ impl GospelModuleVisitor for GospelContainerWriter {
     }
 }
 impl GospelContainerBuilder for GospelContainerWriter {
-    fn build(&mut self) -> GospelContainer {
-        std::mem::take(&mut self.container)
+    fn build(&mut self) -> anyhow::Result<GospelContainer> {
+        if !self.pending_function_declarations.is_empty() {
+            let declared_function_names: Vec<String> = self.pending_function_declarations.iter()
+                .map(|function_index| self.container.functions[*function_index as usize].name)
+                .map(|function_name_index| self.container.strings.get(function_name_index).unwrap().to_string())
+                .collect();
+            bail!("Functions {} have been declared, but have not been defined. All declared functions must be defined", declared_function_names.join(", "));
+        }
+        Ok(std::mem::take(&mut self.container))
     }
 }

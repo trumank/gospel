@@ -132,7 +132,8 @@ fn do_action_assemble(action: ActionAssembleModule) -> anyhow::Result<()> {
         assembler.assemble_file_contents(file_name.as_str(), file_contents.as_str())?;
     }
 
-    let result_container = writer.borrow_mut().build();
+    let result_container = writer.borrow_mut().build()
+        .map_err(|x| anyhow!("Failed to build container: {}", x.to_string()))?;
     let output_file_name = action.output.unwrap_or_else(|| PathBuf::from(format!("{}.gso", action.module_name)));
     let container_serialized_data = result_container.write()
         .map_err(|x| anyhow!("Failed to serialize container: {}", x.to_string()))?;
@@ -262,11 +263,12 @@ fn do_action_compile(action: ActionCompileModule) -> anyhow::Result<()> {
 
         let module_source_file = parse_source_file(file_name.as_str(), file_contents.as_str())
             .map_err(|x| anyhow!("Failed to parse source file {}: {}", file_name, x))?;
-        module_builder.compile_source_file(module_source_file).to_simple_result()
+        module_builder.add_source_file(module_source_file).to_simple_result()
             .map_err(|x| anyhow!("Failed to compile source file {}: {}", file_name, x))?;
     }
 
-    let result_container = module_writer.borrow_mut().build();
+    let result_container = module_writer.borrow_mut().build()
+        .map_err(|x| anyhow!("Failed to build container: {}", x.to_string()))?;
     let output_file_name = action.output.unwrap_or_else(|| PathBuf::from(format!("{}.gso", module_name.as_str())));
     let container_serialized_data = result_container.write()
         .map_err(|x| anyhow!("Failed to serialize container: {}", x.to_string()))?;
@@ -305,17 +307,17 @@ fn do_action_eval(action: ActionEvalExpression) -> anyhow::Result<()> {
 
         let module_source_file = parse_source_file(file_name.as_str(), file_contents.as_str())
             .map_err(|x| anyhow!("Failed to parse source file {}: {}", file_name, x))?;
-        module_builder.compile_source_file(module_source_file).to_simple_result()
+        module_builder.add_source_file(module_source_file).to_simple_result()
             .map_err(|x| anyhow!("Failed to compile source file {}: {}", file_name, x))?;
     }
     // Compile the provided expression into a generated function
     let parsed_expression = parse_expression("<stdin>", action.expression.as_str())
         .map_err(|x| anyhow!("Failed to parse expression: {}", x))?;
-    let function_reference = module_builder.compile_expression("@stdin_repl", &parsed_expression)
+    let function_reference = module_builder.add_simple_function("@stdin_repl", &parsed_expression)
         .map_err(|x| anyhow!("Failed to compile expression: {}", x))?;
 
     let mut vm_state = GospelVMState::create(target_triplet);
-    let mounted_container = vm_state.mount_container(module_writer.borrow_mut().build())?;
+    let mounted_container = vm_state.mount_container(module_writer.borrow_mut().build()?)?;
     let compiled_expression = mounted_container.find_named_function(function_reference.local_name.as_str()).ok_or_else(|| anyhow!("Failed to find compiled expression function"))?;
 
     // Evaluate the function
