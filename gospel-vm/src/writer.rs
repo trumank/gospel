@@ -284,7 +284,7 @@ pub trait GospelModuleVisitor : Debug {
 }
 
 /// Implemented by all module visitors that build the containers
-pub trait GospelContainerBuilder {
+pub trait GospelContainerBuilder : Debug {
     fn build(&mut self) -> anyhow::Result<GospelContainer>;
 }
 
@@ -463,7 +463,7 @@ impl GospelModuleVisitor for GospelContainerWriter {
         if source.return_value_type.is_none() {
             bail!("Function does not have a valid return value type; all functions must return a value");
         }
-        
+
         if let Some(declared_or_defined_function_index) = self.function_lookup.get(&source.function_name.local_name) {
             // Function with the same name has already been declared or defined, make sure the signature matches
             let pending_function_declaration = self.function_signatures.get(declared_or_defined_function_index).unwrap();
@@ -481,7 +481,7 @@ impl GospelModuleVisitor for GospelContainerWriter {
             let function_name = self.store_string(source.function_name.local_name.as_str());
 
             let placeholder_function_definition = GospelFunctionDefinition {
-                name: function_name, arguments, slots: Vec::new(), 
+                name: function_name, arguments, slots: Vec::new(),
                 exported: source.exported,
                 return_value_type: source.return_value_type.unwrap(),
                 code: Vec::new(),
@@ -550,6 +550,7 @@ impl GospelModuleVisitor for GospelContainerWriter {
                 }
                 // Update the function definition now
                 self.container.functions[*existing_function_index as usize] = result_function_definition;
+                self.pending_function_declarations.remove(existing_function_index);
             } else {
                 // No pending pre-declaration, this is a conflicting definition of a previously defined function
                 bail!("Function with name {} is already defined in this container", source.declaration.function_name.local_name);
