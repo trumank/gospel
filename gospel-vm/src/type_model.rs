@@ -209,6 +209,17 @@ pub struct UserDefinedType {
     pub fields: Vec<UserDefinedTypeField>,
 }
 
+/// Represents a type with CV qualifiers applied on top
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CVQualifiedType {
+    /// Index of the base type for this CV-qualified type
+    pub base_type_index: usize,
+    /// Whenever this type is marked as constant
+    pub constant: bool,
+    /// Whenever this type is marked as volatile
+    pub volatile: bool,
+}
+
 /// Represents a single type with references to other types
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Type {
@@ -216,6 +227,7 @@ pub enum Type {
     Array(ArrayType),
     Pointer(PointerType),
     UDT(UserDefinedType),
+    CVQualified(CVQualifiedType),
 }
 
 /// Represents an isolated type graph
