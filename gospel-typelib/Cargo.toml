@@ -1,0 +1,14 @@
+[package]
+name = "gospel-typelib"
+description = "Type Representation Library utilized by Gospel VM"
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = "1.0.93"
+strum = "0.26.3"
+strum_macros = "0.26.3"
+serde = { version = "1.0.219", features = ["derive"] }

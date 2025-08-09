@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["gospel-vm", "gospel-compiler"]
+members = ["gospel-vm", "gospel-compiler", "gospel-typelib"]
 
 [workspace.package]
 repository = "https://github.com/trumank/gospel"

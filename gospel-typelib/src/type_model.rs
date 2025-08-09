@@ -78,7 +78,7 @@ impl TargetTriplet {
     pub fn address_size(&self) -> usize {
         8 // All currently supported architectures are 64-bit
     }
-    fn uses_aligned_base_class_size(&self) -> bool {
+    pub fn uses_aligned_base_class_size(&self) -> bool {
         self.env == TargetEnvironment::MSVC // MSVC uses aligned base class size when calculating layout of child class, GNU and Darwin use unaligned size
     }
     /// Returns the target that the current executable has been compiled for
@@ -161,6 +161,10 @@ pub struct ArrayType {
 pub struct PointerType {
     /// Index of the pointee type for this pointer
     pub pointee_type_index: usize,
+    /// Minimum alignment requirement of the pointer
+    pub alignment: usize,
+    /// Size of the pointer, in bytes
+    pub size: usize,
 }
 
 /// Represents a base class for a class
@@ -203,6 +207,8 @@ pub struct UserDefinedType {
     pub unaligned_size: usize,
     /// Total size of the type, padded to the multiple of the alignment
     pub size: usize,
+    /// Virtual function table pointer type for this class, if present. This is always the first entry in the class if present
+    pub vtable_type_index: Option<usize>,
     /// All base classes for this type
     pub base_classes: Vec<BaseClass>,
     /// All fields defined in this type. Does not include fields defined in the base classes
@@ -220,6 +226,38 @@ pub struct CVQualifiedType {
     pub volatile: bool,
 }
 
+/// Represents a type of the function signature. Function type does not have a size, and must be wrapped in a pointer type
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct FunctionType {
+    /// Index of the return value type for this function type
+    pub return_value_type_index: usize,
+    /// Type indices of the function arguments
+    pub argument_type_indices: usize,
+    /// True if this is a member function type. Member functions have this pointer as their first argument
+    pub is_member_function_type: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct VTableSlot {
+    /// Index of the function signature type for this virtual function table slot
+    pub function_type_index: usize,
+    /// Name of the function at this virtual function table slot
+    pub function_name: Option<String>,
+}
+
+/// Represents a virtual function table type
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct VTableType {
+    /// Virtual function table slots, describe individual function types in the virtual function table
+    pub slots: Vec<VTableSlot>,
+    /// Minimum alignment requirement of this virtual function table type
+    pub alignment: usize,
+    /// Size of the single virtual function table slot, in bytes
+    pub slot_size: usize,
+    /// Total size of this virtual function table type, in bytes
+    pub size: usize,
+}
+
 /// Represents a single type with references to other types
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Type {
@@ -228,6 +266,8 @@ pub enum Type {
     Pointer(PointerType),
     UDT(UserDefinedType),
     CVQualified(CVQualifiedType),
+    Function(FunctionType),
+    VTable(VTableType),
 }
 
 /// Represents an isolated type graph

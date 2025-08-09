@@ -222,6 +222,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gospel-typelib"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "strum",
+ "strum_macros",
+]
+
+[[package]]
 name = "gospel-vm"
 version = "0.1.0"
 dependencies = [
