@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
-use strum_macros::EnumString;
+use strum_macros::{Display, EnumString};
 
 /// Aligns the value up to the nearest multiple of the alignment
 pub fn align_value(value: usize, align: usize) -> usize {
@@ -200,7 +200,7 @@ pub trait TypeGraphLike<'a> {
 }
 
 /// Represents a primitive type with a target-dependent or fixed size
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, EnumString)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, EnumString, Display)]
 pub enum PrimitiveType {
     Void,
     Char,
@@ -213,10 +213,10 @@ pub enum PrimitiveType {
     Float,
     Double,
     Bool,
-    Long,
-    UnsignedLong,
-    LongLong,
-    UnsignedLongLong,
+    LongInt,
+    UnsignedLongInt,
+    LongLongInt,
+    UnsignedLongLongInt,
     Char8,
     Char16,
     Char32,
@@ -236,10 +236,10 @@ impl PrimitiveType {
             PrimitiveType::Float => 4,
             PrimitiveType::Double => 8,
             PrimitiveType::Bool => 1,
-            PrimitiveType::Long => target_triplet.long_size(),
-            PrimitiveType::UnsignedLong => target_triplet.long_size(),
-            PrimitiveType::LongLong => 8,
-            PrimitiveType::UnsignedLongLong => 8,
+            PrimitiveType::LongInt => target_triplet.long_size(),
+            PrimitiveType::UnsignedLongInt => target_triplet.long_size(),
+            PrimitiveType::LongLongInt => 8,
+            PrimitiveType::UnsignedLongLongInt => 8,
             PrimitiveType::Char8 => 1,
             PrimitiveType::Char16 => 1,
             PrimitiveType::Char32 => 1,

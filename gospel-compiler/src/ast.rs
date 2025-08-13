@@ -1,6 +1,7 @@
 use std::fmt::{Display, Formatter};
 use serde::{Deserialize, Serialize};
 use strum_macros::Display;
+use gospel_typelib::type_model::PrimitiveType;
 
 /// Describes value type of the expression in the source grammar
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Display, Default)]
@@ -221,6 +222,14 @@ pub struct BuiltinIdentifierExpression {
     pub source_context: ASTSourceContext,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrimitiveTypeExpression {
+    pub primitive_type: PrimitiveType,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
+}
+
+
 /// Represents a generic expression
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Expression {
@@ -234,6 +243,7 @@ pub enum Expression {
     MemberAccessExpression(Box<MemberAccessExpression>),
     BinaryExpression(Box<BinaryExpression>),
     BuiltinIdentifierExpression(Box<BuiltinIdentifierExpression>),
+    PrimitiveTypeExpression(Box<PrimitiveTypeExpression>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

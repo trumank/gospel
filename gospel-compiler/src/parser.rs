@@ -1,10 +1,11 @@
-﻿use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, ExternStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, BuiltinIdentifier, BuiltinIdentifierExpression, DeclarationAccessSpecifier};
+﻿use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, ExternStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, BuiltinIdentifier, BuiltinIdentifierExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression};
 use crate::lex_util::get_line_number_and_offset_from_index;
 use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
 use std::fmt::{Display, Formatter};
 use strum_macros::Display;
 use fancy_regex::{Captures, Regex};
+use gospel_typelib::type_model::PrimitiveType;
 
 #[derive(Logos, Debug, Clone, PartialEq, Display)]
 #[logos(skip r"[ \r\t\n\u{feff}]+")]
@@ -22,11 +23,12 @@ enum CompilerToken {
     #[strum(to_string = "type")]
     Type,
     #[token("struct")]
+    #[token("class")]
     #[strum(to_string = "struct")]
     Struct,
-    #[token("int")]
-    #[strum(to_string = "int")]
-    Int,
+    #[token("constexpr int")]
+    #[strum(to_string = "constexpr int")]
+    ConstexprInt,
     #[token("typename")]
     #[strum(to_string = "typename")]
     Typename,
@@ -93,6 +95,45 @@ enum CompilerToken {
     #[token("__target_arch")]
     #[strum(to_string = "__target_arch")]
     BuiltinTargetArch,
+    #[token("void")]
+    #[strum(to_string = "void")]
+    PrimitiveTypeVoid,
+    #[token("char")]
+    #[strum(to_string = "char")]
+    PrimitiveTypeChar,
+    #[token("wchar_t")]
+    #[strum(to_string = "wchar_t")]
+    PrimitiveTypeWideChar,
+    #[token("int")]
+    #[strum(to_string = "int")]
+    PrimitiveTypeInt,
+    #[token("float")]
+    #[strum(to_string = "float")]
+    PrimitiveTypeFloat,
+    #[token("double")]
+    #[strum(to_string = "double")]
+    PrimitiveTypeDouble,
+    #[token("bool")]
+    #[strum(to_string = "bool")]
+    PrimitiveTypeBool,
+    #[token("char8_t")]
+    #[strum(to_string = "char8_t")]
+    PrimitiveTypeChar8,
+    #[token("char16_t")]
+    #[strum(to_string = "char16_t")]
+    PrimitiveTypeChar16,
+    #[token("char32_t")]
+    #[strum(to_string = "char32_t")]
+    PrimitiveTypeChar32,
+    #[token("unsigned")]
+    #[strum(to_string = "unsigned")]
+    PrimitiveModifierUnsigned,
+    #[token("long")]
+    #[strum(to_string = "long")]
+    PrimitiveModifierLong,
+    #[token("short")]
+    #[strum(to_string = "short")]
+    PrimitiveModifierShort,
     #[token("~")]
     #[strum(to_string = "~")]
     BitwiseInverse,
@@ -396,7 +437,7 @@ impl<'a> CompilerParserInstance<'a> {
     }
     fn parse_expression_value_type(&mut self, token: CompilerToken) -> anyhow::Result<ExpressionValueType> {
         match token {
-            CompilerToken::Int => Ok(ExpressionValueType::Int),
+            CompilerToken::ConstexprInt => Ok(ExpressionValueType::Int),
             CompilerToken::Struct => Ok(ExpressionValueType::Typename),
             CompilerToken::Typename => Ok(ExpressionValueType::Typename),
             _ => Err(self.ctx.fail(format!("Expected int, struct, or typename, got {}", token))),
@@ -887,7 +928,7 @@ impl<'a> CompilerParserInstance<'a> {
             CompilerToken::Continue => self.parse_continue_loop_statement(),
             CompilerToken::Terminator => self.parse_empty_statement(),
             CompilerToken::ScopeStart => self.parse_block_statement(),
-            CompilerToken::Int => self.parse_local_var_statement(ExpressionValueType::Int),
+            CompilerToken::ConstexprInt => self.parse_local_var_statement(ExpressionValueType::Int),
             CompilerToken::Type => self.parse_local_var_statement(ExpressionValueType::Typename),
             _ => self.parse_assignment_statement(), // assume anything else is an assignment statement (because it starts with an expression)
         }
@@ -936,6 +977,92 @@ impl<'a> CompilerParserInstance<'a> {
         let result_expression = BuiltinIdentifierExpression{identifier, source_context};
         Ok(AmbiguousExpression::unambiguous(self, Expression::BuiltinIdentifierExpression(Box::new(result_expression))))
     }
+    fn parse_simple_primitive_type_expression(mut self, primitive_type: PrimitiveType) -> anyhow::Result<AmbiguousExpression<'a>> {
+        self.ctx.discard_next()?;
+        let source_context = self.ctx.source_context();
+        let result_expression = PrimitiveTypeExpression{primitive_type, source_context};
+        Ok(AmbiguousExpression::unambiguous(self, Expression::PrimitiveTypeExpression(Box::new(result_expression))))
+    }
+    fn parse_unsigned_long_primitive_type_expression(mut self) -> anyhow::Result<AmbiguousExpression<'a>> {
+        let source_context = self.ctx.source_context();
+        self.ctx.discard_next()?;
+
+        let first_expression_token = self.ctx.peek_or_eof()?;
+        if first_expression_token == Some(CompilerToken::PrimitiveModifierLong) {
+            self.ctx.discard_next()?;
+            // Can only mean unsigned long long [int] at this point, but if int is given explicitly, digest it
+            if self.ctx.peek_or_eof()? == Some(CompilerToken::PrimitiveTypeInt) {
+                self.ctx.discard_next()?;
+            }
+            let result_expression = PrimitiveTypeExpression{primitive_type: PrimitiveType::UnsignedLongLongInt, source_context};
+            Ok(AmbiguousExpression::unambiguous(self, Expression::PrimitiveTypeExpression(Box::new(result_expression))))
+        } else {
+            // Can only mean unsigned long [int] at this point, but if int is given explicitly, digest it
+            if self.ctx.peek_or_eof()? == Some(CompilerToken::PrimitiveTypeInt) {
+                self.ctx.discard_next()?;
+            }
+            let result_expression = PrimitiveTypeExpression{primitive_type: PrimitiveType::UnsignedLongInt, source_context};
+            Ok(AmbiguousExpression::unambiguous(self, Expression::PrimitiveTypeExpression(Box::new(result_expression))))
+        }
+    }
+    fn parse_unsigned_short_primitive_type_expression(mut self) -> anyhow::Result<AmbiguousExpression<'a>> {
+        let source_context = self.ctx.source_context();
+        self.ctx.discard_next()?;
+        // Result is always the same, unsigned short can only mean unsigned short [int], but if int is given explicitly consume it too
+        if self.ctx.peek_or_eof()? == Some(CompilerToken::PrimitiveTypeInt) {
+            self.ctx.discard_next()?;
+        }
+        let result_expression = PrimitiveTypeExpression{primitive_type: PrimitiveType::UnsignedShortInt, source_context};
+        Ok(AmbiguousExpression::unambiguous( self, Expression::PrimitiveTypeExpression(Box::new(result_expression))))
+    }
+    fn parse_unsigned_primitive_type_expression(mut self) -> anyhow::Result<AmbiguousExpression<'a>> {
+        self.ctx.discard_next()?;
+        let source_context = self.ctx.source_context();
+        let first_expression_token = self.ctx.peek_or_eof()?;
+        match first_expression_token {
+            Some(CompilerToken::PrimitiveTypeChar) => self.parse_simple_primitive_type_expression(PrimitiveType::UnsignedChar),
+            Some(CompilerToken::PrimitiveTypeInt) => self.parse_simple_primitive_type_expression(PrimitiveType::UnsignedInt),
+            Some(CompilerToken::PrimitiveModifierLong) => self.parse_unsigned_long_primitive_type_expression(),
+            Some(CompilerToken::PrimitiveModifierShort) => self.parse_unsigned_short_primitive_type_expression(),
+            _ => {
+                // everything else is treated as unsigned [int]
+                let result_expression = PrimitiveTypeExpression{primitive_type: PrimitiveType::UnsignedInt, source_context};
+                Ok(AmbiguousExpression::unambiguous(self, Expression::PrimitiveTypeExpression(Box::new(result_expression))))
+            },
+        }
+    }
+    fn parse_short_primitive_type_expression(mut self) -> anyhow::Result<AmbiguousExpression<'a>> {
+        self.ctx.discard_next()?;
+        let source_context = self.ctx.source_context();
+        // Result is always the same, short can only mean short [int], but if int is given explicitly consume it too
+        if self.ctx.peek_or_eof()? == Some(CompilerToken::PrimitiveTypeInt) {
+            self.ctx.discard_next()?;
+        }
+        let result_expression = PrimitiveTypeExpression{primitive_type: PrimitiveType::ShortInt, source_context};
+        Ok(AmbiguousExpression::unambiguous( self, Expression::PrimitiveTypeExpression(Box::new(result_expression))))
+    }
+    fn parse_long_primitive_type_expression(mut self) -> anyhow::Result<AmbiguousExpression<'a>> {
+        let source_context = self.ctx.source_context();
+        self.ctx.discard_next()?;
+
+        let first_expression_token = self.ctx.peek_or_eof()?;
+        if first_expression_token == Some(CompilerToken::PrimitiveModifierLong) {
+            self.ctx.discard_next()?;
+            // Can only mean long long [int] at this point, but if int is given explicitly, digest it
+            if self.ctx.peek_or_eof()? == Some(CompilerToken::PrimitiveTypeInt) {
+                self.ctx.discard_next()?;
+            }
+            let result_expression = PrimitiveTypeExpression{primitive_type: PrimitiveType::LongLongInt, source_context};
+            Ok(AmbiguousExpression::unambiguous(self, Expression::PrimitiveTypeExpression(Box::new(result_expression))))
+        } else {
+            // Can only mean long [int] at this point, but if int is given explicitly, digest it
+            if self.ctx.peek_or_eof()? == Some(CompilerToken::PrimitiveTypeInt) {
+                self.ctx.discard_next()?;
+            }
+            let result_expression = PrimitiveTypeExpression{primitive_type: PrimitiveType::LongInt, source_context};
+            Ok(AmbiguousExpression::unambiguous(self, Expression::PrimitiveTypeExpression(Box::new(result_expression))))
+        }
+    }
     fn parse_expression_affinity_highest(mut self) -> anyhow::Result<AmbiguousExpression<'a>> {
         let first_expression_token = self.ctx.peek()?;
         match first_expression_token {
@@ -949,6 +1076,19 @@ impl<'a> CompilerParserInstance<'a> {
             CompilerToken::BuiltinAddressSize => self.parse_builtin_expression(BuiltinIdentifier::AddressSize),
             CompilerToken::BuiltinTargetPlatform => self.parse_builtin_expression(BuiltinIdentifier::TargetPlatform),
             CompilerToken::BuiltinTargetArch => self.parse_builtin_expression(BuiltinIdentifier::TargetArch),
+            CompilerToken::PrimitiveTypeVoid => self.parse_simple_primitive_type_expression(PrimitiveType::Void),
+            CompilerToken::PrimitiveTypeChar => self.parse_simple_primitive_type_expression(PrimitiveType::Char),
+            CompilerToken::PrimitiveTypeWideChar => self.parse_simple_primitive_type_expression(PrimitiveType::WideChar),
+            CompilerToken::PrimitiveTypeInt => self.parse_simple_primitive_type_expression(PrimitiveType::Int),
+            CompilerToken::PrimitiveTypeBool => self.parse_simple_primitive_type_expression(PrimitiveType::Bool),
+            CompilerToken::PrimitiveTypeFloat => self.parse_simple_primitive_type_expression(PrimitiveType::Float),
+            CompilerToken::PrimitiveTypeDouble => self.parse_simple_primitive_type_expression(PrimitiveType::Double),
+            CompilerToken::PrimitiveTypeChar8 => self.parse_simple_primitive_type_expression(PrimitiveType::Char8),
+            CompilerToken::PrimitiveTypeChar16 => self.parse_simple_primitive_type_expression(PrimitiveType::Char16),
+            CompilerToken::PrimitiveTypeChar32 => self.parse_simple_primitive_type_expression(PrimitiveType::Char32),
+            CompilerToken::PrimitiveModifierUnsigned => self.parse_unsigned_primitive_type_expression(),
+            CompilerToken::PrimitiveModifierShort => self.parse_short_primitive_type_expression(),
+            CompilerToken::PrimitiveModifierLong => self.parse_long_primitive_type_expression(),
             _ => Err(self.ctx.fail(format!("Expected expression, got {}", first_expression_token))),
         }
     }
@@ -1332,7 +1472,7 @@ impl<'a> CompilerParserInstance<'a> {
         self.ctx.discard_next()?;
         let statement_token = self.ctx.peek()?;
         match statement_token {
-            CompilerToken::Int => Ok(self.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
             CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, Some(template_declaration), Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
             _ => Err(self.ctx.fail(format!("Expected data or nested struct declaration following template declaration and access specifier, got {}", statement_token))),
@@ -1347,7 +1487,7 @@ impl<'a> CompilerParserInstance<'a> {
                 CompilerToken::Internal => parser.parse_templated_access_specifier_struct_inner_declaration(template_declaration, DeclarationAccessSpecifier::Internal),
                 CompilerToken::Local => parser.parse_templated_access_specifier_struct_inner_declaration(template_declaration, DeclarationAccessSpecifier::Local),
                 // data and struct declarations
-                CompilerToken::Int => Ok(parser.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+                CompilerToken::ConstexprInt => Ok(parser.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
                 CompilerToken::Type => Ok(parser.parse_data_statement(ExpressionValueType::Typename, Some(template_declaration), None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
                 CompilerToken::Struct => Ok(parser.parse_struct_statement(Some(template_declaration), None)?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
                 _ => Err(parser.ctx.fail(format!("Expected access specifier, data or nested struct declaration following template declaration, got {}", template_statement_token))),
@@ -1366,7 +1506,7 @@ impl<'a> CompilerParserInstance<'a> {
         let statement_token = self.ctx.peek()?;
         match statement_token {
             // data and struct declarations
-            CompilerToken::Int => Ok(self.parse_data_statement(ExpressionValueType::Int, None, Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, None, Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
             CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, None, Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(None, Some(access_specifier))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
             _ => Err(self.ctx.fail(format!("Expected data or nested struct declaration following access specifier, got {}", statement_token))),
@@ -1382,7 +1522,7 @@ impl<'a> CompilerParserInstance<'a> {
             CompilerToken::Internal => self.parse_access_specifier_struct_inner_declaration(DeclarationAccessSpecifier::Internal),
             CompilerToken::Local => self.parse_access_specifier_struct_inner_declaration(DeclarationAccessSpecifier::Local),
             // data, struct, conditional, scope and blank declarations
-            CompilerToken::Int => Ok(self.parse_data_statement(ExpressionValueType::Int, None, None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, None, None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
             CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, None, None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(None, None)?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
             CompilerToken::If => self.parse_struct_conditional_declaration(),
@@ -1440,7 +1580,7 @@ impl<'a> CompilerParserInstance<'a> {
         let statement_token = self.ctx.peek()?;
         Ok(match statement_token {
             // data and struct declarations
-            CompilerToken::Int => Ok(self.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
             CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
             _ => Err(self.ctx.fail(format!("Expected data or struct declaration following template declaration and access specifier, got {}", statement_token))),
@@ -1455,7 +1595,7 @@ impl<'a> CompilerParserInstance<'a> {
                 CompilerToken::Internal => parser.parse_templated_access_specifier_namespace_level_statement(template_declaration, DeclarationAccessSpecifier::Internal),
                 CompilerToken::Local => parser.parse_templated_access_specifier_namespace_level_statement(template_declaration, DeclarationAccessSpecifier::Local),
                 // data and struct declarations
-                CompilerToken::Int => Ok(parser.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+                CompilerToken::ConstexprInt => Ok(parser.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
                 CompilerToken::Type => Ok(parser.parse_data_statement(ExpressionValueType::Typename, Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
                 CompilerToken::Struct => Ok(parser.parse_struct_statement(Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
                 _ => Err(parser.ctx.fail(format!("Expected access access specifier, data or struct declaration following template declaration, got {}", template_statement_token))),
@@ -1473,7 +1613,7 @@ impl<'a> CompilerParserInstance<'a> {
         let statement_token = self.ctx.peek()?;
         match statement_token {
             // data, struct and namespace declarations
-            CompilerToken::Int => Ok(self.parse_data_statement(ExpressionValueType::Int, None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
             CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
             CompilerToken::Namespace => Ok(self.parse_namespace_statement(Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::NamespaceStatement(x))),
@@ -1490,7 +1630,7 @@ impl<'a> CompilerParserInstance<'a> {
             CompilerToken::Internal => self.parse_access_specifier_namespace_level_statement(DeclarationAccessSpecifier::Internal),
             CompilerToken::Local => self.parse_access_specifier_namespace_level_statement(DeclarationAccessSpecifier::Local),
             // data, struct, namespace and blank declarations
-            CompilerToken::Int => Ok(self.parse_data_statement(ExpressionValueType::Int, None, None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, None, None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
             CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, None, None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(None, None)?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
             CompilerToken::Namespace => Ok(self.parse_namespace_statement(None)?.map_data(|x| NamespaceLevelDeclaration::NamespaceStatement(x))),
@@ -1533,7 +1673,7 @@ impl<'a> CompilerParserInstance<'a> {
         let statement_token = self.ctx.peek()?;
         Ok(match statement_token {
             // data and struct declarations
-            CompilerToken::Int => Ok(self.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
+            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
             CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
             _ => Err(self.ctx.fail(format!("Expected data or struct declaration following template declaration and access specifier, got {}", statement_token))),
@@ -1548,7 +1688,7 @@ impl<'a> CompilerParserInstance<'a> {
                 CompilerToken::Internal => parser.parse_templated_access_specifier_top_level_statement(template_declaration, DeclarationAccessSpecifier::Internal),
                 CompilerToken::Local => parser.parse_templated_access_specifier_top_level_statement(template_declaration, DeclarationAccessSpecifier::Local),
                 // data and struct declarations
-                CompilerToken::Int => Ok(parser.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
+                CompilerToken::ConstexprInt => Ok(parser.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
                 CompilerToken::Type => Ok(parser.parse_data_statement(ExpressionValueType::Typename, Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
                 CompilerToken::Struct => Ok(parser.parse_struct_statement(Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
                 _ => Err(parser.ctx.fail(format!("Expected access specifier, data or struct declaration following template declaration, got {}", template_statement_token))),
@@ -1561,7 +1701,7 @@ impl<'a> CompilerParserInstance<'a> {
         let statement_token = self.ctx.peek()?;
         match statement_token {
             CompilerToken::Extern => self.parse_extern_statement(Some(access_specifier)),
-            CompilerToken::Int => Ok(self.parse_data_statement(ExpressionValueType::Int, None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
+            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
             CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
             CompilerToken::Namespace => Ok(self.parse_namespace_statement(Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::NamespaceStatement(x))),
@@ -1580,7 +1720,7 @@ impl<'a> CompilerParserInstance<'a> {
             // import, extern, data, struct, namespace or blank declarations
             CompilerToken::Import => self.parse_import_statement(),
             CompilerToken::Extern => self.parse_extern_statement(None),
-            CompilerToken::Int => Ok(self.parse_data_statement(ExpressionValueType::Int, None, None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
+            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, None, None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
             CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, None, None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(None, None)?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
             CompilerToken::Namespace => Ok(self.parse_namespace_statement(None)?.map_data(|x| ModuleTopLevelDeclaration::NamespaceStatement(x))),
@@ -1840,6 +1980,28 @@ impl<'a> CompilerParserInstance<'a> {
             BuiltinIdentifier::TargetArch => String::from("__target_arch"),
         }
     }
+    fn primitive_type_expression_to_source_text(expression: &PrimitiveTypeExpression) -> String {
+        match expression.primitive_type {
+            PrimitiveType::Void => String::from("void"),
+            PrimitiveType::Char => String::from("char"),
+            PrimitiveType::UnsignedChar => String::from("unsigned char"),
+            PrimitiveType::WideChar => String::from("wchar_t"),
+            PrimitiveType::ShortInt => String::from("short int"),
+            PrimitiveType::UnsignedShortInt => String::from("unsigned short int"),
+            PrimitiveType::Int => String::from("int"),
+            PrimitiveType::UnsignedInt => String::from("unsigned int"),
+            PrimitiveType::Float => String::from("float"),
+            PrimitiveType::Double => String::from("double"),
+            PrimitiveType::Bool => String::from("bool"),
+            PrimitiveType::LongInt => String::from("long int"),
+            PrimitiveType::UnsignedLongInt => String::from("unsigned long int"),
+            PrimitiveType::LongLongInt => String::from("long long int"),
+            PrimitiveType::UnsignedLongLongInt => String::from("unsigned long long int"),
+            PrimitiveType::Char8 => String::from("char8_t"),
+            PrimitiveType::Char16 => String::from("char16_t"),
+            PrimitiveType::Char32 => String::from("char32_t"),
+        }
+    }
     fn expression_to_source_text(expression: &Expression) -> String {
         match expression {
             Expression::UnaryExpression(expr) => Self::unary_expression_to_source_text(&**expr),
@@ -1852,6 +2014,7 @@ impl<'a> CompilerParserInstance<'a> {
             Expression::BlockExpression(expr) => Self::block_expression_to_source_text(&**expr),
             Expression::StructDeclarationExpression(expr) => Self::struct_declaration_expression_to_source_text(&**expr),
             Expression::BuiltinIdentifierExpression(expr) => Self::builtin_expression_to_source_text(&**expr),
+            Expression::PrimitiveTypeExpression(expr) => Self::primitive_type_expression_to_source_text(&**expr),
         }
     }
     fn block_declaration_to_source_text(declaration: &BlockDeclaration) -> String {

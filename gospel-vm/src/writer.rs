@@ -237,7 +237,7 @@ impl GospelSourceFunctionDefinition {
         if opcode != GospelOpcode::TypeUDTAddField && opcode != GospelOpcode::TypeUDTAddFieldWithUserAlignment &&
             opcode != GospelOpcode::TypeUDTAddBitfield && opcode != GospelOpcode::TypeUDTAddVirtualFunction && opcode != GospelOpcode::TypeUDTAllocate &&
             opcode != GospelOpcode::TypeUDTHasField && opcode != GospelOpcode::TypeUDTTypeofField && opcode != GospelOpcode::TypeUDTCalculateVirtualFunctionOffset &&
-            opcode != GospelOpcode::Abort {
+            opcode != GospelOpcode::Abort && opcode != GospelOpcode::TypePrimitiveCreate {
             bail!("Invalid opcode for named instruction (TypeLayoutAllocate, TypeLayoutDefineMember, TypeLayoutDoesMemberExist, TypeLayoutGetMemberOffset, TypeLayoutGetMemberSize, TypeLayoutGetMemberTypeLayout and Abort are allowed)");
         }
         let string_index = self.add_string_reference_internal(string);

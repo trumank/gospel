@@ -1,24 +1,19 @@
 ﻿import module::additional_module_file::MinimalStruct;
 
-struct void {};
-struct alignas(1) char {};
-struct alignas(4) float {};
-struct alignas(8) double {};
+// Definitions for types with explicit sizes
+type int8_t = char;
+type uint8_t = unsigned char;
+type int16_t = short int;
+type uint16_t = unsigned short int;
+type int32_t = int;
+type uint32_t = unsigned int;
+type int64_t = long long int;
+type uint64_t = unsigned long long int;
 
-struct alignas(char) int8_t {};
-struct alignas(2) int16_t {};
-struct alignas(4) int32_t {};
-struct alignas(8) int64_t {};
-struct alignas(__address_size) intptr_t {};
+type intptr_t = if (__address_size == 8) int64_t else int32_t;
+type uintptr_t = if (__address_size == 8) uint64_t else uint32_t;
 
-struct alignas(char) uint8_t {};
-struct alignas(2) uint16_t {};
-struct alignas(4) uint32_t {};
-struct alignas(8) uint64_t {};
 /* Test block comment */
-struct alignas(__address_size) uintptr_t {};
-
-// Test single line comment
 template<typename T>
 struct TVector {
     T X;
@@ -55,6 +50,17 @@ public struct TArray {
 };
 
 internal type FArrayOfInt32 = TArray<int32_t>;
+
+class UObject {
+    UObject* OuterPrivate;
+    UClass* ClassPrivate;
+    int32_t InternalIndex;
+    uint32_t FlagsPrivate;
+};
+
+class UField : UObject {};
+class UStruct : UField {};
+class UClass : UStruct {};
 
 type Test1 = TArray<int32_t>::typename TemplatedData<char>;
 type Test2 = TArray<float>::typename TemplatedData<char>;

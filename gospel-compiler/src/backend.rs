@@ -10,7 +10,7 @@ use gospel_vm::bytecode::GospelOpcode;
 use gospel_vm::module::GospelContainer;
 use gospel_vm::gospel::{GospelPlatformConfigProperty, GospelValueType};
 use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter, GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceObjectReference, GospelSourceSlotBinding, GospelSourceStaticValue, GospelSourceStructDefinition, GospelSourceStructField};
-use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, ExternStatement, DeclarationStatement, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayTypeExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, BuiltinIdentifierExpression, BuiltinIdentifier, DeclarationAccessSpecifier};
+use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, ExternStatement, DeclarationStatement, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayTypeExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, BuiltinIdentifierExpression, BuiltinIdentifier, DeclarationAccessSpecifier, PrimitiveTypeExpression};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CompilerSourceContext {
@@ -220,6 +220,7 @@ impl CompilerFunctionBuilder {
             Expression::MemberAccessExpression(member_access_expression) => { self.compile_member_access_expression(scope, &*member_access_expression) }
             Expression::StructDeclarationExpression(struct_declaration_expression) => { self.compile_struct_declaration_expression(scope, &*struct_declaration_expression) }
             Expression::BuiltinIdentifierExpression(builtin_identifier_expression) => { self.compile_builtin_identifier_expression(scope, &*builtin_identifier_expression) }
+            Expression::PrimitiveTypeExpression(primitive_type_expression) => { self.compile_primitive_type_expression(scope, &*primitive_type_expression) }
         }
     }
     fn compile_builtin_identifier_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &BuiltinIdentifierExpression) -> CompilerResult<ExpressionValueType> {
@@ -232,6 +233,11 @@ impl CompilerFunctionBuilder {
         let constant_slot_index = self.find_or_define_constant_slot(GospelValueType::Integer, GospelSourceSlotBinding::StaticValue(static_value), &source_context)?;
         self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, constant_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         Ok(ExpressionValueType::Int)
+    }
+    fn compile_primitive_type_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &PrimitiveTypeExpression) -> CompilerResult<ExpressionValueType> {
+        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
+        self.function_definition.add_string_instruction(GospelOpcode::TypePrimitiveCreate, &expression.primitive_type.to_string(), Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        Ok(ExpressionValueType::Typename)
     }
     fn compile_struct_declaration_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &StructStatement) -> CompilerResult<ExpressionValueType> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
@@ -717,7 +723,7 @@ impl CompilerFunctionBuilder {
     fn compile_return_value_expression(&mut self, scope: &Rc<CompilerLexicalScope>, source_context: &ASTSourceContext, expression: &Expression) -> CompilerResult<()> {
         let actual_source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: source_context.clone()};
         let return_value_type = self.compile_expression(scope, expression)?;
-        Self::check_expression_type(&scope.source_context, return_value_type, self.function_signature.return_value_type)?;
+        Self::check_expression_type(&scope.source_context, self.function_signature.return_value_type, return_value_type)?;
         self.function_definition.add_simple_instruction(GospelOpcode::SetReturnValue, Self::get_line_number(&actual_source_context)).with_source_context(&actual_source_context)?;
         self.function_definition.add_simple_instruction(GospelOpcode::Return, Self::get_line_number(&actual_source_context)).with_source_context(&actual_source_context)?;
         Ok({})
