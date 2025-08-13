@@ -5,9 +5,10 @@ use std::process::exit;
 use std::rc::Rc;
 use anyhow::{anyhow, bail};
 use clap::Parser;
-use gospel_vm::container::{GospelContainer};
+use gospel_typelib::type_model::{TargetTriplet, TypeGraphLike};
+use gospel_vm::module::{GospelContainer};
 use gospel_vm::reflection::{GospelContainerReflector, GospelModuleReflector};
-use gospel_vm::vm::{GospelVMContainer, GospelVMState, GospelVMTargetTriplet, GospelVMValue};
+use gospel_vm::vm::{GospelVMContainer, GospelVMRunContext, GospelVMState, GospelVMValue};
 use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter};
 use crate::assembler::GospelAssembler;
 use crate::ast::ExpressionValueType;
@@ -146,15 +147,15 @@ fn do_action_assemble(action: ActionAssembleModule) -> anyhow::Result<()> {
 fn do_action_call(action: ActionCallFunction) -> anyhow::Result<()> {
     // Parse target triplet
     let target_triplet = if let Some(target_triplet_name) = &action.target {
-        GospelVMTargetTriplet::parse(target_triplet_name.as_str())
+        TargetTriplet::parse(target_triplet_name.as_str())
             .map_err(|x| anyhow!("Failed to parse provided target triplet: {}", x.to_string()))?
     } else {
-        GospelVMTargetTriplet::current_target()
+        TargetTriplet::current_target()
             .ok_or_else(|| anyhow!("Current platform is not a valid target. Please specify target manually with --target "))?
     };
 
     // Load containers to the VM
-    let mut vm_state = GospelVMState::create(target_triplet);
+    let mut vm_state = GospelVMState::create();
     let mut all_containers: Vec<Rc<GospelVMContainer>> = Vec::new();
 
     for container_file_name in &action.input {
@@ -183,17 +184,20 @@ fn do_action_call(action: ActionCallFunction) -> anyhow::Result<()> {
     for argument_string in &action.function_args {
         let assembled_value = GospelAssembler::assemble_static_value("<repl>", argument_string.as_str(), None)
             .map_err(|x| anyhow!("Failed to assemble argument value \"{}\": {}", argument_string.clone(), x.to_string()))?;
-        let evaluated_value = vm_state.eval_source_value(&assembled_value)
+        let evaluated_value = vm_state.eval_source_value(&target_triplet, &assembled_value)
             .map_err(|x| anyhow!("Failed to eval argument value \"{}\": {}", argument_string.clone(), x.to_string()))?;
         function_arguments.push(evaluated_value);
     }
 
     // Evaluate the function
-    let function_result = result_function_pointer.execute(function_arguments)
+    let mut execution_context = GospelVMRunContext::create(&target_triplet);
+    let function_result = result_function_pointer.execute(function_arguments, &mut execution_context)
         .map_err(|x| anyhow!("Failed to execute function: {}", x.to_string()))?;
 
     // Print the result now
-    let serialized_result = serde_json::to_string_pretty(&function_result)?;
+    let serialized_result = if let GospelVMValue::TypeReference(type_index) = function_result {
+        serde_json::to_string_pretty(&execution_context.type_tree(type_index))?
+    } else { serde_json::to_string_pretty(&function_result)? };
     println!("{}", serialized_result);
     Ok({})
 }
@@ -279,10 +283,10 @@ fn do_action_compile(action: ActionCompileModule) -> anyhow::Result<()> {
 fn do_action_eval(action: ActionEvalExpression) -> anyhow::Result<()> {
     // Parse target triplet
     let target_triplet = if let Some(target_triplet_name) = &action.target {
-        GospelVMTargetTriplet::parse(target_triplet_name.as_str())
+        TargetTriplet::parse(target_triplet_name.as_str())
             .map_err(|x| anyhow!("Failed to parse provided target triplet: {}", x.to_string()))?
     } else {
-        GospelVMTargetTriplet::current_target()
+        TargetTriplet::current_target()
             .ok_or_else(|| anyhow!("Current platform is not a valid target. Please specify target manually with --target "))?
     };
     if action.input.is_empty() {
@@ -314,16 +318,19 @@ fn do_action_eval(action: ActionEvalExpression) -> anyhow::Result<()> {
     let function_reference = module_writer.add_simple_function("@stdin_repl", ExpressionValueType::Typename, &parsed_expression).to_simple_result()
         .map_err(|x| anyhow!("Failed to compile expression: {}", x))?;
 
-    let mut vm_state = GospelVMState::create(target_triplet);
+    let mut vm_state = GospelVMState::create();
     let mounted_container = vm_state.mount_container(module_writer.compile().to_simple_result()
         .map_err(|x| anyhow!("Failed to compile module: {}", x))?)?;
     let compiled_expression = mounted_container.find_named_function(function_reference.local_name.as_str()).ok_or_else(|| anyhow!("Failed to find compiled expression function"))?;
 
     // Evaluate the function
-    let function_result = compiled_expression.execute(Vec::new())
+    let mut execution_context = GospelVMRunContext::create(&target_triplet);
+    let function_result = compiled_expression.execute(Vec::new(), &mut execution_context)
         .map_err(|x| anyhow!("Failed to eval expression: {}", x.to_string()))?;
     // Print the result now
-    let serialized_result = serde_json::to_string_pretty(&function_result)?;
+    let serialized_result = if let GospelVMValue::TypeReference(type_index) = function_result {
+        serde_json::to_string_pretty(&execution_context.type_tree(type_index))?
+    } else { serde_json::to_string_pretty(&function_result)? };
     println!("{}", serialized_result);
     Ok({})
 }

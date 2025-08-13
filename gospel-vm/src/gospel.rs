@@ -1,74 +1,14 @@
 ﻿use serde::{Deserialize, Serialize};
 use strum_macros::{Display, EnumString, FromRepr};
+use gospel_typelib::type_model::TargetTriplet;
 use crate::bytecode::GospelInstruction;
-
-/// Corresponds to <arch> in LLVM target triplet
-/// Architecture determines the instruction set and, sometimes, the calling convention used (combined with sys)
-#[derive(Debug, PartialEq, Eq, Clone, Copy, EnumString)]
-#[repr(u8)]
-pub enum GospelTargetArch {
-    X86_64,
-    ARM64,
-    ARM64EC,
-}
-impl GospelTargetArch {
-    /// Returns the architecture current binary has been compiled for (if it can be represented)
-    pub fn current_arch() -> Option<GospelTargetArch> {
-        match std::env::consts::ARCH {
-            "x86_64" => Some(GospelTargetArch::X86_64),
-            "aarch64" => Some(GospelTargetArch::ARM64),
-            _ => None,
-        }
-    }
-}
-
-/// Corresponds to <sys> in LLVM target triplet
-/// Target system generally defines calling convention used and object file format
-#[derive(Debug, PartialEq, Eq, Clone, Copy, EnumString, Serialize, Deserialize)]
-pub enum GospelTargetOS {
-    None,
-    Win32,
-    Linux,
-    Darwin,
-}
-impl GospelTargetOS {
-    /// Returns the OS the binary has been compiled for (if it can be represented)
-    pub fn current_os() -> Option<GospelTargetOS> {
-        match std::env::consts::OS {
-            "windows" => Some(GospelTargetOS::Win32),
-            "linux" => Some(GospelTargetOS::Linux),
-            "android" => Some(GospelTargetOS::Linux),
-            "macos" => Some(GospelTargetOS::Darwin),
-            "ios" => Some(GospelTargetOS::Darwin),
-            _ => None,
-        }
-    }
-    /// Returns the default environment for the OS in question. Returns none for bare metal
-    pub fn default_env(self) -> Option<GospelTargetEnv> {
-        match self {
-            GospelTargetOS::None => None,
-            GospelTargetOS::Win32 => Some(GospelTargetEnv::MSVC),
-            GospelTargetOS::Linux => Some(GospelTargetEnv::Gnu),
-            GospelTargetOS::Darwin => Some(GospelTargetEnv::Macho),
-        }
-    }
-}
-
-/// Corresponds to <env> in LLVM target triplet
-/// Target env determines the ABI rules used for type layout calculation, for example semantics used for C++ class inheritance and exception handling
-#[derive(Debug, PartialEq, Eq, Clone, Copy, EnumString, Serialize, Deserialize)]
-pub enum GospelTargetEnv {
-    MSVC,
-    Gnu,
-    Macho,
-}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, Display, EnumString, FromRepr, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum GospelValueType {
     Integer,
     Closure,
-    TypeLayout,
+    TypeReference,
     Array,
     Struct,
 }
@@ -79,6 +19,17 @@ pub enum GospelPlatformConfigProperty {
     TargetOS, // target operating system (GospelTargetOS)
     TargetEnv, // target environment (GospelTargetEnv)
     AddressSize, // size of the address (a pointer) on the platform, in bytes (8 bytes for 64-bit platforms, 4 bytes for 32-bit platforms)
+}
+impl GospelPlatformConfigProperty {
+    /// Resolves a value of the platform config property
+    pub fn resolve(self, target: &TargetTriplet) -> i32 {
+        match self {
+            GospelPlatformConfigProperty::TargetArch => { target.arch as i32 }
+            GospelPlatformConfigProperty::TargetOS => { target.sys as i32 }
+            GospelPlatformConfigProperty::TargetEnv => { target.env as i32 }
+            GospelPlatformConfigProperty::AddressSize => { target.address_size() as i32 }
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, Serialize, Deserialize)]

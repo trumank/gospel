@@ -7,10 +7,10 @@ use anyhow::anyhow;
 use itertools::Itertools;
 use strum_macros::Display;
 use gospel_vm::bytecode::GospelOpcode;
-use gospel_vm::container::GospelContainer;
-use gospel_vm::gospel_type::{GospelPlatformConfigProperty, GospelValueType};
+use gospel_vm::module::GospelContainer;
+use gospel_vm::gospel::{GospelPlatformConfigProperty, GospelValueType};
 use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter, GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceObjectReference, GospelSourceSlotBinding, GospelSourceStaticValue, GospelSourceStructDefinition, GospelSourceStructField};
-use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, ExternStatement, DeclarationStatement, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayIndexExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, BuiltinIdentifierExpression, BuiltinIdentifier, DeclarationAccessSpecifier};
+use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, ExternStatement, DeclarationStatement, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayTypeExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, BuiltinIdentifierExpression, BuiltinIdentifier, DeclarationAccessSpecifier};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CompilerSourceContext {
@@ -216,7 +216,7 @@ impl CompilerFunctionBuilder {
             Expression::ConditionalExpression(conditional_expression) => { self.compile_conditional_expression(scope, &*conditional_expression) }
             Expression::BlockExpression(block_expression) => { self.compile_block_expression(scope, &*block_expression) }
             Expression::IntegerConstantExpression(constant_expression) => { self.compile_integer_constant_expression(scope, &*constant_expression) }
-            Expression::ArrayIndexExpression(array_index_expression) => { self.compile_array_index_expression(scope, &*array_index_expression) }
+            Expression::ArrayIndexExpression(array_index_expression) => { self.compile_array_type_expression(scope, &*array_index_expression) }
             Expression::MemberAccessExpression(member_access_expression) => { self.compile_member_access_expression(scope, &*member_access_expression) }
             Expression::StructDeclarationExpression(struct_declaration_expression) => { self.compile_struct_declaration_expression(scope, &*struct_declaration_expression) }
             Expression::BuiltinIdentifierExpression(builtin_identifier_expression) => { self.compile_builtin_identifier_expression(scope, &*builtin_identifier_expression) }
@@ -260,7 +260,7 @@ impl CompilerFunctionBuilder {
 
         let target_expression_type = self.compile_expression(scope, &expression.type_expression)?;
         Self::check_expression_type(&source_context, ExpressionValueType::Typename, target_expression_type)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutGetMetadata, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        self.function_definition.add_simple_instruction(GospelOpcode::TypeUDTGetMetadata, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
 
         if let Some(template_arguments) = &expression.template_arguments {
             // Member access expression is a closure call, so we need to read the value as the closure and then call it
@@ -279,9 +279,17 @@ impl CompilerFunctionBuilder {
             Ok(expression.member_type)
         }
     }
-    fn compile_array_index_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &ArrayIndexExpression) -> CompilerResult<ExpressionValueType> {
+    fn compile_array_type_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &ArrayTypeExpression) -> CompilerResult<ExpressionValueType> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
-        compiler_bail!(source_context, "Unimplemented: Array support in the type system is not implemented yet");
+
+        let element_expression_type = self.compile_expression(scope, &expression.element_type_expression)?;
+        Self::check_expression_type(&source_context, ExpressionValueType::Typename, element_expression_type)?;
+
+        let length_expression_type = self.compile_expression(scope, &expression.array_length_expression)?;
+        Self::check_expression_type(&source_context, ExpressionValueType::Int, length_expression_type)?;
+
+        self.function_definition.add_simple_instruction(GospelOpcode::TypeArrayCreate, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        Ok(ExpressionValueType::Typename)
     }
     fn compile_integer_constant_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &IntegerConstantExpression) -> CompilerResult<ExpressionValueType> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
@@ -439,8 +447,10 @@ impl CompilerFunctionBuilder {
                 if left_side_type == ExpressionValueType::Int {
                     self.function_definition.add_simple_instruction(GospelOpcode::Sub, Self::get_line_number(source_context)).with_source_context(source_context)?;
                     self.function_definition.add_simple_instruction(GospelOpcode::Ez, Self::get_line_number(source_context)).with_source_context(source_context)?;
+                } else if left_side_type == ExpressionValueType::Typename {
+                    self.function_definition.add_simple_instruction(GospelOpcode::TypeIsSameType, Self::get_line_number(source_context)).with_source_context(source_context)?;
                 } else {
-                    self.function_definition.add_simple_instruction(GospelOpcode::Equals, Self::get_line_number(source_context)).with_source_context(source_context)?;
+                    compiler_bail!(source_context, "Comparison is only allowed for integers and types");
                 }
                 Ok(ExpressionValueType::Int)
             }
@@ -449,8 +459,10 @@ impl CompilerFunctionBuilder {
                 if left_side_type == ExpressionValueType::Int {
                     self.function_definition.add_simple_instruction(GospelOpcode::Sub, Self::get_line_number(source_context)).with_source_context(source_context)?;
                     self.function_definition.add_simple_instruction(GospelOpcode::Ez, Self::get_line_number(source_context)).with_source_context(source_context)?;
+                } else if left_side_type == ExpressionValueType::Typename {
+                    self.function_definition.add_simple_instruction(GospelOpcode::TypeIsSameType, Self::get_line_number(source_context)).with_source_context(source_context)?;
                 } else {
-                    self.function_definition.add_simple_instruction(GospelOpcode::Equals, Self::get_line_number(source_context)).with_source_context(source_context)?;
+                    compiler_bail!(source_context, "Comparison is only allowed for integers and types");
                 }
                 self.function_definition.add_simple_instruction(GospelOpcode::Ez, Self::get_line_number(source_context)).with_source_context(source_context)?;
                 Ok(ExpressionValueType::Int)
@@ -512,17 +524,17 @@ impl CompilerFunctionBuilder {
         match expression.operator {
             UnaryOperator::StructAlignOf => {
                 Self::check_expression_type(&source_context, ExpressionValueType::Typename, inner_expression_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutGetAlignment, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+                self.function_definition.add_simple_instruction(GospelOpcode::TypeCalculateAlignment, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
                 Ok(ExpressionValueType::Int)
             }
             UnaryOperator::StructSizeOf => {
                 Self::check_expression_type(&source_context, ExpressionValueType::Typename, inner_expression_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutGetSize, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+                self.function_definition.add_simple_instruction(GospelOpcode::TypeCalculateSize, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
                 Ok(ExpressionValueType::Int)
             }
             UnaryOperator::StructMakePointer => {
                 Self::check_expression_type(&source_context, ExpressionValueType::Typename, inner_expression_type)?;
-                self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutCreatePointer, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+                self.function_definition.add_simple_instruction(GospelOpcode::TypePointerCreate, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
                 Ok(ExpressionValueType::Typename)
             }
             UnaryOperator::BoolNegate => {
@@ -706,7 +718,8 @@ impl CompilerFunctionBuilder {
         let actual_source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: source_context.clone()};
         let return_value_type = self.compile_expression(scope, expression)?;
         Self::check_expression_type(&scope.source_context, return_value_type, self.function_signature.return_value_type)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::ReturnValue, Self::get_line_number(&actual_source_context)).with_source_context(&actual_source_context)?;
+        self.function_definition.add_simple_instruction(GospelOpcode::SetReturnValue, Self::get_line_number(&actual_source_context)).with_source_context(&actual_source_context)?;
+        self.function_definition.add_simple_instruction(GospelOpcode::Return, Self::get_line_number(&actual_source_context)).with_source_context(&actual_source_context)?;
         Ok({})
     }
     fn compile_assignment_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &AssignmentStatement) -> CompilerResult<()> {
@@ -860,10 +873,13 @@ impl CompilerFunctionBuilder {
     }
     fn compile_type_layout_initialization(&mut self, type_name: &str) -> CompilerResult<u32> {
         let source_context = self.function_scope.source_context.clone();
-        let slot_index = self.function_definition.add_slot(GospelValueType::TypeLayout, GospelSourceSlotBinding::Uninitialized).with_source_context(&source_context)?;
+        let slot_index = self.function_definition.add_slot(GospelValueType::TypeReference, GospelSourceSlotBinding::Uninitialized).with_source_context(&source_context)?;
 
-        self.function_definition.add_string_instruction(GospelOpcode::TypeLayoutAllocate, type_name, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        self.function_definition.add_string_instruction(GospelOpcode::TypeUDTAllocate, type_name, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+
+        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        self.function_definition.add_simple_instruction(GospelOpcode::SetReturnValue, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         Ok(slot_index)
     }
     fn compile_type_layout_metadata_struct_initialization(&mut self, struct_meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<u32> {
@@ -879,7 +895,7 @@ impl CompilerFunctionBuilder {
 
         // Typename is a valid parameter to alignas(T) operator, and should be automatically coerced to the integral alignment
         if source_alignment_expression_type == ExpressionValueType::Typename {
-            self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutGetAlignment, Self::get_line_number(source_context)).with_source_context(source_context)?;
+            self.function_definition.add_simple_instruction(GospelOpcode::TypeCalculateAlignment, Self::get_line_number(source_context)).with_source_context(source_context)?;
             Ok(ExpressionValueType::Int)
         } else {
             // Should be an integer alignment otherwise
@@ -888,33 +904,30 @@ impl CompilerFunctionBuilder {
         }
     }
     fn compile_type_layout_alignment_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, alignment_expression: &Expression, source_context: &CompilerSourceContext) -> CompilerResult<()> {
-        self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
 
         let alignment_expression_type = self.compile_coerce_alignment_expression(scope, alignment_expression, source_context)?;
         Self::check_expression_type(source_context, ExpressionValueType::Int, alignment_expression_type)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutAlign, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
-
-        self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        self.function_definition.add_simple_instruction(GospelOpcode::TypeUDTSetUserAlignment, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         Ok({})
     }
     fn compile_type_layout_base_class_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, base_class_expression: &Expression, source_context: &CompilerSourceContext) -> CompilerResult<()> {
-        self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
 
         let base_class_expression_type = self.compile_expression(scope, base_class_expression)?;
         Self::check_expression_type(source_context, ExpressionValueType::Typename, base_class_expression_type)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutDefineBaseClass, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
-
-        self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        self.function_definition.add_simple_instruction(GospelOpcode::TypeUDTAddBaseClass, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         Ok({})
     }
     fn compile_type_layout_finalization(&mut self, type_layout_slot_index: u32, type_layout_metadata_slot_index: u32, source_context: &CompilerSourceContext) -> CompilerResult<()> {
-        self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
-
+        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_metadata_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutSetMetadata, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        self.function_definition.add_simple_instruction(GospelOpcode::TypeUDTAttachMetadata, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
 
-        self.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutFinalize, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::ReturnValue, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        self.function_definition.add_simple_instruction(GospelOpcode::TypeUDTFinalize, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+
+        self.function_definition.add_simple_instruction(GospelOpcode::Return, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         Ok({})
     }
     fn check_expression_type(context: &CompilerSourceContext, expected_type: ExpressionValueType, actual_type: ExpressionValueType) -> CompilerResult<()> {
@@ -1186,37 +1199,35 @@ struct CompilerStructMemberFragment {
 }
 impl CompilerStructFragmentGenerator for CompilerStructMemberFragment {
     fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, _type_layout_metadata_slot: u32, _meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<()> {
-        builder.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
-
-        // Align the current offset to the required alignment first if one is present
-        if let Some(alignment_expression) = &self.alignment_expression {
-            let alignment_expression_type = builder.compile_coerce_alignment_expression(&self.scope, alignment_expression, &self.source_context)?;
-            CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Int, alignment_expression_type)?;
-            builder.function_definition.add_simple_instruction(GospelOpcode::TypeLayoutAlign, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
-        }
+        builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
 
         // Compile member type expression
         let member_type_expression_type = builder.compile_expression(&self.scope, &self.member_type_expression)?;
         CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Typename, member_type_expression_type)?;
-
-        if let Some(array_size_expression) = &self.array_size_expression {
-            // If there is array size expression, this is an array member
-            let array_size_expression_type = builder.compile_expression(&self.scope, array_size_expression)?;
-            CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Int, array_size_expression_type)?;
-            builder.function_definition.add_string_instruction(GospelOpcode::TypeLayoutDefineArrayMember, self.member_name.as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
-
-        } else if let Some(bitfield_width_expression) = &self.bitfield_width_expression {
+        
+        if let Some(bitfield_width_expression) = &self.bitfield_width_expression {
             // If there is a bitfield width expression, this is a bitfield member
             let bitfield_width_expression_type = builder.compile_expression(&self.scope, bitfield_width_expression)?;
             CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Int, bitfield_width_expression_type)?;
-            builder.function_definition.add_string_instruction(GospelOpcode::TypeLayoutDefineBitfieldMember, self.member_name.as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
-
+            builder.function_definition.add_string_instruction(GospelOpcode::TypeUDTAddBitfield, self.member_name.as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         } else {
-            // Otherwise, this is a normal member
-            builder.function_definition.add_string_instruction(GospelOpcode::TypeLayoutDefineMember, self.member_name.as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            // If array size expression is present, we need to convert the given member type to an array implicitly
+            if let Some(array_size_expression) = &self.array_size_expression {
+                let array_size_expression_type = builder.compile_expression(&self.scope, array_size_expression)?;
+                CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Int, array_size_expression_type)?;
+                builder.function_definition.add_string_instruction(GospelOpcode::TypeArrayCreate, self.member_name.as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            }
+            
+            // If user-provided alignment expression is present, evaluate it and pass to the VM
+            if let Some(alignment_expression) = &self.alignment_expression {
+                let alignment_expression_type = builder.compile_coerce_alignment_expression(&self.scope, alignment_expression, &self.source_context)?;
+                CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Int, alignment_expression_type)?;
+                builder.function_definition.add_string_instruction(GospelOpcode::TypeUDTAddFieldWithUserAlignment, self.member_name.as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            } else {
+                // Otherwise, this is a normal field without explicit alignment
+                builder.function_definition.add_string_instruction(GospelOpcode::TypeUDTAddField, self.member_name.as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            }
         }
-
-        builder.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, type_layout_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         Ok({})
     }
 }
@@ -1321,7 +1332,7 @@ impl CompilerInstance {
     fn convert_value_type(value_type: ExpressionValueType) -> GospelValueType {
         match value_type {
             ExpressionValueType::Int => GospelValueType::Integer,
-            ExpressionValueType::Typename => GospelValueType::TypeLayout,
+            ExpressionValueType::Typename => GospelValueType::TypeReference,
             ExpressionValueType::Closure => GospelValueType::Closure,
             ExpressionValueType::MetaStruct => GospelValueType::Struct,
         }

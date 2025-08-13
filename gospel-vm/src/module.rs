@@ -1,4 +1,4 @@
-﻿use crate::gospel_type::{GospelExternalObjectReference, GospelFunctionDefinition, GospelStructDefinition};
+﻿use crate::gospel::{GospelExternalObjectReference, GospelFunctionDefinition, GospelStructDefinition};
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
 

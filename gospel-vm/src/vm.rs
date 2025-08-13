@@ -2,16 +2,19 @@
 use std::cmp::max;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
+use std::hash::{Hash, Hasher};
 use std::rc::{Rc};
+use std::str::FromStr;
 use anyhow::{anyhow, bail};
+use itertools::Itertools;
 use strum_macros::Display;
 use crate::bytecode::{GospelInstruction, GospelOpcode};
-use crate::container::GospelContainer;
-use crate::gospel_type::{GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelTargetArch, GospelTargetEnv, GospelTargetOS, GospelFunctionDefinition, GospelObjectIndex, GospelValueType};
+use crate::module::GospelContainer;
+use crate::gospel::{GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelFunctionDefinition, GospelObjectIndex, GospelValueType};
 use crate::writer::{GospelSourceObjectReference, GospelSourceStaticValue};
-use std::str::FromStr;
 use serde::{Deserialize, Serialize, Serializer};
 use serde::ser::SerializeStruct;
+use gospel_typelib::type_model::{ArrayType, CVQualifiedType, FunctionType, PointerType, PrimitiveType, ResolvedUDTLayout, ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeBitfield, UserDefinedTypeField, UserDefinedTypeMember, UserDefinedTypeVirtualFunction};
 use crate::reflection::{GospelContainerReflector, GospelModuleReflector};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,150 +81,55 @@ macro_rules! vm_bail {
     };
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GospelBaseClassLayout {
-    pub offset: usize,
-    pub actual_size: usize,
-    pub layout: GospelTypeLayout,
+/// Wrapper for Types that also contains metadata maintained by the VM
+#[derive(Debug)]
+struct GospelVMTypeWrapper {
+    wrapped_type: Type,
+    vm_metadata: Option<GospelVMStruct>,
+    owner_stack_frame_token: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GospelBitfieldLocation {
-    bitfield_bit_offset: usize,
-    bitfield_bit_width: usize,
+/// Run context allows caching results of function invocations and creating type graphs from individual types
+#[derive(Debug)]
+pub struct GospelVMRunContext {
+    target_triplet: TargetTriplet,
+    types: Vec<GospelVMTypeWrapper>,
+    simple_type_lookup: HashMap<Type, usize>,
+    call_result_lookup: HashMap<GospelVMClosure, Rc<RefCell<Option<GospelVMValue>>>>,
+    stack_frame_counter: usize,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GospelMemberLayout {
-    pub name: String,
-    pub offset: usize,
-    /// If this is a statically sized array, size of the array
-    pub array_size: Option<usize>,
-    /// If this is a bitfield, this is a location of the bitfield data in the member at the given offset
-    pub bitfield_location: Option<GospelBitfieldLocation>,
-    pub actual_size: usize,
-    pub layout: GospelTypeLayout,
-}
-
-/// Represents a fully resolved layout of a particular type
-/// This exposes information such as the size of the type, its alignment, unaligned size,
-/// and offsets, sizes and full type layouts of its members
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct GospelTypeLayout {
-    pub name: String,
-    pub alignment: usize,
-    pub unaligned_size: usize,
-    pub size: usize,
-    pub base_classes: Vec<GospelBaseClassLayout>,
-    pub members: Vec<GospelMemberLayout>,
-    pub pointee_type: Option<Box<GospelTypeLayout>>,
-    #[serde(skip_deserializing)]
-    pub metadata: Option<GospelVMStruct>,
-}
-impl GospelTypeLayout {
-    /// Creates a new type layout opaque to the VM. Additional members can be added manually if some transparency of the type layout is desired
-    pub fn create_opaque(name: String, alignment: usize, size: usize) -> GospelTypeLayout {
-        GospelTypeLayout{
-            name, alignment, size,
-            unaligned_size: size,
-            ..GospelTypeLayout::default()
-        }
+impl GospelVMRunContext {
+    pub fn create(target_triplet: &TargetTriplet) -> GospelVMRunContext {
+        GospelVMRunContext{target_triplet: target_triplet.clone(), types: Vec::new(), simple_type_lookup: HashMap::new(), call_result_lookup: HashMap::new(), stack_frame_counter: 1}
     }
-    // Note that returned base offset is absolute, not relative to the parent offset
-    pub fn get_base_offset(&self, base: &Self) -> Option<usize> {
-        if self.eq(base) {
-            return Some(0) // no offset, this is the base
-        }
-        for base_class in &self.base_classes {
-            if let Some(offset_from_base) = base_class.layout.get_base_offset(base) {
-                return Some(base_class.offset + offset_from_base) // indirect base, add offset of our direct base to the given value
-            }
-        }
-        None // this type is not based on the type provided
+    pub fn target_triplet(&self) -> &TargetTriplet {
+        &self.target_triplet
     }
-    // Note that returned member offset is absolute, not relative to the parent offset
-    pub fn find_named_member(&self, name: &str) -> Option<GospelMemberLayout> {
-        for member in &self.members {
-            if member.name == name {
-                return Some(member.clone()) // this is a direct member of a type
-            }
-        }
-        for base_class in &self.base_classes {
-            if let Some(base_member) = base_class.layout.find_named_member(name) {
-                return Some(GospelMemberLayout{
-                    name: base_member.name,
-                    offset: base_class.offset + base_member.offset,
-                    array_size: base_member.array_size,
-                    bitfield_location: base_member.bitfield_location,
-                    actual_size: base_member.actual_size,
-                    layout: base_member.layout,
-                }) // indirect member, add offset of our direct base to the given offset
-            }
-        }
-        None // member with the name does not exist in this type
+    fn new_stack_frame_token(&mut self) -> usize {
+        let result_stack_frame_token = self.stack_frame_counter;
+        self.stack_frame_counter += 1;
+        result_stack_frame_token
     }
-}
-
-/// Target triplet defines the target which the type layouts are being calculated for
-/// This includes the operating system, the processor architecture, and environment (ABI)
-/// This defines values of certain built-in input variables, as well as size of certain built-in
-/// platform-dependent types such as pointer, int or long int.
-#[derive(Debug, Clone, Copy)]
-pub struct GospelVMTargetTriplet {
-    pub arch: GospelTargetArch,
-    pub sys: GospelTargetOS,
-    pub env: GospelTargetEnv,
-}
-impl GospelVMTargetTriplet {
-    /// Returns the address size for the provided target triplet
-    pub fn address_size(&self) -> usize {
-        8 // All currently supported architectures are 64-bit
-    }
-    fn uses_aligned_base_class_size(&self) -> bool {
-        self.env == GospelTargetEnv::MSVC // MSVC uses aligned base class size when calculating layout of child class, GNU and Darwin use unaligned size
-    }
-    /// Resolves a value of the platform config property
-    pub fn resolve_platform_config_property(&self, property: GospelPlatformConfigProperty) -> i32 {
-        match property {
-            GospelPlatformConfigProperty::TargetArch => { self.arch as i32 }
-            GospelPlatformConfigProperty::TargetOS => { self.sys as i32 }
-            GospelPlatformConfigProperty::TargetEnv => { self.env as i32 }
-            GospelPlatformConfigProperty::AddressSize => { self.address_size() as i32 }
-        }
-    }
-    /// Returns the target that the current executable has been compiled for
-    pub fn current_target() -> Option<GospelVMTargetTriplet> {
-        let current_arch = GospelTargetArch::current_arch();
-        let current_os = GospelTargetOS::current_os();
-        let default_env = current_os.as_ref().and_then(|x| x.default_env());
-
-        if current_arch.is_none() || current_os.is_none() || default_env.is_none() {
-            None
-        } else { Some(GospelVMTargetTriplet{
-            arch: current_arch.unwrap(),
-            sys: current_os.unwrap(),
-            env: default_env.unwrap(),
-        }) }
-    }
-    pub fn parse(triplet_str: &str) -> anyhow::Result<GospelVMTargetTriplet> {
-        let splits: Vec<&str> = triplet_str.split('-').collect();
-        if splits.len() <= 2 {
-            bail!("Target triplet string too short, need at least 2 parts (<arch>-<os>)");
-        }
-        if splits.len() > 3 {
-            bail!("Target triplet string too long, should consist of at most 3 parts (<arch>-<os>-<env>)");
-        }
-        let arch = GospelTargetArch::from_str(splits[0])
-            .map_err(|x| anyhow!("Failed to parse arch: {}", x.to_string()))?;
-        let sys = GospelTargetOS::from_str(splits[1])
-            .map_err(|x| anyhow!("Failed to parse OS: {}", x.to_string()))?;
-        let env = if splits.len() >= 3 {
-            GospelTargetEnv::from_str(splits[2])
-                .map_err(|x| anyhow!("Failed to parse env: {}", x.to_string()))?
+    fn store_type(&mut self, type_data: Type) -> usize {
+        if let Some(existing_type_index) = self.simple_type_lookup.get(&type_data) {
+            *existing_type_index
         } else {
-            sys.default_env().ok_or_else(|| anyhow!("Default env for OS not available please specify env manually (<arch>-<os>-<env>)"))?
-        };
-        Ok(GospelVMTargetTriplet{arch, sys, env})
+            let new_type_index = self.types.len();
+            // Simple types cannot have VM metadata assigned to them
+            self.types.push(GospelVMTypeWrapper{wrapped_type: type_data.clone(), vm_metadata: None, owner_stack_frame_token: 0});
+            self.simple_type_lookup.insert(type_data, new_type_index);
+            new_type_index
+        }
+    }
+    fn store_user_defined_type(&mut self, type_data: UserDefinedType, stack_frame_token: usize) -> usize {
+        let new_type_index = self.types.len();
+        self.types.push(GospelVMTypeWrapper{wrapped_type: Type::UDT(type_data), vm_metadata: None, owner_stack_frame_token: stack_frame_token});
+        new_type_index
+    }
+}
+impl<'a> TypeGraphLike<'a> for GospelVMRunContext {
+    fn type_by_index(self: &'a Self, type_index: usize) -> &'a Type {
+        &self.types[type_index].wrapped_type
     }
 }
 
@@ -245,6 +153,14 @@ impl PartialEq for GospelVMClosure {
     }
 }
 impl Eq for GospelVMClosure {}
+impl Hash for GospelVMClosure {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let container_ptr = Rc::as_ptr(&self.container);
+        container_ptr.hash(state);
+        self.function_index.hash(state);
+        self.arguments.hash(state);
+    }
+}
 impl Display for GospelVMClosure {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let container_name = self.container.container_name().unwrap_or("<unknown>");
@@ -272,18 +188,18 @@ impl GospelVMClosure {
         } else { None }
     }
     /// Attempts to execute this closure and returns the result
-    pub fn execute(&self, args: Vec<GospelVMValue>) -> GospelVMResult<GospelVMValue> {
-        self.execute_internal(args, None)
+    pub fn execute(&self, args: Vec<GospelVMValue>, run_context: &mut GospelVMRunContext) -> GospelVMResult<GospelVMValue> {
+        self.execute_internal(args, run_context, None)
     }
-    fn execute_internal(&self, args: Vec<GospelVMValue>, previous_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<GospelVMValue> {
+    fn execute_internal(&self, args: Vec<GospelVMValue>, run_context: &mut GospelVMRunContext, previous_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<GospelVMValue> {
         if self.arguments.is_empty() {
-            self.container.execute_function_internal(self.function_index, &args, previous_frame)
+            self.container.execute_function_cached_internal(self.function_index, &args, run_context, previous_frame)
         } else if args.is_empty() {
-            self.container.execute_function_internal(self.function_index, &self.arguments, previous_frame)
+            self.container.execute_function_cached_internal(self.function_index, &self.arguments, run_context, previous_frame)
         } else {
             let mut concat_args = self.arguments.clone();
             concat_args.extend(args.into_iter());
-            self.container.execute_function_internal(self.function_index, &concat_args, previous_frame)
+            self.container.execute_function_cached_internal(self.function_index, &concat_args, run_context, previous_frame)
         }
     }
 }
@@ -328,6 +244,13 @@ impl PartialEq for GospelVMStruct {
     }
 }
 impl Eq for GospelVMStruct {}
+impl Hash for GospelVMStruct {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.fields.hash(state);
+        let template_ptr = Rc::as_ptr(&self.template);
+        template_ptr.hash(state);
+    }
+}
 impl Display for GospelVMStruct {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let module_name = self.template.source_container_name();
@@ -413,14 +336,14 @@ impl GospelVMStruct {
 /// Currently supported value types are integers, function pointers and type layouts
 /// Function pointers can be called to yield their return value
 /// Values can be compared for equality, but values of certain types might never be equivalent (for example, unnamed type layouts are never equivalent, even to themselves)
-#[derive(Debug, Clone, PartialEq, Eq, Display, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Display, Serialize)]
 pub enum GospelVMValue {
     #[strum(to_string = "Integer({0})")]
     Integer(i32), // signed 32-bit integer value
     #[strum(to_string = "Closure({0})")]
     Closure(GospelVMClosure), // pointer to a function with some number (or no) arguments captured with it
-    #[strum(to_string = "TypeLayout({0:#?})")]
-    TypeLayout(GospelTypeLayout), // pre-computed type layout
+    #[strum(to_string = "TypeLayout({0})")]
+    TypeReference(usize), // index of the type in the current run context
     #[strum(to_string = "Array({0:#?})")]
     Array(Vec<GospelVMValue>), // array of values
     #[strum(to_string = "Struct({0})")]
@@ -431,7 +354,7 @@ impl GospelVMValue {
         match self {
             GospelVMValue::Integer(_) => { GospelValueType::Integer }
             GospelVMValue::Closure(_) => { GospelValueType::Closure }
-            GospelVMValue::TypeLayout(_) => { GospelValueType::TypeLayout }
+            GospelVMValue::TypeReference(_) => { GospelValueType::TypeReference }
             GospelVMValue::Array(_) => { GospelValueType::Array }
             GospelVMValue::Struct(_) => { GospelValueType::Struct }
         }
@@ -455,6 +378,8 @@ struct GospelVMExecutionState<'a> {
     stack: Vec<GospelVMValue>,
     current_instruction_index: usize,
     current_loop_jump_count: usize,
+    return_value_slot: Rc<RefCell<Option<GospelVMValue>>>,
+    stack_frame_token: usize,
     previous_frame: Option<&'a GospelVMExecutionState<'a>>,
     recursion_counter: usize,
     max_stack_size: usize,
@@ -462,10 +387,6 @@ struct GospelVMExecutionState<'a> {
     max_recursion_depth: usize,
 }
 impl GospelVMExecutionState<'_> {
-    fn align_value(value: usize, align: usize) -> usize {
-        let reminder = if align == 0 { 0 } else { value % align };
-        if reminder == 0 { value } else { value + (align - reminder) }
-    }
     fn push_stack_check_overflow(&mut self, value: GospelVMValue) -> GospelVMResult<()> {
         if self.stack.len() > self.max_stack_size {
             vm_bail!(Some(self), "Stack overflow");
@@ -533,22 +454,133 @@ impl GospelVMExecutionState<'_> {
     fn unwrap_value_as_int_checked(&self, value: GospelVMValue) -> GospelVMResult<i32> {
         match value {
             GospelVMValue::Integer(unwrapped) => { Ok(unwrapped) }
-            _ => Err(vm_error!(Some(self), "Expected integer value, got value of different type"))
+            _ => Err(vm_error!(Some(self), "Expected integer value, got value of type {}", value.value_type()))
         }
     }
-    fn unwrap_value_as_function_pointer_checked(&self, value: GospelVMValue) -> GospelVMResult<GospelVMClosure> {
+    fn unwrap_value_as_closure_checked(&self, value: GospelVMValue) -> GospelVMResult<GospelVMClosure> {
         match value {
             GospelVMValue::Closure(unwrapped) => { Ok(unwrapped) }
-            _ => Err(vm_error!(Some(self), "Expected function pointer, got value of different type"))
+            _ => Err(vm_error!(Some(self), "Expected function pointer, got value of type {}", value.value_type()))
         }
     }
-    fn validate_type_layout_complete(&self, value: &GospelVMValue) -> GospelVMResult<()> {
-        if let GospelVMValue::TypeLayout(type_layout) = value {
-            if type_layout.size == 0 {
-                vm_bail!(Some(self), "Expected a complete type layout value, but got an incomplete type layout. Non-finalized type layouts cannot be read");
+    fn unwrap_value_as_array_checked(&self, value: GospelVMValue) -> GospelVMResult<Vec<GospelVMValue>> {
+        match value {
+            GospelVMValue::Array(unwrapped) => { Ok(unwrapped) }
+            _ => Err(vm_error!(Some(self), "Expected array value, got value of type {}", value.value_type()))
+        }
+    }
+    fn unwrap_value_as_struct_checked(&self, value: GospelVMValue) -> GospelVMResult<GospelVMStruct> {
+        match value {
+            GospelVMValue::Struct(unwrapped) => { Ok(unwrapped) }
+            _ => Err(vm_error!(Some(self), "Expected struct value, got value of type {}", value.value_type()))
+        }
+    }
+    fn validate_type_finalized(&self, type_index: usize, run_context: &GospelVMRunContext) -> GospelVMResult<()> {
+        if run_context.types[type_index].owner_stack_frame_token != 0 {
+            return Err(vm_error!(Some(self), "Type at index #{} is not finalized. Size of non-finalized types is unknown", type_index))
+        }
+        match &run_context.types[type_index].wrapped_type {
+            Type::Primitive(_) => Ok({}), // size of primitive types is always known
+            Type::Pointer(_) => Ok({}), // pointee type does not influence the size of the pointer
+            Type::UDT(_) => Ok({}), // user defined types can only be created from types with known sizes, so their size is also known once they are finalized
+            Type::Function(_) => Err(vm_error!(Some(self), "Function Type does not have a size (did you mean to wrap it in a pointer type?)")), // functions do not have a size
+            Type::Array(array_type) => self.validate_type_finalized(array_type.element_type_index, run_context),
+            Type::CVQualified(cv_qualified_type) => self.validate_type_finalized(cv_qualified_type.base_type_index, run_context),
+        }
+    }
+    fn validate_udt_type_not_finalized(&self, type_index: usize, run_context: &GospelVMRunContext) -> GospelVMResult<()> {
+        if run_context.types[type_index].owner_stack_frame_token == self.stack_frame_token {
+            Ok({})
+        } else {
+            Err(vm_error!(Some(self), "Type at index #{} is not owned by the current stack frame and cannot be modified", type_index))
+        }
+    }
+    fn validate_type_index_user_defined_type(&self, type_index: usize, run_context: &GospelVMRunContext) -> GospelVMResult<usize> {
+        if let Type::UDT(_) = run_context.type_by_index(type_index) {
+            Ok(type_index)
+        } else {
+            Err(vm_error!(Some(self), "Expected user-defined type at index #{}, got another type", type_index))
+        }
+    }
+    fn unwrap_value_as_type_index_checked(&self, value: GospelVMValue) -> GospelVMResult<usize> {
+        if let GospelVMValue::TypeReference(type_index) = value {
+           Ok(type_index)
+        } else {
+            Err(vm_error!(Some(self), "Expected a type reference, got value of type {}", value.value_type()))
+        }
+    }
+    fn unwrap_value_as_base_type_index_checked(&self, value: GospelVMValue, run_context: &GospelVMRunContext) -> GospelVMResult<usize> {
+        let type_index = self.unwrap_value_as_type_index_checked(value)?;
+        if let Type::CVQualified(cv_qualified_type) = run_context.type_by_index(type_index) {
+            Ok(cv_qualified_type.base_type_index)
+        } else { Ok(type_index) }
+    }
+    fn create_deep_base_class_iterator(&self, user_defined_type: &UserDefinedType, run_context: &GospelVMRunContext) -> impl Iterator<Item = usize> {
+        user_defined_type.base_class_indices.iter().cloned().chain(user_defined_type.base_class_indices.iter().flat_map(|base_class_type_index| {
+            if let Type::UDT(user_defined_base_class) = run_context.type_by_index(*base_class_type_index) {
+                self.create_deep_base_class_iterator(user_defined_base_class, run_context).collect::<Vec<usize>>()
+            } else { vec![] }
+        })).unique()
+    }
+    fn find_map_member_deep<T, S: Fn(&UserDefinedTypeMember) -> Option<T>>(&self, user_defined_type: &UserDefinedType, member_name: &String, map_function: &S, run_context: &GospelVMRunContext) -> Option<T> {
+        // Direct members are prioritized
+        for i in 0..user_defined_type.members.len() {
+            if user_defined_type.members[i].name() == Some(member_name) {
+                if let Some(existing_result) = map_function(&user_defined_type.members[i]) {
+                    return Some(existing_result)
+                }
             }
         }
-        Ok({})
+        // Base class members are used as a fallback
+        for i in 0..user_defined_type.base_class_indices.len() {
+            if let Type::UDT(user_defined_base_class) = run_context.type_by_index(user_defined_type.base_class_indices[i]) {
+                if let Some(base_class_result) = self.find_map_member_deep(user_defined_base_class, member_name, map_function, run_context) {
+                    return Some(base_class_result)
+                }
+            }
+        }
+        // Did not find member with the given name in this class or any base classes
+        None
+    }
+    fn find_base_class_offset_deep(&self, user_defined_type: &UserDefinedType, base_class_type_index: usize, base_offset: usize, run_context: &GospelVMRunContext) -> Option<usize> {
+        let computed_layout = user_defined_type.layout(run_context, &run_context.target_triplet);
+        // Direct base classes are prioritized
+        for i in 0..user_defined_type.base_class_indices.len() {
+            if user_defined_type.base_class_indices[i] == base_class_type_index {
+                return Some(base_offset + computed_layout.base_class_offsets[i])
+            }
+        }
+        // Indirect base classes are used as fallback
+        for i in 0..user_defined_type.base_class_indices.len() {
+            if let Type::UDT(user_defined_base_class) = run_context.type_by_index(user_defined_type.base_class_indices[i]) {
+                if let Some(base_class_result) = self.find_base_class_offset_deep(user_defined_base_class, base_class_type_index, base_offset + computed_layout.base_class_offsets[i], run_context) {
+                    return Some(base_class_result)
+                }
+            }
+        }
+        // Did not find the given base class as a direct or indirect base
+        None
+    }
+    fn find_map_member_layout_deep<T, S: Fn(usize, &ResolvedUDTLayout, &ResolvedUDTMemberLayout) -> Option<T>>(&self, user_defined_type: &UserDefinedType, member_name: &String, map_function: &S, base_offset: usize, run_context: &GospelVMRunContext) -> Option<T> {
+        let computed_layout = user_defined_type.layout(run_context, &run_context.target_triplet);
+        // Direct members are prioritized
+        for i in 0..user_defined_type.members.len() {
+            if user_defined_type.members[i].name() == Some(member_name) {
+                if let Some(existing_result) = map_function(base_offset, &computed_layout, &computed_layout.member_layouts[i]) {
+                    return Some(existing_result)
+                }
+            }
+        }
+        // Base class members are used as a fallback
+        for i in 0..user_defined_type.base_class_indices.len() {
+            if let Type::UDT(user_defined_base_class) = run_context.type_by_index(user_defined_type.base_class_indices[i]) {
+                if let Some(base_class_result) = self.find_map_member_layout_deep(user_defined_base_class, member_name, map_function, base_offset + computed_layout.base_class_offsets[i], run_context) {
+                    return Some(base_class_result)
+                }
+            }
+        }
+        // Did not find member with the given name in this class or any base classes
+        None
     }
     fn validate_struct_instance_template(&self, instance: &GospelVMStruct, template: &Rc<GospelVMStructTemplate>) -> GospelVMResult<()> {
         if !Rc::ptr_eq(&instance.template, template) {
@@ -556,40 +588,6 @@ impl GospelVMExecutionState<'_> {
                 template.struct_name().unwrap_or("<unnamed>"), instance.template.struct_name().unwrap_or("<unnamed>"));
         }
         Ok({})
-    }
-    fn unwrap_value_as_complete_type_layout_checked(&self, value: GospelVMValue) -> GospelVMResult<GospelTypeLayout> {
-        match value {
-            GospelVMValue::TypeLayout(unwrapped) => {
-                if unwrapped.size == 0 {
-                    vm_bail!(Some(self), "Expected a complete type layout value, but got an incomplete type layout. Non-finalized type layouts cannot be read");
-                }
-                Ok(unwrapped)
-            }
-            _ => Err(vm_error!(Some(self), "Expected type layout value, got value of a different type"))
-        }
-    }
-    fn unwrap_value_as_partial_type_layout_checked(&self, value: GospelVMValue) -> GospelVMResult<GospelTypeLayout> {
-        match value {
-            GospelVMValue::TypeLayout(unwrapped) => {
-                if unwrapped.size != 0 {
-                    vm_bail!(Some(self), "Expected a partial type layout, but got a complete type layout. Finalized type layouts cannot be written");
-                }
-                Ok(unwrapped)
-            }
-            _ => Err(vm_error!(Some(self), "Expected type layout value, got value of a different type"))
-        }
-    }
-    fn unwrap_value_as_array_checked(&self, value: GospelVMValue) -> GospelVMResult<Vec<GospelVMValue>> {
-        match value {
-            GospelVMValue::Array(unwrapped) => { Ok(unwrapped) }
-            _ => Err(vm_error!(Some(self), "Expected array value, got value of different type"))
-        }
-    }
-    fn unwrap_value_as_struct_checked(&self, value: GospelVMValue) -> GospelVMResult<GospelVMStruct> {
-        match value {
-            GospelVMValue::Struct(unwrapped) => { Ok(unwrapped) }
-            _ => Err(vm_error!(Some(self), "Expected struct value, got value of different type"))
-        }
     }
     fn do_bitwise_op<F: Fn(u32, u32) -> u32>(&mut self, op: F) -> GospelVMResult<()> {
         let stack_value_b = self.pop_stack_check_underflow().and_then(|x| self.unwrap_value_as_int_checked(x))? as u32;
@@ -602,16 +600,6 @@ impl GospelVMExecutionState<'_> {
         let stack_value_a = self.pop_stack_check_underflow().and_then(|x| self.unwrap_value_as_int_checked(x))?;
         let result = op(&self, stack_value_a, stack_value_b)?;
         self.push_stack_check_overflow(GospelVMValue::Integer(result))
-    }
-    fn do_member_access_op_checked<F: Fn(GospelMemberLayout) -> GospelVMValue>(&mut self, member_name_index: usize, op: F) -> GospelVMResult<()> {
-        let member_name = self.copy_referenced_string_checked(member_name_index)?;
-        let type_layout = self.pop_stack_check_underflow().and_then(|x| self.unwrap_value_as_complete_type_layout_checked(x))?;
-
-        let result_member = type_layout.find_named_member(member_name.as_str()).ok_or_else(|| {
-            vm_error!(Some(self), "Failed to find member named {} inside type {}", member_name.clone(), type_layout.name.clone())
-        })?;
-        op(result_member);
-        Ok({})
     }
     fn current_stack_frame(&self) -> GospelVMStackFrame {
         let module_name = self.owner_container.container_name().unwrap_or("<unknown>").to_string();
@@ -636,7 +624,7 @@ impl GospelVMExecutionState<'_> {
         }
         result_call_stack
     }
-    fn run(state: &mut GospelVMExecutionState) -> GospelVMResult<GospelVMValue> {
+    fn run(state: &mut GospelVMExecutionState, run_context: &mut GospelVMRunContext) -> GospelVMResult<()> {
         // Main VM loop
         state.current_instruction_index = 0;
         state.current_loop_jump_count = 0;
@@ -664,18 +652,7 @@ impl GospelVMExecutionState<'_> {
                 GospelOpcode::Pop => {
                     state.pop_stack_check_underflow()?;
                 }
-                GospelOpcode::Equals => {
-                    let stack_value_a = state.pop_stack_check_underflow()?;
-                    let stack_value_b = state.pop_stack_check_underflow()?;
-
-                    // This is a bit too aggressive, but we do not want incomplete type values to leak any information about their contents until they are finalized
-                    state.validate_type_layout_complete(&stack_value_a)?;
-                    state.validate_type_layout_complete(&stack_value_b)?;
-
-                    let result = stack_value_a == stack_value_b;
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result as i32))?;
-                }
-                GospelOpcode::ReturnValue => {
+                GospelOpcode::SetReturnValue => {
                     let stack_value = state.pop_stack_check_underflow()?;
                     if stack_value.value_type() != state.function_definition.return_value_type {
                         vm_bail!(Some(&state), "Incompatible return value type");
@@ -683,7 +660,10 @@ impl GospelVMExecutionState<'_> {
                     if !state.stack.is_empty() {
                         vm_bail!(Some(&state), "Stack not empty upon function return");
                     }
-                    return Ok(stack_value)
+                    if state.return_value_slot.borrow().is_some() {
+                        vm_bail!(Some(&state), "Function return value written multiple times; function can only return value once");
+                    }
+                    *state.return_value_slot.borrow_mut() = Some(stack_value);
                 }
                 GospelOpcode::Call => {
                     let number_of_arguments = state.immediate_value_checked(instruction, 0)? as usize;
@@ -692,11 +672,29 @@ impl GospelVMExecutionState<'_> {
                         let argument_value = state.pop_stack_check_underflow()?;
                         function_arguments[number_of_arguments - index - 1] = argument_value;
                     }
-                    let closure = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_function_pointer_checked(x))?;
+                    let closure = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_closure_checked(x))?;
                     if state.recursion_counter >= state.max_recursion_depth {
                         vm_bail!(Some(&state), "Recursion limit reached");
                     }
-                    let return_value = closure.execute_internal(function_arguments, Some(&state))?;
+                    let return_value = closure.execute_internal(function_arguments, run_context, Some(&state))?;
+                    state.push_stack_check_overflow(return_value)?;
+                }
+                GospelOpcode::PCall => {
+                    let number_of_arguments = state.immediate_value_checked(instruction, 0)? as usize;
+                    let mut function_arguments: Vec<GospelVMValue> = vec![GospelVMValue::Integer(0); number_of_arguments];
+                    for index in 0..number_of_arguments {
+                        let argument_value = state.pop_stack_check_underflow()?;
+                        function_arguments[number_of_arguments - index - 1] = argument_value;
+                    }
+                    let closure = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_closure_checked(x))?;
+                    if state.recursion_counter >= state.max_recursion_depth {
+                        vm_bail!(Some(&state), "Recursion limit reached");
+                    }
+                    let execution_result = closure.execute_internal(function_arguments, run_context, Some(&state)).ok();
+
+                    let success_code = if execution_result.is_some() { 1 } else { 0 };
+                    let return_value = execution_result.unwrap_or(GospelVMValue::Integer(0));
+                    state.push_stack_check_overflow(GospelVMValue::Integer(success_code))?;
                     state.push_stack_check_overflow(return_value)?;
                 }
                 GospelOpcode::BindClosure => {
@@ -706,7 +704,7 @@ impl GospelVMExecutionState<'_> {
                         let argument_value = state.pop_stack_check_underflow()?;
                         closure_arguments[number_of_arguments - index - 1] = argument_value;
                     }
-                    let mut closure = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_function_pointer_checked(x))?;
+                    let mut closure = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_closure_checked(x))?;
                     closure.arguments.append(&mut closure_arguments);
                     if closure.arguments.len() >= state.max_stack_size {
                         vm_bail!(Some(&state), "Closure captured argument number limit reached");
@@ -722,6 +720,10 @@ impl GospelVMExecutionState<'_> {
                     let stack_value = state.pop_stack_check_underflow()?;
                     let result = stack_value.value_type() as i32;
                     state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::Return => {
+                    // Return unconditionally breaks from the instruction loop
+                    break;
                 }
                 // Logical opcodes
                 GospelOpcode::And => { state.do_bitwise_op(|a, b| a & b)?; }
@@ -796,258 +798,545 @@ impl GospelVMExecutionState<'_> {
                     let old_slot_value = state.borrow_slot_value_checked(slot_index)?;
                     state.push_stack_check_overflow(old_slot_value)?;
                 }
-                // Type layout access opcodes
-                GospelOpcode::TypeLayoutGetSize => {
-                    let type_layout = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_complete_type_layout_checked(x))?;
-                    state.push_stack_check_overflow(GospelVMValue::Integer(type_layout.size as i32))?;
-                }
-                GospelOpcode::TypeLayoutGetAlignment => {
-                    let type_layout = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_complete_type_layout_checked(x))?;
-                    state.push_stack_check_overflow(GospelVMValue::Integer(type_layout.alignment as i32))?;
-                }
-                GospelOpcode::TypeLayoutGetUnalignedSize => {
-                    let type_layout = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_complete_type_layout_checked(x))?;
-                    state.push_stack_check_overflow(GospelVMValue::Integer(type_layout.unaligned_size as i32))?;
-                }
-                GospelOpcode::TypeLayoutDoesMemberExist => {
-                    let member_name_index = state.immediate_value_checked(instruction, 0)? as usize;
-                    let member_name = state.copy_referenced_string_checked(member_name_index)?;
-                    let type_layout = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_complete_type_layout_checked(x))?;
-
-                    let result = type_layout.members.iter().any(|x| x.name == member_name);
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result as i32))?;
-                }
-                GospelOpcode::TypeLayoutGetMemberSize => {
-                    let member_name_index = state.immediate_value_checked(instruction, 0)? as usize;
-                    state.do_member_access_op_checked(member_name_index, |x| GospelVMValue::Integer(x.actual_size as i32))?;
-                }
-                GospelOpcode::TypeLayoutGetMemberOffset => {
-                    let member_name_index = state.immediate_value_checked(instruction, 0)? as usize;
-                    state.do_member_access_op_checked(member_name_index, |x| GospelVMValue::Integer(x.offset as i32))?;
-                }
-                GospelOpcode::TypeLayoutGetMemberTypeLayout => {
-                    let member_name_index = state.immediate_value_checked(instruction, 0)? as usize;
-                    state.do_member_access_op_checked(member_name_index, |x| GospelVMValue::TypeLayout(x.layout))?;
-                }
-                GospelOpcode::TypeLayoutIsChildOf => {
-                    let child_layout = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_complete_type_layout_checked(x))?;
-                    let parent_layout = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_complete_type_layout_checked(x))?;
-
-                    let result = child_layout.get_base_offset(&parent_layout).is_some();
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result as i32))?;
-                }
-                GospelOpcode::TypeLayoutGetOffsetOfBase => {
-                    let child_layout = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_complete_type_layout_checked(x))?;
-                    let parent_layout = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_complete_type_layout_checked(x))?;
-
-                    let result = child_layout.get_base_offset(&parent_layout)
-                        .ok_or_else(|| vm_error!(Some(&state), "Type {} is not a base of type {}", child_layout.name.clone(), parent_layout.name.clone()))?;
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result as i32))?;
-                }
-                // Structure opcodes
-                GospelOpcode::TypeLayoutAllocate => {
-                    let type_name_index = state.immediate_value_checked(instruction, 0)? as usize;
-                    let type_name = state.copy_referenced_string_checked(type_name_index)?;
-
-                    let allocated_layout = GospelTypeLayout{
-                        name: type_name,
-                        alignment: 1,
-                        unaligned_size: 0,
-                        size: 0, // size 0 is an implicit marked of a partial type layout
-                        ..GospelTypeLayout::default()
+                // Type creation opcodes
+                GospelOpcode::TypeAddConstantQualifier => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    let result_type = if let Type::CVQualified(cv_qualified_type) = &run_context.type_by_index(type_index) {
+                        CVQualifiedType{base_type_index: cv_qualified_type.base_type_index, constant: true, volatile: cv_qualified_type.volatile}
+                    } else {
+                        CVQualifiedType{base_type_index: type_index, constant: true, volatile: false}
                     };
-                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(allocated_layout))?;
+                    let result_type_index = run_context.store_type(Type::CVQualified(result_type));
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
                 }
-                GospelOpcode::TypeLayoutAlign => {
-                    let stack_value = state.pop_stack_check_underflow()?;
-                    let alignment = state.unwrap_value_as_int_checked(stack_value)? as usize;
-                    let mut layout_builder = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_partial_type_layout_checked(x))?;
+                GospelOpcode::TypeAddVolatileQualifier => {
+                    let base_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    let result_type = if let Type::CVQualified(cv_qualified_type) = &run_context.type_by_index(base_type_index) {
+                        CVQualifiedType{base_type_index: cv_qualified_type.base_type_index, constant: cv_qualified_type.constant, volatile: true}
+                    } else {
+                        CVQualifiedType{base_type_index, constant: false, volatile: true}
+                    };
+                    let result_type_index = run_context.store_type(Type::CVQualified(result_type));
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
+                }
+                GospelOpcode::TypePrimitiveCreate => {
+                    let primitive_type_name_index = state.immediate_value_checked(instruction, 0)? as usize;
+                    let primitive_type_name = state.copy_referenced_string_checked(primitive_type_name_index)?;
 
-                    if alignment == 0 {
-                        vm_bail!(Some(&state), "Invalid alignment of zero (division by zero)");
+                    let primitive_type = PrimitiveType::from_str(&primitive_type_name)
+                        .map_err(|x| vm_error!(Some(&state), "Unknown primitive type name: {} ({})", primitive_type_name, x))?;
+                    let result_type_index = run_context.store_type(Type::Primitive(primitive_type));
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
+                }
+                GospelOpcode::TypePointerCreate => {
+                    let pointee_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    let pointer_type = PointerType{pointee_type_index};
+                    let result_type_index = run_context.store_type(Type::Pointer(pointer_type));
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
+                }
+                GospelOpcode::TypeArrayCreate => {
+                    let array_length = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
+                    let element_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_finalized(element_type_index, run_context)?;
+
+                    let array_type = ArrayType{element_type_index, array_length};
+                    let result_type_index = run_context.store_type(Type::Array(array_type));
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
+                }
+                GospelOpcode::TypeFunctionCreateGlobal => {
+                    let number_of_arguments = state.immediate_value_checked(instruction, 0)? as usize;
+                    let mut argument_type_indices: Vec<usize> = vec![0; number_of_arguments];
+                    for index in 0..number_of_arguments {
+                        let argument_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                        argument_type_indices[number_of_arguments - index - 1] = argument_value;
                     }
-                    layout_builder.alignment = max(layout_builder.alignment, alignment);
-                    layout_builder.unaligned_size = Self::align_value(layout_builder.unaligned_size, alignment);
-                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
+                    let return_value_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+
+                    let function_type = FunctionType{return_value_type_index, argument_type_indices, this_type_index: None};
+                    let result_type_index = run_context.store_type(Type::Function(function_type));
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
                 }
-                GospelOpcode::TypeLayoutPad => {
-                    let stack_value = state.pop_stack_check_underflow()?;
-                    let padding_bytes = state.unwrap_value_as_int_checked(stack_value)? as usize;
-                    let mut layout_builder = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_partial_type_layout_checked(x))?;
+                GospelOpcode::TypeFunctionCreateMember => {
+                    let number_of_arguments = state.immediate_value_checked(instruction, 0)? as usize;
+                    let mut argument_type_indices: Vec<usize> = vec![0; number_of_arguments];
+                    for index in 0..number_of_arguments {
+                        let argument_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                        argument_type_indices[number_of_arguments - index - 1] = argument_value;
+                    }
+                    let return_value_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    let this_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
 
-                    layout_builder.unaligned_size += padding_bytes;
-                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
+                    let function_type = FunctionType{return_value_type_index, argument_type_indices, this_type_index: Some(this_type_index)};
+                    let result_type_index = run_context.store_type(Type::Function(function_type));
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
                 }
-                GospelOpcode::TypeLayoutDefineBaseClass => {
-                    let stack_value = state.pop_stack_check_underflow()?;
-                    let base_class_layout = state.unwrap_value_as_complete_type_layout_checked(stack_value)?;
-                    let mut layout_builder = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_partial_type_layout_checked(x))?;
+                GospelOpcode::TypeUDTAllocate => {
+                    let type_name_index = state.immediate_value_checked(instruction, 0)? as i32;
+                    let type_name = if type_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(type_name_index as usize)?) };
 
-                    // Make sure the alignment requirement is met for the base class
-                    layout_builder.alignment = max(layout_builder.alignment, base_class_layout.alignment);
-                    layout_builder.unaligned_size = Self::align_value(layout_builder.unaligned_size, base_class_layout.alignment);
-
-                    // Actual class size differs depending on ABI used, on MSVC aligned base class size is used, while on GNU/Darwin
-                    // unaligned class size is used, saving some space on derived types that are inherited from base classes ending with alignment padding
-                    let actual_base_class_size = if state.owner_container.target_triplet.uses_aligned_base_class_size() {
-                        base_class_layout.size
-                    } else { base_class_layout.unaligned_size };
-
-                    layout_builder.base_classes.push(GospelBaseClassLayout{
-                        offset: layout_builder.unaligned_size,
-                        actual_size: actual_base_class_size,
-                        layout: base_class_layout,
-                    });
-                    layout_builder.unaligned_size += actual_base_class_size;
-                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
+                    let user_defined_type = UserDefinedType{name: type_name, ..UserDefinedType::default()};
+                    let result_type_index = run_context.store_user_defined_type(user_defined_type, state.stack_frame_token);
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
                 }
-                GospelOpcode::TypeLayoutDefineMember => {
-                    let member_name_index = state.immediate_value_checked(instruction, 0)? as usize;
-                    let member_name = state.copy_referenced_string_checked(member_name_index)?;
+                GospelOpcode::TypeUDTSetUserAlignment => {
+                    let user_type_alignment = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
 
-                    let stack_value = state.pop_stack_check_underflow()?;
-                    let member_layout = state.unwrap_value_as_complete_type_layout_checked(stack_value)?;
-                    let mut layout_builder = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_partial_type_layout_checked(x))?;
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_udt_type_not_finalized(type_index, run_context)?;
 
-                    // Make sure the alignment requirement is met for the member
-                    layout_builder.alignment = max(layout_builder.alignment, member_layout.alignment);
-                    layout_builder.unaligned_size = Self::align_value(layout_builder.unaligned_size, member_layout.alignment);
-
-                    let actual_size = member_layout.size;
-                    layout_builder.members.push(GospelMemberLayout{
-                        name: member_name,
-                        offset: layout_builder.unaligned_size,
-                        array_size: None,
-                        bitfield_location: None,
-                        actual_size,
-                        layout: member_layout,
-                    });
-                    layout_builder.unaligned_size += actual_size;
-                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
+                    if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
+                        user_defined_type.user_alignment = Some(max(user_defined_type.user_alignment.unwrap_or(1), user_type_alignment));
+                    }
                 }
-                GospelOpcode::TypeLayoutDefineArrayMember => {
-                    let member_name_index = state.immediate_value_checked(instruction, 0)? as usize;
-                    let member_name = state.copy_referenced_string_checked(member_name_index)?;
+                GospelOpcode::TypeUDTAddBaseClass => {
+                    // Base class must be complete by the time it is added to this class
+                    let base_class_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_index_user_defined_type(base_class_type_index, run_context)?;
+                    state.validate_type_finalized(base_class_type_index, run_context)?;
 
-                    let array_size = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
-                    let member_layout = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_complete_type_layout_checked(x))?;
-                    let mut layout_builder = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_partial_type_layout_checked(x))?;
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_udt_type_not_finalized(type_index, run_context)?;
 
-                    // Make sure the alignment requirement is met for the member
-                    layout_builder.alignment = max(layout_builder.alignment, member_layout.alignment);
-                    layout_builder.unaligned_size = Self::align_value(layout_builder.unaligned_size, member_layout.alignment);
-
-                    let actual_size = member_layout.size * array_size;
-                    layout_builder.members.push(GospelMemberLayout{
-                        name: member_name,
-                        offset: layout_builder.unaligned_size,
-                        array_size: Some(array_size),
-                        bitfield_location: None,
-                        actual_size,
-                        layout: member_layout,
-                    });
-                    layout_builder.unaligned_size += actual_size;
-                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
+                    if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
+                        if user_defined_type.base_class_indices.contains(&base_class_type_index) {
+                            vm_bail!(Some(state), "Base class #{} specified more than once as a direct base class for type #{}", base_class_type_index, type_index);
+                        }
+                        user_defined_type.base_class_indices.push(base_class_type_index);
+                    }
                 }
-                GospelOpcode::TypeLayoutDefineBitfieldMember => {
-                    let member_name_index = state.immediate_value_checked(instruction, 0)? as usize;
-                    let member_name = state.copy_referenced_string_checked(member_name_index)?;
+                GospelOpcode::TypeUDTAddField => {
+                    let field_name_index = state.immediate_value_checked(instruction, 0)? as i32;
+                    let field_name = if field_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(field_name_index as usize)?) };
+
+                    // Field type must be complete by the time it is added to UDT
+                    let field_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_finalized(field_type_index, run_context)?;
+
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_udt_type_not_finalized(type_index, run_context)?;
+
+                    if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
+                        if field_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == field_name.as_ref()) {
+                            vm_bail!(Some(state), "Type #{} already contains a definition for field named {}", type_index, field_name.as_ref().unwrap());
+                        }
+                        let result_field = UserDefinedTypeField{name: field_name, user_alignment: None, member_type_index: field_type_index};
+                        user_defined_type.members.push(UserDefinedTypeMember::Field(result_field))
+                    }
+                }
+                GospelOpcode::TypeUDTAddFieldWithUserAlignment => {
+                    let field_name_index = state.immediate_value_checked(instruction, 0)? as i32;
+                    let field_name = if field_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(field_name_index as usize)?) };
+
+                    let user_alignment = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
+
+                    // Field type must be complete by the time it is added to UDT
+                    let field_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_finalized(field_type_index, run_context)?;
+
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_udt_type_not_finalized(type_index, run_context)?;
+
+                    if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
+                        if field_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == field_name.as_ref()) {
+                            vm_bail!(Some(state), "Type #{} already contains a definition for field named {}", type_index, field_name.as_ref().unwrap());
+                        }
+                        let result_field = UserDefinedTypeField{name: field_name, user_alignment: Some(user_alignment), member_type_index: field_type_index};
+                        user_defined_type.members.push(UserDefinedTypeMember::Field(result_field))
+                    }
+                }
+                GospelOpcode::TypeUDTAddBitfield => {
+                    let field_name_index = state.immediate_value_checked(instruction, 0)? as i32;
+                    let field_name = if field_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(field_name_index as usize)?) };
 
                     let bitfield_width = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
-                    let member_layout = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_complete_type_layout_checked(x))?;
-                    let mut layout_builder = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_partial_type_layout_checked(x))?;
 
-                    // See if we can fit this bitfield at the offset allocated to the previous member, given that it is of the same type and has enough bits of unallocated storage left
-                    if let Some(previous_bitfield_member) = layout_builder.members.last() &&
-                        let Some(previous_bitfield_location) = &previous_bitfield_member.bitfield_location &&
-                        previous_bitfield_member.layout == member_layout &&
-                        let new_bitfield_start_offset = previous_bitfield_location.bitfield_bit_offset + previous_bitfield_location.bitfield_bit_width &&
-                        let member_layout_bit_width = previous_bitfield_member.actual_size * 8 &&
-                        new_bitfield_start_offset + bitfield_width <= member_layout_bit_width {
-
-                        let new_bitfield_location = GospelBitfieldLocation{
-                            bitfield_bit_offset: new_bitfield_start_offset,
-                            bitfield_bit_width: bitfield_width,
-                        };
-                        let new_bitfield_member = GospelMemberLayout{
-                            name: member_name,
-                            offset: previous_bitfield_member.offset,
-                            array_size: None,
-                            bitfield_location: Some(new_bitfield_location),
-                            actual_size: previous_bitfield_member.actual_size,
-                            layout: previous_bitfield_member.layout.clone(),
-                        };
-                        layout_builder.members.push(new_bitfield_member);
+                    // Bitfield must be of a primitive type
+                    let field_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    let primitive_field_type = if let Type::Primitive(primitive_type) = &run_context.type_by_index(field_type_index) {
+                        primitive_type.clone()
                     } else {
-                        // We could not fit this bitfield into the previous member, so we need to allocate storage for it at the end of the struct
-                        layout_builder.alignment = max(layout_builder.alignment, member_layout.alignment);
-                        layout_builder.unaligned_size = Self::align_value(layout_builder.unaligned_size, member_layout.alignment);
-
-                        let new_bitfield_location = GospelBitfieldLocation{
-                            bitfield_bit_offset: 0,
-                            bitfield_bit_width: bitfield_width,
-                        };
-                        let actual_size = member_layout.size;
-                        let new_bitfield_member = GospelMemberLayout{
-                            name: member_name,
-                            offset: layout_builder.unaligned_size,
-                            array_size: None,
-                            bitfield_location: Some(new_bitfield_location),
-                            actual_size,
-                            layout: member_layout,
-                        };
-                        layout_builder.members.push(new_bitfield_member);
-                        layout_builder.unaligned_size += actual_size;
-                    }
-                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
-                }
-                GospelOpcode::TypeLayoutFinalize => {
-                    let mut layout_builder = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_partial_type_layout_checked(x))?;
-
-                    // Make sure the size is at least one byte, and calculate the aligned size from unaligned size
-                    if layout_builder.unaligned_size == 0 {
-                        layout_builder.unaligned_size = 1;
-                    }
-                    layout_builder.size = Self::align_value(layout_builder.unaligned_size, layout_builder.alignment);
-                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
-                }
-                GospelOpcode::TypeLayoutSetMetadata => {
-                    let metadata_struct = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_struct_checked(x))?;
-                    let mut layout_builder = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_partial_type_layout_checked(x))?;
-
-                    layout_builder.metadata = Some(metadata_struct);
-                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(layout_builder))?;
-                }
-                GospelOpcode::TypeLayoutGetMetadata => {
-                    let type_layout = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_complete_type_layout_checked(x))?;
-                    let metadata_struct = type_layout.metadata.ok_or_else(|| vm_error!(Some(&state), "Type layout metadata not set on type layout"))?;
-                    state.push_stack_check_overflow(GospelVMValue::Struct(metadata_struct))?;
-                }
-                GospelOpcode::TypeLayoutCreatePointer => {
-                    let pointee_type_layout = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_complete_type_layout_checked(x))?;
-                    let pointer_type_layout = GospelTypeLayout{
-                        name: format!("{}*", pointee_type_layout.name.as_str()),
-                        alignment: state.owner_container.target_triplet.address_size(),
-                        unaligned_size: state.owner_container.target_triplet.address_size(),
-                        size: state.owner_container.target_triplet.address_size(),
-                        base_classes: Vec::new(),
-                        members: Vec::new(),
-                        pointee_type: Some(Box::new(pointee_type_layout)),
-                        metadata: None,
+                        vm_bail!(Some(state), "Bitfields can only be created from primitive types, type #{} is not a primitive type", field_type_index);
                     };
-                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(pointer_type_layout))?;
+
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_udt_type_not_finalized(type_index, run_context)?;
+
+                    if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
+                        if field_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == field_name.as_ref()) {
+                            vm_bail!(Some(state), "Type #{} already contains a definition for field named {}", type_index, field_name.as_ref().unwrap());
+                        }
+                        let result_bitfield = UserDefinedTypeBitfield{name: field_name, primitive_type: primitive_field_type, bitfield_width};
+                        user_defined_type.members.push(UserDefinedTypeMember::Bitfield(result_bitfield))
+                    }
                 }
-                GospelOpcode::TypeLayoutIsPointer => {
-                    let type_layout = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_complete_type_layout_checked(x))?;
-                    let result = if type_layout.pointee_type.is_some() { 1 } else { 0 };
+                GospelOpcode::TypeUDTAddVirtualFunction => {
+                    let function_name_index = state.immediate_value_checked(instruction, 0)? as i32;
+                    let function_name = if function_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(function_name_index as usize)?) };
+
+                    let function_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_udt_type_not_finalized(type_index, run_context)?;
+
+                    // Function signature cannot be marked as volatile, only as const
+                    let base_function_type_index = if let Type::CVQualified(cv_qualified_type) = run_context.type_by_index(function_type_index) {
+                        if cv_qualified_type.volatile {
+                            vm_bail!(Some(state), "Function signature types cannot be marked as volatile");
+                        }
+                        cv_qualified_type.base_type_index
+                    } else { function_type_index };
+
+                    // Function signature has to be a function type, with a receiver explicitly set to this type
+                    if let Type::Function(function_type) = run_context.type_by_index(base_function_type_index) {
+                        if let Some(receiver_type_index) = function_type.this_type_index {
+                            if receiver_type_index != type_index {
+                                vm_bail!(Some(state), "Virtual function type must have owner UDT as a receiver type");
+                            }
+                        } else {
+                            vm_bail!(Some(state), "Virtual function type must be a member function type");
+                        }
+                    }
+
+                    if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
+                        if function_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == function_name.as_ref()) {
+                            vm_bail!(Some(state), "Type #{} already contains a definition for field named {}", type_index, function_name.as_ref().unwrap());
+                        }
+                        let result_function = UserDefinedTypeVirtualFunction{name: function_name, function_type_index};
+                        user_defined_type.members.push(UserDefinedTypeMember::VirtualFunction(result_function))
+                    }
+                }
+                GospelOpcode::TypeUDTAttachMetadata => {
+                    let metadata_struct = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_struct_checked(x))?;
+
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_udt_type_not_finalized(type_index, run_context)?;
+
+                    run_context.types[type_index].vm_metadata = Some(metadata_struct);
+                }
+                GospelOpcode::TypeUDTFinalize => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_udt_type_not_finalized(type_index, run_context)?;
+
+                    // Resetting the stack frame token seals the type and prevents any future modifications to it
+                    run_context.types[type_index].owner_stack_frame_token = 0;
+                }
+                // Type access opcodes
+                GospelOpcode::TypeIsSameType => {
+                    // We do not retrieve base types here, but compare given types directly -- const A is not the same type as A
+                    let type_index_a = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    let type_index_b = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+
+                    let result = if type_index_a == type_index_b { 1 } else { 0 };
                     state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
                 }
-                GospelOpcode::TypeLayoutGetPointerPointeeType => {
-                    let type_layout = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_complete_type_layout_checked(x))?;
-                    if type_layout.pointee_type.is_none() {
-                        vm_bail!(Some(&state), "Attempt to get pointee type from a non-pointer type");
-                    }
-                    state.push_stack_check_overflow(GospelVMValue::TypeLayout(*type_layout.pointee_type.unwrap()))?;
+                GospelOpcode::TypeGetBaseType => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(type_index))?;
+                }
+                GospelOpcode::TypeIsPrimitiveType => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    let result = if matches!(run_context.type_by_index(type_index), Type::Primitive(_)) { 1 } else { 0 };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeIsPointerType => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    let result = if matches!(run_context.type_by_index(type_index), Type::Pointer(_)) { 1 } else { 0 };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeIsArrayType => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    let result = if matches!(run_context.type_by_index(type_index), Type::Array(_)) { 1 } else { 0 };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeIsFunctionType => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    let result = if matches!(run_context.type_by_index(type_index), Type::Function(_)) { 1 } else { 0 };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeIsUDTType => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    let result = if matches!(run_context.type_by_index(type_index), Type::UDT(_)) { 1 } else { 0 };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypePointerGetPointeeType => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+
+                    let result_type_index = if let Type::Pointer(pointer_type) = run_context.type_by_index(type_index) {
+                        pointer_type.pointee_type_index
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not a pointer type; cannot retrieve pointee type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
+                }
+                GospelOpcode::TypeArrayGetElementType => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+
+                    let result_type_index = if let Type::Array(array_type) = run_context.type_by_index(type_index) {
+                        array_type.element_type_index
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not an array type; cannot retrieve element type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
+                }
+                GospelOpcode::TypeArrayGetLength => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+
+                    let result = if let Type::Array(array_type) = run_context.type_by_index(type_index) {
+                        array_type.array_length as i32
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not an array type; cannot retrieve length", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeUDTIsBaseClassOf => {
+                    let base_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    state.validate_type_index_user_defined_type(base_type_index, run_context)?;
+                    state.validate_type_finalized(base_type_index, run_context)?;
+
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_type_finalized(type_index, run_context)?;
+
+                    let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
+                        if state.create_deep_base_class_iterator(user_defined_type, run_context).contains(&base_type_index) { 1 } else { 0 }
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeUDTHasField => {
+                    let field_name_index = state.immediate_value_checked(instruction, 0)? as usize;
+                    let field_name = state.copy_referenced_string_checked(field_name_index)?;
+
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_type_finalized(type_index, run_context)?;
+
+                    let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
+                        let has_field = state.find_map_member_deep(user_defined_type, &field_name, &|x| if matches!(x, UserDefinedTypeMember::Field(_)) { Some({}) } else { None }, run_context);
+                        if has_field.is_some() { 1 } else { 0 }
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeUDTTypeofField => {
+                    let field_name_index = state.immediate_value_checked(instruction, 0)? as usize;
+                    let field_name = state.copy_referenced_string_checked(field_name_index)?;
+
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_type_finalized(type_index, run_context)?;
+
+                    let result_type_index = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
+                        state.find_map_member_deep(user_defined_type, &field_name, &|x| if let UserDefinedTypeMember::Field(field) = x { Some(field.member_type_index) } else { None }, run_context)
+                            .ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have a field named {}", type_index, field_name))?
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
+                }
+                GospelOpcode::TypeUDTGetMetadata => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_type_finalized(type_index, run_context)?;
+
+                    let metadata_struct = run_context.types[type_index].vm_metadata.clone()
+                        .ok_or_else(|| vm_error!(Some(&state), "Type layout metadata not set on type layout"))?;
+                    state.push_stack_check_overflow(GospelVMValue::Struct(metadata_struct))?;
+                }
+                GospelOpcode::TypeFunctionIsMemberFunction => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+
+                    let result = if let Type::Function(function_type) = run_context.type_by_index(type_index) {
+                        if function_type.this_type_index.is_some() { 1 } else { 0 }
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not a function type; cannot determine whenever it is a member function or not", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeFunctionGetThisType => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+
+                    let result_type_index = if let Type::Function(function_type) = run_context.type_by_index(type_index) {
+                        if let Some(this_type_index) = function_type.this_type_index { this_type_index } else {
+                            vm_bail!(Some(state), "Function Type #{} is not a member function", type_index);
+                        }
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not a function type; cannot retrieve this type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
+                }
+                GospelOpcode::TypeFunctionGetReturnValueType => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+
+                    let result_type_index = if let Type::Function(function_type) = run_context.type_by_index(type_index) {
+                        function_type.return_value_type_index
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not a function type; cannot retrieve return value type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
+                }
+                GospelOpcode::TypeFunctionGetArgumentCount => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+
+                    let result = if let Type::Function(function_type) = run_context.type_by_index(type_index) {
+                        function_type.argument_type_indices.len() as i32
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not a function type; cannot determine argument count", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeFunctionGetArgumentType => {
+                    let argument_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+
+                    let result_type_index = if let Type::Function(function_type) = run_context.type_by_index(type_index) {
+                        if argument_index < function_type.argument_type_indices.len() {
+                            function_type.argument_type_indices[argument_index]
+                        } else {
+                            vm_bail!(Some(state), "Function Type #{} does not have argument at index #{}", type_index, argument_index);
+                        }
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not a function type; cannot determine argument count", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
+                }
+                // Type layout calculation opcodes
+                GospelOpcode::TypeCalculateSize => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_finalized(type_index, run_context)?;
+
+                    let result = run_context.type_by_index(type_index).size(run_context, &run_context.target_triplet) as i32;
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeCalculateAlignment => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_finalized(type_index, run_context)?;
+
+                    let result = run_context.type_by_index(type_index).alignment(run_context, &run_context.target_triplet) as i32;
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeUDTCalculateUnalignedSize => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_type_finalized(type_index, run_context)?;
+
+                    let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
+                        user_defined_type.layout(run_context, &run_context.target_triplet).unaligned_size as i32
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeUDTHasVTable => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_type_finalized(type_index, run_context)?;
+
+                    let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
+                        if user_defined_type.layout(run_context, &run_context.target_triplet).vtable.is_some() { 1 } else { 0 }
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeUDTCalculateVTableSizeAndOffset => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_type_finalized(type_index, run_context)?;
+
+                    let vtable = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
+                        user_defined_type.layout(run_context, &run_context.target_triplet).vtable
+                            .ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have a virtual function table", type_index))?
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(vtable.size as i32))?;
+                    state.push_stack_check_overflow(GospelVMValue::Integer(vtable.slot_size as i32))?;
+                    state.push_stack_check_overflow(GospelVMValue::Integer(vtable.offset as i32))?;
+                }
+                GospelOpcode::TypeUDTCalculateBaseOffset => {
+                    let base_class_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    state.validate_type_index_user_defined_type(base_class_index, run_context)?;
+                    state.validate_type_finalized(base_class_index, run_context)?;
+
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_type_finalized(type_index, run_context)?;
+
+                    let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
+                        state.find_base_class_offset_deep(user_defined_type, base_class_index, 0, run_context)
+                            .ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have Type #{} as a Base Class", type_index, base_class_index))? as i32
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeUDTCalculateVirtualFunctionOffset => {
+                    let function_name_index = state.immediate_value_checked(instruction, 0)? as usize;
+                    let function_name = state.copy_referenced_string_checked(function_name_index)?;
+
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_type_finalized(type_index, run_context)?;
+
+                    let (vtable_offset, function_offset) = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
+                        state.find_map_member_layout_deep(user_defined_type, &function_name, &|offset, layout, member| {
+                            if let ResolvedUDTMemberLayout::VirtualFunction(x) = &member { Some((offset + layout.vtable.as_ref().unwrap().offset, x.offset)) } else { None }
+                        }, 0, run_context)
+                        .ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have a virtual function with name {}", type_index, function_name))?
+                    } else {
+                        vm_bail!(Some(&state), "Type #{} is not a user defined type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(function_offset as i32))?;
+                    state.push_stack_check_overflow(GospelVMValue::Integer(vtable_offset as i32))?;
+                }
+                GospelOpcode::TypeUDTCalculateFieldOffset => {
+                    let field_name_index = state.immediate_value_checked(instruction, 0)? as usize;
+                    let field_name = state.copy_referenced_string_checked(field_name_index)?;
+
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_type_finalized(type_index, run_context)?;
+
+                    let field_offset = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
+                        state.find_map_member_layout_deep(user_defined_type, &field_name, &|offset, _, member| {
+                            if let ResolvedUDTMemberLayout::Field(x) = &member { Some(offset + x.offset) } else { None }
+                        }, 0, run_context)
+                        .ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have a field with name {}", type_index, field_name))?
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(field_offset as i32))?;
+                }
+                GospelOpcode::TypeUDTCalculateBitfieldOffsetBitOffsetAndBitWidth => {
+                    let field_name_index = state.immediate_value_checked(instruction, 0)? as usize;
+                    let field_name = state.copy_referenced_string_checked(field_name_index)?;
+
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_type_finalized(type_index, run_context)?;
+
+                    let (field_offset, field_bit_offset, field_bit_width) = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
+                        state.find_map_member_layout_deep(user_defined_type, &field_name, &|offset, _, member| {
+                            if let ResolvedUDTMemberLayout::Bitfield(x) = &member { Some((offset + x.offset, x.bitfield_offset, x.bitfield_width)) } else { None }
+                        }, 0, run_context)
+                            .ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have a field with name {}", type_index, field_name))?
+                    } else {
+                        vm_bail!(Some(&state), "Type #{} is not a user defined type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(field_bit_width as i32))?;
+                    state.push_stack_check_overflow(GospelVMValue::Integer(field_bit_offset as i32))?;
+                    state.push_stack_check_overflow(GospelVMValue::Integer(field_offset as i32))?;
                 }
                 // Array opcodes
                 GospelOpcode::ArrayGetLength => {
@@ -1222,14 +1511,16 @@ impl GospelVMExecutionState<'_> {
                 }
             };
         }
-        // Function should always at the very least return a value, empty function code or fall through without return is an error
-        vm_bail!(Some(&state), "Function failed to return a value");
+        // Function should always return the value by the time it returns
+        if state.return_value_slot.borrow().is_none() {
+            vm_bail!(Some(&state), "Function failed to return a value");
+        }
+        Ok({})
     }
 }
 
 #[derive(Debug)]
 pub struct GospelVMContainer {
-    target_triplet: GospelVMTargetTriplet,
     container: Rc<GospelContainer>,
     external_references: Vec<Rc<GospelVMContainer>>,
     global_lookup_by_id: HashMap<usize, Rc<GospelGlobalStorage>>,
@@ -1281,7 +1572,7 @@ impl GospelVMContainer {
             }
         }
     }
-    fn resolve_static_value(self: &Rc<Self>, value: &GospelStaticValue) -> anyhow::Result<GospelVMValue> {
+    fn resolve_static_value(self: &Rc<Self>, run_context: &mut GospelVMRunContext, value: &GospelStaticValue) -> anyhow::Result<GospelVMValue> {
         match value {
             GospelStaticValue::Integer(integer_value) => {
                 Ok(GospelVMValue::Integer(*integer_value))
@@ -1299,18 +1590,18 @@ impl GospelVMContainer {
                 Ok(GospelVMValue::Integer(current_value))
             }
             GospelStaticValue::PlatformConfigProperty(config_property) => {
-                let resolved_value = self.target_triplet.resolve_platform_config_property(*config_property);
+                let resolved_value = config_property.resolve(&run_context.target_triplet);
                 Ok(GospelVMValue::Integer(resolved_value))
             }
         }
     }
-    fn resolve_slot_binding(self: &Rc<Self>, type_definition: &GospelFunctionDefinition, slot: &GospelSlotDefinition, args: &Vec<GospelVMValue>) -> anyhow::Result<Option<GospelVMValue>> {
+    fn resolve_slot_binding(self: &Rc<Self>, run_context: &mut GospelVMRunContext, type_definition: &GospelFunctionDefinition, slot: &GospelSlotDefinition, args: &Vec<GospelVMValue>) -> anyhow::Result<Option<GospelVMValue>> {
         match slot.binding {
             GospelSlotBinding::Uninitialized => {
                 Ok(None)
             }
             GospelSlotBinding::StaticValue(static_value) => {
-                let resolved_value = self.resolve_static_value(&static_value)?;
+                let resolved_value = self.resolve_static_value(run_context, &static_value)?;
                 if slot.value_type != resolved_value.value_type() {
                     bail!("Slot value type is not compatible with static value type specified")
                 }
@@ -1358,13 +1649,40 @@ impl GospelVMContainer {
             }
         }
     }
-    fn execute_function_internal(self: &Rc<Self>, index: u32, args: &Vec<GospelVMValue>, previous_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<GospelVMValue> {
+    fn execute_function_cached_internal(self: &Rc<Self>, index: u32, args: &Vec<GospelVMValue>, run_context: &mut GospelVMRunContext, previous_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<GospelVMValue> {
+        let key_closure = GospelVMClosure{container: self.clone(), function_index: index, arguments: args.clone()};
+
+        // Check if we have previously called this function with the same argument list. If we have, reuse the previously calculated value
+        if let Some(existing_return_value_slot) = run_context.call_result_lookup.get(&key_closure) {
+            // If there is an existing return value in the slot, this function is either currently on the stack with a return value pre-set, or is on the stack and not completed yet
+            return if let Some(existing_return_value) = existing_return_value_slot.borrow().clone() {
+                Ok(existing_return_value)
+            } else {
+                Err(vm_error!(previous_frame, "Attempt to recursively call {} with the same arguments as the existing stack frame - this will always result in infinite recursion"))
+            }
+        }
+
+        // We have not previously called this function with the matching argument list, so prepare the stack frame and run the bytecode
+        let return_value_slot = Rc::new(RefCell::new(None));
+        run_context.call_result_lookup.insert(key_closure.clone(), return_value_slot.clone());
+        let execution_result = self.execute_function_direct_internal(index, args, &return_value_slot, run_context, previous_frame);
+
+        // Cleanup the cached call result if we actually failed to call this function to not leave it lingering as empty
+        if let Err(execution_error) = execution_result {
+            run_context.call_result_lookup.remove(&key_closure);
+            return Err(execution_error);
+        }
+        // Copy the value from the return value slot
+        return_value_slot.borrow().clone().ok_or_else(|| vm_error!(previous_frame, "Function failed to return a value"))
+    }
+    fn execute_function_direct_internal(self: &Rc<Self>, index: u32, args: &Vec<GospelVMValue>, return_value_slot: &Rc<RefCell<Option<GospelVMValue>>>, run_context: &mut GospelVMRunContext, previous_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<()> {
         if index as usize >= self.container.functions.len() {
             vm_bail!(previous_frame, "Invalid function index #{} out of bounds (num functions in container: {})", index, self.container.functions.len());
         }
         let function_definition = &self.container.functions[index as usize];
 
         // Construct a fresh VM state
+        let stack_frame_token = run_context.new_stack_frame_token();
         let mut vm_state = GospelVMExecutionState{
             owner_container: self,
             function_definition: &function_definition,
@@ -1375,6 +1693,8 @@ impl GospelVMContainer {
             current_instruction_index: 0,
             current_loop_jump_count: 0,
             recursion_counter: previous_frame.map(|x| x.recursion_counter).unwrap_or(0),
+            return_value_slot: return_value_slot.clone(),
+            stack_frame_token,
             previous_frame,
             max_stack_size: 256, // TODO: Make limits configurable
             max_loop_jumps: 8192,
@@ -1383,8 +1703,8 @@ impl GospelVMContainer {
 
         // Populate slots with their initial values
         for slot_index in 0..function_definition.slots.len() {
-            let slot_value = self.resolve_slot_binding(function_definition, &function_definition.slots[slot_index], args)
-            .map_err(|x| vm_error!(previous_frame, "Failed to bind slot #{} value: {}", slot_index, x.to_string()))?;
+            let slot_value = self.resolve_slot_binding(run_context, function_definition, &function_definition.slots[slot_index], args)
+                .map_err(|x| vm_error!(previous_frame, "Failed to bind slot #{} value: {}", slot_index, x.to_string()))?;
             vm_state.slots.push(slot_value)
         }
 
@@ -1392,14 +1712,12 @@ impl GospelVMContainer {
         for string_index in &function_definition.referenced_strings {
             vm_state.referenced_strings.push(self.container.strings.get(*string_index).with_frame_context(previous_frame)?.to_string());
         }
-
         // Populate referenced structs
         for struct_index in &function_definition.referenced_structs {
             vm_state.referenced_structs.push(self.resolve_struct_template(struct_index).with_frame_context(previous_frame)?);
         }
-
         // Run the VM now to calculate the result of the function
-        GospelVMExecutionState::run(&mut vm_state)
+        GospelVMExecutionState::run(&mut vm_state, run_context)
     }
     /// Creates a module reflector from this container
     pub fn reflect(self: &Rc<Self>) -> anyhow::Result<Box<dyn GospelModuleReflector>> {
@@ -1413,7 +1731,6 @@ impl GospelVMContainer {
 /// Function definitions can be retrieved with find_named_function
 /// WARNING: VM instances are NOT thread safe, and must be wrapped into RWLock to be safely usable concurrently
 pub struct GospelVMState {
-    target_triplet: GospelVMTargetTriplet,
     containers: Vec<Rc<GospelVMContainer>>,
     containers_by_name: HashMap<String, Rc<GospelVMContainer>>,
     globals_by_name: HashMap<String, Rc<GospelGlobalStorage>>,
@@ -1422,8 +1739,8 @@ impl GospelVMState {
 
     /// Creates a new, blank VM state with the provided platform config
     /// Type contains must be mounted to the VM by calling mount_container
-    pub fn create(target_triplet: GospelVMTargetTriplet) -> Self {
-        Self{target_triplet, containers: Vec::new(), containers_by_name: HashMap::new(), globals_by_name: HashMap::new()}
+    pub fn create() -> Self {
+        Self{containers: Vec::new(), containers_by_name: HashMap::new(), globals_by_name: HashMap::new()}
     }
 
     /// Adds a new gospel container to the VM. Returns the created container
@@ -1444,7 +1761,6 @@ impl GospelVMState {
         }
 
         let mut vm_container = GospelVMContainer{
-            target_triplet: self.target_triplet.clone(),
             container: wrapped_container.clone(),
             external_references,
             global_lookup_by_id: HashMap::new(),
@@ -1492,11 +1808,6 @@ impl GospelVMState {
         Ok(wrapped_vm_container)
     }
 
-    /// Returns the target triplet being used by this VM instance
-    pub fn get_platform_config(&self) -> GospelVMTargetTriplet {
-        self.target_triplet.clone()
-    }
-
     /// Returns a list of modules currently loaded into this VM instance
     pub fn enumerate_modules(&self) -> Vec<Rc<GospelVMContainer>> {
         self.containers.clone()
@@ -1531,7 +1842,7 @@ impl GospelVMState {
     }
 
     /// Allows evaluating a source value without building a container first (REPL-like API)
-    pub fn eval_source_value(&self, value: &GospelSourceStaticValue) -> anyhow::Result<GospelVMValue> {
+    pub fn eval_source_value(&self, target_triplet: &TargetTriplet, value: &GospelSourceStaticValue) -> anyhow::Result<GospelVMValue> {
         match value {
             GospelSourceStaticValue::FunctionId(function_reference) => {
                 self.find_function_by_reference(&function_reference)
@@ -1547,7 +1858,7 @@ impl GospelVMState {
                 Ok(GospelVMValue::Integer(*integer_value))
             }
             GospelSourceStaticValue::PlatformConfigProperty(config_property) => {
-                Ok(GospelVMValue::Integer(self.target_triplet.resolve_platform_config_property(*config_property)))
+                Ok(GospelVMValue::Integer(config_property.resolve(target_triplet)))
             }
         }
     }

@@ -213,6 +213,7 @@ dependencies = [
  "bitflags",
  "clap",
  "fancy-regex",
+ "gospel-typelib",
  "gospel-vm",
  "itertools",
  "logos",
@@ -237,6 +238,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bitcode",
+ "gospel-typelib",
+ "itertools",
  "serde",
  "strum",
  "strum_macros",

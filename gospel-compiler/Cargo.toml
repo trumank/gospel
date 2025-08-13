@@ -9,6 +9,7 @@ edition.workspace = true
 
 [dependencies]
 gospel-vm = { version = "0.1.0", path = "../gospel-vm" }
+gospel-typelib = { version = "0.1.0", path = "../gospel-typelib" }
 logos = "0.14.2"
 anyhow = "1.0.93"
 strum_macros = "0.26.3"

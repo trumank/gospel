@@ -1,7 +1,7 @@
 ﻿use std::collections::HashMap;
 use std::rc::Rc;
-use crate::container::{GospelContainer};
-use crate::gospel_type::GospelValueType;
+use crate::module::{GospelContainer};
+use crate::gospel::GospelValueType;
 
 /// Reflected information about a global variable declared by a module
 #[derive(Debug, Clone, PartialEq, Eq)]

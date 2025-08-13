@@ -6,7 +6,7 @@ use bitflags::{bitflags};
 use logos::{Lexer, Logos};
 use strum_macros::Display;
 use gospel_vm::bytecode::{GospelInstruction, GospelOpcode};
-use gospel_vm::gospel_type::{GospelPlatformConfigProperty, GospelValueType};
+use gospel_vm::gospel::{GospelPlatformConfigProperty, GospelValueType};
 use gospel_vm::writer::{GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceObjectReference, GospelSourceSlotBinding, GospelSourceStaticValue, GospelSourceStructDefinition, GospelSourceStructField};
 use std::str::FromStr;
 use crate::lex_util::get_line_number_and_offset_from_index;
@@ -536,7 +536,7 @@ impl GospelAssembler {
         let mut constant_definition = GospelSourceFunctionDefinition::create(constant_declaration);
         let constant_slot_index = constant_definition.add_slot(return_value_type, GospelSourceSlotBinding::StaticValue(constant_value)).map_err(|x| ctx.fail(x.to_string()))?;
         constant_definition.add_slot_instruction(GospelOpcode::LoadSlot, constant_slot_index, line_number as i32).map_err(|x| ctx.fail(x.to_string()))?;
-        constant_definition.add_simple_instruction(GospelOpcode::ReturnValue, line_number as i32).map_err(|x| ctx.fail(x.to_string()))?;
+        constant_definition.add_simple_instruction(GospelOpcode::SetReturnValue, line_number as i32).map_err(|x| ctx.fail(x.to_string()))?;
 
         self.visitor.borrow_mut().define_function(constant_definition)
             .map_err(|x| ctx.fail(x.to_string()))

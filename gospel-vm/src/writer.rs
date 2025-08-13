@@ -3,8 +3,8 @@ use std::fmt::{Debug, Display, Formatter};
 use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
 use crate::bytecode::{GospelInstruction, GospelOpcode};
-use crate::container::{GospelContainer, GospelContainerImport, GospelContainerVersion, GospelGlobalDefinition};
-use crate::gospel_type::{GospelExternalObjectReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelFunctionArgument, GospelFunctionDefinition, GospelObjectIndex, GospelValueType, GospelStructDefinition, GospelFunctionDebugData, GospelStructFieldDefinition};
+use crate::module::{GospelContainer, GospelContainerImport, GospelContainerVersion, GospelGlobalDefinition};
+use crate::gospel::{GospelExternalObjectReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelFunctionArgument, GospelFunctionDefinition, GospelObjectIndex, GospelValueType, GospelStructDefinition, GospelFunctionDebugData, GospelStructFieldDefinition};
 
 /// Represents a reference to a function
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -234,9 +234,9 @@ impl GospelSourceFunctionDefinition {
         self.code[fixup.instruction_index as usize].set_immediate_operand(fixup.operand_index as usize, target_instruction_index)
     }
     pub fn add_string_instruction(&mut self, opcode: GospelOpcode, string: &str, line_number: i32) -> anyhow::Result<u32> {
-        if opcode != GospelOpcode::TypeLayoutDefineMember && opcode != GospelOpcode::TypeLayoutDoesMemberExist &&
-            opcode != GospelOpcode::TypeLayoutGetMemberOffset && opcode != GospelOpcode::TypeLayoutGetMemberSize &&
-            opcode != GospelOpcode::TypeLayoutGetMemberTypeLayout && opcode != GospelOpcode::TypeLayoutAllocate &&
+        if opcode != GospelOpcode::TypeUDTAddField && opcode != GospelOpcode::TypeUDTAddFieldWithUserAlignment &&
+            opcode != GospelOpcode::TypeUDTAddBitfield && opcode != GospelOpcode::TypeUDTAddVirtualFunction && opcode != GospelOpcode::TypeUDTAllocate &&
+            opcode != GospelOpcode::TypeUDTHasField && opcode != GospelOpcode::TypeUDTTypeofField && opcode != GospelOpcode::TypeUDTCalculateVirtualFunctionOffset &&
             opcode != GospelOpcode::Abort {
             bail!("Invalid opcode for named instruction (TypeLayoutAllocate, TypeLayoutDefineMember, TypeLayoutDoesMemberExist, TypeLayoutGetMemberOffset, TypeLayoutGetMemberSize, TypeLayoutGetMemberTypeLayout and Abort are allowed)");
         }
@@ -266,7 +266,7 @@ impl GospelSourceFunctionDefinition {
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[field_type_value, member_name_index])?, line_number))
     }
     pub fn add_variadic_instruction(&mut self, opcode: GospelOpcode, argument_count: u32, line_number: i32) -> anyhow::Result<u32> {
-        if opcode != GospelOpcode::Call && opcode != GospelOpcode::BindClosure {
+        if opcode != GospelOpcode::Call && opcode != GospelOpcode::BindClosure && opcode != GospelOpcode::PCall {
             bail!("Invalid opcode for variadic instruction (only Call is allowed)");
         }
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[argument_count])?, line_number))

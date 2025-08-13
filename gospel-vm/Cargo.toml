@@ -13,3 +13,5 @@ strum = "0.26.3"
 strum_macros = "0.26.3"
 serde = { version = "1.0.219", features = ["derive"] }
 bitcode = { version = "0.6.6", features = ["serde"] }
+gospel-typelib = { version = "0.1.0", path = "../gospel-typelib" }
+itertools = "0.14.0"

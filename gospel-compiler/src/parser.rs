@@ -1,4 +1,4 @@
-﻿use crate::ast::{ASTSourceContext, ArrayIndexExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, ExternStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, BuiltinIdentifier, BuiltinIdentifierExpression, DeclarationAccessSpecifier};
+﻿use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, ExternStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, BuiltinIdentifier, BuiltinIdentifierExpression, DeclarationAccessSpecifier};
 use crate::lex_util::get_line_number_and_offset_from_index;
 use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
@@ -901,16 +901,16 @@ impl<'a> CompilerParserInstance<'a> {
             Ok(AmbiguousExpression::unambiguous(parser, Expression::UnaryExpression(Box::new(result_expression))))
         })
     }
-    fn parse_array_index_expression(mut self, array_expression: Expression) -> anyhow::Result<AmbiguousExpression<'a>> {
-        let array_index_enter_expression = self.ctx.next()?;
-        self.ctx.check_token(array_index_enter_expression, CompilerToken::ArraySubscriptStart)?;
+    fn parse_array_type_expression(mut self, element_type_expression: Expression) -> anyhow::Result<AmbiguousExpression<'a>> {
+        let array_enter_expression = self.ctx.next()?;
+        self.ctx.check_token(array_enter_expression, CompilerToken::ArraySubscriptStart)?;
         let source_context = self.ctx.source_context();
 
         self.parse_complete_expression()?
-        .flat_map_result(|mut parser, index_expression| {
-            let array_index_exit_expression = parser.ctx.next()?;
-            parser.ctx.check_token(array_index_exit_expression, CompilerToken::ArraySubscriptEnd)?;
-            let result_expression = ArrayIndexExpression{ array_expression: array_expression.clone(), index_expression, source_context: source_context.clone() };
+        .flat_map_result(|mut parser, length_expression| {
+            let array_exit_expression = parser.ctx.next()?;
+            parser.ctx.check_token(array_exit_expression, CompilerToken::ArraySubscriptEnd)?;
+            let result_expression = ArrayTypeExpression { element_type_expression: element_type_expression.clone(), array_length_expression: length_expression, source_context: source_context.clone() };
             Ok(AmbiguousExpression::unambiguous(parser, Expression::ArrayIndexExpression(Box::new(result_expression))))
         })
     }
@@ -1030,7 +1030,7 @@ impl<'a> CompilerParserInstance<'a> {
                 })
             } else if parser.ctx.peek_or_eof()? == Some(CompilerToken::ArraySubscriptStart) {
                 // Array index expression is unambiguous, so we do not need to fork the context on it
-                Self::parse_array_index_expression(parser, simple_expression)
+                Self::parse_array_type_expression(parser, simple_expression)
             } else {
                 // This is a high affinity expression without any postscript operators
                 Ok(AmbiguousExpression::unambiguous(parser, simple_expression))
@@ -1643,10 +1643,10 @@ impl<'a> CompilerParserInstance<'a> {
         if wrap_operator { result_builder.push(')'); }
         result_builder
     }
-    fn array_index_expression_to_source_text(expression: &ArrayIndexExpression) -> String {
-        let mut result_builder = Self::expression_to_source_text(&expression.array_expression);
+    fn array_index_expression_to_source_text(expression: &ArrayTypeExpression) -> String {
+        let mut result_builder = Self::expression_to_source_text(&expression.element_type_expression);
         result_builder.push('[');
-        result_builder.push_str(Self::expression_to_source_text(&expression.index_expression).as_str());
+        result_builder.push_str(Self::expression_to_source_text(&expression.array_length_expression).as_str());
         result_builder.push(']');
         result_builder
     }

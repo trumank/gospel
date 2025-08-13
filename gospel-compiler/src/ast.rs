@@ -48,9 +48,9 @@ impl Display for ASTSourceContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrayIndexExpression {
-    pub array_expression: Expression,
-    pub index_expression: Expression,
+pub struct ArrayTypeExpression {
+    pub element_type_expression: Expression,
+    pub array_length_expression: Expression,
     #[serde(default)]
     pub source_context: ASTSourceContext,
 }
@@ -230,7 +230,7 @@ pub enum Expression {
     StructDeclarationExpression(Box<StructStatement>),
     BlockExpression(Box<BlockExpression>),
     UnaryExpression(Box<UnaryExpression>),
-    ArrayIndexExpression(Box<ArrayIndexExpression>),
+    ArrayIndexExpression(Box<ArrayTypeExpression>),
     MemberAccessExpression(Box<MemberAccessExpression>),
     BinaryExpression(Box<BinaryExpression>),
     BuiltinIdentifierExpression(Box<BuiltinIdentifierExpression>),
