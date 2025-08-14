@@ -87,6 +87,7 @@ struct GospelVMTypeWrapper {
     wrapped_type: Type,
     vm_metadata: Option<GospelVMStruct>,
     owner_stack_frame_token: usize,
+    size_has_been_validated: bool,
 }
 
 /// Run context allows caching results of function invocations and creating type graphs from individual types
@@ -116,15 +117,69 @@ impl GospelVMRunContext {
         } else {
             let new_type_index = self.types.len();
             // Simple types cannot have VM metadata assigned to them
-            self.types.push(GospelVMTypeWrapper{wrapped_type: type_data.clone(), vm_metadata: None, owner_stack_frame_token: 0});
+            self.types.push(GospelVMTypeWrapper{wrapped_type: type_data.clone(), vm_metadata: None, owner_stack_frame_token: 0, size_has_been_validated: false});
             self.simple_type_lookup.insert(type_data, new_type_index);
             new_type_index
         }
     }
     fn store_user_defined_type(&mut self, type_data: UserDefinedType, stack_frame_token: usize) -> usize {
         let new_type_index = self.types.len();
-        self.types.push(GospelVMTypeWrapper{wrapped_type: Type::UDT(type_data), vm_metadata: None, owner_stack_frame_token: stack_frame_token});
+        self.types.push(GospelVMTypeWrapper{wrapped_type: Type::UDT(type_data), vm_metadata: None, owner_stack_frame_token: stack_frame_token, size_has_been_validated: false});
         new_type_index
+    }
+    fn validate_type_size_known(&mut self, type_index: usize, source_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<()> {
+        let mut type_size_calculation_stack: Vec<usize> = Vec::new();
+        self.validate_type_size_known_internal(type_index, source_frame, &mut type_size_calculation_stack)
+    }
+    fn validate_type_size_known_internal(&mut self, type_index: usize, source_frame: Option<&GospelVMExecutionState>, type_size_calculation_stack: &mut Vec<usize>) -> GospelVMResult<()> {
+        if self.types[type_index].size_has_been_validated {
+            return Ok({})
+        }
+        if self.types[type_index].owner_stack_frame_token != 0 {
+            return Err(vm_error!(source_frame, "Type at index #{} has been declared but has not been defined yet", type_index))
+        }
+        if type_size_calculation_stack.contains(&type_index) {
+            return Err(vm_error!(source_frame, "Type at index #{} has infinite size", type_index));
+        }
+        type_size_calculation_stack.push(type_index);
+
+        let cloned_type = self.types[type_index].wrapped_type.clone();
+        match cloned_type {
+            Type::Primitive(primitive_type) => {
+                if primitive_type == PrimitiveType::Void {
+                    // size of primitive types is always known, except for void, which is sizeless
+                    vm_bail!(source_frame, "void type does not have a size (did you mean to wrap it in a pointer type?)");
+                }
+            }
+            Type::Pointer(_) => {} // pointee type does not influence the size of the pointer
+            Type::Function(_) => { vm_bail!(source_frame, "Function Type does not have a size (did you mean to wrap it in a pointer type?)"); }, // functions do not have a size
+            Type::Array(array_type) => { self.validate_type_size_known_internal(array_type.element_type_index, source_frame, type_size_calculation_stack)?; }
+            Type::CVQualified(cv_qualified_type) => { self.validate_type_size_known_internal(cv_qualified_type.base_type_index, source_frame, type_size_calculation_stack)?; }
+            Type::UDT(user_defined_type) => {
+                // size of user defined type is known if sizes of its base classes are known and sizes of its field types are known
+                for base_class_index in &user_defined_type.base_class_indices {
+                    self.validate_type_size_known_internal(*base_class_index, source_frame, type_size_calculation_stack)?;
+                }
+                for member in &user_defined_type.members {
+                    match member {
+                        UserDefinedTypeMember::Field(field) => { self.validate_type_size_known_internal(field.member_type_index, source_frame, type_size_calculation_stack)?; }
+                        UserDefinedTypeMember::Bitfield(_) => {} // bitfields have a known size because they consist of primitive types
+                        UserDefinedTypeMember::VirtualFunction(_) => {} // virtual functions have no size, so there is no need to check their type
+                    };
+                }
+            }
+        };
+        type_size_calculation_stack.pop();
+        self.types[type_index].size_has_been_validated = true;
+        Ok({})
+    }
+    fn validate_sizes_for_all_types(&mut self) -> GospelVMResult<()> {
+        for type_index in 0..self.types.len() {
+            if !self.types[type_index].size_has_been_validated {
+                self.validate_type_size_known(type_index, None)?;
+            }
+        }
+        Ok({})
     }
 }
 impl<'a> TypeGraphLike<'a> for GospelVMRunContext {
@@ -189,7 +244,9 @@ impl GospelVMClosure {
     }
     /// Attempts to execute this closure and returns the result
     pub fn execute(&self, args: Vec<GospelVMValue>, run_context: &mut GospelVMRunContext) -> GospelVMResult<GospelVMValue> {
-        self.execute_internal(args, run_context, None)
+        let execution_result = self.execute_internal(args, run_context, None)?;
+        run_context.validate_sizes_for_all_types()?; // user code outside the VM should never see types with invalid sizes
+        Ok(execution_result)
     }
     fn execute_internal(&self, args: Vec<GospelVMValue>, run_context: &mut GospelVMRunContext, previous_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<GospelVMValue> {
         if self.arguments.is_empty() {
@@ -473,19 +530,6 @@ impl GospelVMExecutionState<'_> {
         match value {
             GospelVMValue::Struct(unwrapped) => { Ok(unwrapped) }
             _ => Err(vm_error!(Some(self), "Expected struct value, got value of type {}", value.value_type()))
-        }
-    }
-    fn validate_type_finalized(&self, type_index: usize, run_context: &GospelVMRunContext) -> GospelVMResult<()> {
-        if run_context.types[type_index].owner_stack_frame_token != 0 {
-            return Err(vm_error!(Some(self), "Type at index #{} is not finalized. Size of non-finalized types is unknown", type_index))
-        }
-        match &run_context.types[type_index].wrapped_type {
-            Type::Primitive(_) => Ok({}), // size of primitive types is always known
-            Type::Pointer(_) => Ok({}), // pointee type does not influence the size of the pointer
-            Type::UDT(_) => Ok({}), // user defined types can only be created from types with known sizes, so their size is also known once they are finalized
-            Type::Function(_) => Err(vm_error!(Some(self), "Function Type does not have a size (did you mean to wrap it in a pointer type?)")), // functions do not have a size
-            Type::Array(array_type) => self.validate_type_finalized(array_type.element_type_index, run_context),
-            Type::CVQualified(cv_qualified_type) => self.validate_type_finalized(cv_qualified_type.base_type_index, run_context),
         }
     }
     fn validate_udt_type_not_finalized(&self, type_index: usize, run_context: &GospelVMRunContext) -> GospelVMResult<()> {
@@ -837,7 +881,6 @@ impl GospelVMExecutionState<'_> {
                 GospelOpcode::TypeArrayCreate => {
                     let array_length = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
                     let element_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
-                    state.validate_type_finalized(element_type_index, run_context)?;
 
                     let array_type = ArrayType{element_type_index, array_length};
                     let result_type_index = run_context.store_type(Type::Array(array_type));
@@ -893,7 +936,6 @@ impl GospelVMExecutionState<'_> {
                     // Base class must be complete by the time it is added to this class
                     let base_class_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(base_class_type_index, run_context)?;
-                    state.validate_type_finalized(base_class_type_index, run_context)?;
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
@@ -910,9 +952,7 @@ impl GospelVMExecutionState<'_> {
                     let field_name_index = state.immediate_value_checked(instruction, 0)? as i32;
                     let field_name = if field_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(field_name_index as usize)?) };
 
-                    // Field type must be complete by the time it is added to UDT
                     let field_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
-                    state.validate_type_finalized(field_type_index, run_context)?;
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
@@ -931,10 +971,7 @@ impl GospelVMExecutionState<'_> {
                     let field_name = if field_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(field_name_index as usize)?) };
 
                     let user_alignment = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
-
-                    // Field type must be complete by the time it is added to UDT
                     let field_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
-                    state.validate_type_finalized(field_type_index, run_context)?;
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
@@ -1099,11 +1136,10 @@ impl GospelVMExecutionState<'_> {
                 GospelOpcode::TypeUDTIsBaseClassOf => {
                     let base_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(base_type_index, run_context)?;
-                    state.validate_type_finalized(base_type_index, run_context)?;
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_type_finalized(type_index, run_context)?;
+                    run_context.validate_type_size_known(type_index, Some(state))?;
 
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
                         if state.create_deep_base_class_iterator(user_defined_type, run_context).contains(&base_type_index) { 1 } else { 0 }
@@ -1118,7 +1154,7 @@ impl GospelVMExecutionState<'_> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_type_finalized(type_index, run_context)?;
+                    run_context.validate_type_size_known(type_index, Some(state))?;
 
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
                         let has_field = state.find_map_member_deep(user_defined_type, &field_name, &|x| if matches!(x, UserDefinedTypeMember::Field(_)) { Some({}) } else { None }, run_context);
@@ -1134,7 +1170,7 @@ impl GospelVMExecutionState<'_> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_type_finalized(type_index, run_context)?;
+                    run_context.validate_type_size_known(type_index, Some(state))?;
 
                     let result_type_index = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
                         state.find_map_member_deep(user_defined_type, &field_name, &|x| if let UserDefinedTypeMember::Field(field) = x { Some(field.member_type_index) } else { None }, run_context)
@@ -1147,7 +1183,7 @@ impl GospelVMExecutionState<'_> {
                 GospelOpcode::TypeUDTGetMetadata => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_type_finalized(type_index, run_context)?;
+                    run_context.validate_type_size_known(type_index, Some(state))?;
 
                     let metadata_struct = run_context.types[type_index].vm_metadata.clone()
                         .ok_or_else(|| vm_error!(Some(&state), "Type layout metadata not set on type layout"))?;
@@ -1213,14 +1249,14 @@ impl GospelVMExecutionState<'_> {
                 // Type layout calculation opcodes
                 GospelOpcode::TypeCalculateSize => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
-                    state.validate_type_finalized(type_index, run_context)?;
+                    run_context.validate_type_size_known(type_index, Some(state))?;
 
                     let result = run_context.type_by_index(type_index).size(run_context, &run_context.target_triplet) as i32;
                     state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
                 }
                 GospelOpcode::TypeCalculateAlignment => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
-                    state.validate_type_finalized(type_index, run_context)?;
+                    run_context.validate_type_size_known(type_index, Some(state))?;
 
                     let result = run_context.type_by_index(type_index).alignment(run_context, &run_context.target_triplet) as i32;
                     state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
@@ -1228,7 +1264,7 @@ impl GospelVMExecutionState<'_> {
                 GospelOpcode::TypeUDTCalculateUnalignedSize => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_type_finalized(type_index, run_context)?;
+                    run_context.validate_type_size_known(type_index, Some(state))?;
 
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
                         user_defined_type.layout(run_context, &run_context.target_triplet).unaligned_size as i32
@@ -1240,7 +1276,7 @@ impl GospelVMExecutionState<'_> {
                 GospelOpcode::TypeUDTHasVTable => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_type_finalized(type_index, run_context)?;
+                    run_context.validate_type_size_known(type_index, Some(state))?;
 
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
                         if user_defined_type.layout(run_context, &run_context.target_triplet).vtable.is_some() { 1 } else { 0 }
@@ -1252,7 +1288,7 @@ impl GospelVMExecutionState<'_> {
                 GospelOpcode::TypeUDTCalculateVTableSizeAndOffset => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_type_finalized(type_index, run_context)?;
+                    run_context.validate_type_size_known(type_index, Some(state))?;
 
                     let vtable = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
                         user_defined_type.layout(run_context, &run_context.target_triplet).vtable
@@ -1267,11 +1303,10 @@ impl GospelVMExecutionState<'_> {
                 GospelOpcode::TypeUDTCalculateBaseOffset => {
                     let base_class_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(base_class_index, run_context)?;
-                    state.validate_type_finalized(base_class_index, run_context)?;
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_type_finalized(type_index, run_context)?;
+                    run_context.validate_type_size_known(type_index, Some(state))?;
 
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
                         state.find_base_class_offset_deep(user_defined_type, base_class_index, 0, run_context)
@@ -1287,7 +1322,7 @@ impl GospelVMExecutionState<'_> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_type_finalized(type_index, run_context)?;
+                    run_context.validate_type_size_known(type_index, Some(state))?;
 
                     let (vtable_offset, function_offset) = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
                         state.find_map_member_layout_deep(user_defined_type, &function_name, &|offset, layout, member| {
@@ -1306,7 +1341,7 @@ impl GospelVMExecutionState<'_> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_type_finalized(type_index, run_context)?;
+                    run_context.validate_type_size_known(type_index, Some(state))?;
 
                     let field_offset = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
                         state.find_map_member_layout_deep(user_defined_type, &field_name, &|offset, _, member| {
@@ -1324,7 +1359,7 @@ impl GospelVMExecutionState<'_> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_type_finalized(type_index, run_context)?;
+                    run_context.validate_type_size_known(type_index, Some(state))?;
 
                     let (field_offset, field_bit_offset, field_bit_width) = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
                         state.find_map_member_layout_deep(user_defined_type, &field_name, &|offset, _, member| {
