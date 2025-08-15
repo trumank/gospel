@@ -335,11 +335,11 @@ pub enum UserDefinedTypeMember {
 }
 impl UserDefinedTypeMember {
     /// Returns the name of this member (if set)
-    pub fn name(&self) -> Option<&String> {
+    pub fn name(&self) -> Option<&str> {
         match self {
-            UserDefinedTypeMember::Field(field) => field.name.as_ref(),
-            UserDefinedTypeMember::Bitfield(bitfield) => bitfield.name.as_ref(),
-            UserDefinedTypeMember::VirtualFunction(virtual_function) => virtual_function.name.as_ref(),
+            UserDefinedTypeMember::Field(field) => field.name.as_deref(),
+            UserDefinedTypeMember::Bitfield(bitfield) => bitfield.name.as_deref(),
+            UserDefinedTypeMember::VirtualFunction(virtual_function) => virtual_function.name.as_deref(),
         }
     }
 }

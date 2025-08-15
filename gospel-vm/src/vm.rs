@@ -566,7 +566,7 @@ impl GospelVMExecutionState<'_> {
             } else { vec![] }
         })).unique()
     }
-    fn find_map_member_deep<T, S: Fn(&UserDefinedTypeMember) -> Option<T>>(&self, user_defined_type: &UserDefinedType, member_name: &String, map_function: &S, run_context: &GospelVMRunContext) -> Option<T> {
+    fn find_map_member_deep<T, S: Fn(&UserDefinedTypeMember) -> Option<T>>(&self, user_defined_type: &UserDefinedType, member_name: &str, map_function: &S, run_context: &GospelVMRunContext) -> Option<T> {
         // Direct members are prioritized
         for i in 0..user_defined_type.members.len() {
             if user_defined_type.members[i].name() == Some(member_name) {
@@ -605,7 +605,7 @@ impl GospelVMExecutionState<'_> {
         // Did not find the given base class as a direct or indirect base
         None
     }
-    fn find_map_member_layout_deep<T, S: Fn(usize, &ResolvedUDTLayout, &ResolvedUDTMemberLayout) -> Option<T>>(&self, user_defined_type: &UserDefinedType, member_name: &String, map_function: &S, base_offset: usize, run_context: &GospelVMRunContext) -> Option<T> {
+    fn find_map_member_layout_deep<T, S: Fn(usize, &ResolvedUDTLayout, &ResolvedUDTMemberLayout) -> Option<T>>(&self, user_defined_type: &UserDefinedType, member_name: &str, map_function: &S, base_offset: usize, run_context: &GospelVMRunContext) -> Option<T> {
         let computed_layout = user_defined_type.layout(run_context, &run_context.target_triplet);
         // Direct members are prioritized
         for i in 0..user_defined_type.members.len() {
@@ -959,7 +959,7 @@ impl GospelVMExecutionState<'_> {
                     state.validate_udt_type_not_finalized(type_index, run_context)?;
 
                     if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
-                        if field_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == field_name.as_ref()) {
+                        if field_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == field_name.as_deref()) {
                             vm_bail!(Some(state), "Type #{} already contains a definition for field named {}", type_index, field_name.as_ref().unwrap());
                         }
                         let result_field = UserDefinedTypeField{name: field_name, user_alignment: None, member_type_index: field_type_index};
@@ -978,7 +978,7 @@ impl GospelVMExecutionState<'_> {
                     state.validate_udt_type_not_finalized(type_index, run_context)?;
 
                     if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
-                        if field_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == field_name.as_ref()) {
+                        if field_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == field_name.as_deref()) {
                             vm_bail!(Some(state), "Type #{} already contains a definition for field named {}", type_index, field_name.as_ref().unwrap());
                         }
                         let result_field = UserDefinedTypeField{name: field_name, user_alignment: Some(user_alignment), member_type_index: field_type_index};
@@ -1004,7 +1004,7 @@ impl GospelVMExecutionState<'_> {
                     state.validate_udt_type_not_finalized(type_index, run_context)?;
 
                     if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
-                        if field_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == field_name.as_ref()) {
+                        if field_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == field_name.as_deref()) {
                             vm_bail!(Some(state), "Type #{} already contains a definition for field named {}", type_index, field_name.as_ref().unwrap());
                         }
                         let result_bitfield = UserDefinedTypeBitfield{name: field_name, primitive_type: primitive_field_type, bitfield_width};
@@ -1041,7 +1041,7 @@ impl GospelVMExecutionState<'_> {
                     }
 
                     if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
-                        if function_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == function_name.as_ref()) {
+                        if function_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == function_name.as_deref()) {
                             vm_bail!(Some(state), "Type #{} already contains a definition for field named {}", type_index, function_name.as_ref().unwrap());
                         }
                         let result_function = UserDefinedTypeVirtualFunction{name: function_name, function_type_index};
