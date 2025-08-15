@@ -97,6 +97,9 @@ struct ActionEvalExpression {
     /// Expression to eval against the input
     #[arg(long, short)]
     expression: String,
+    /// Global variable to set (must be int) e.g. VERSION=12 or SIZE=0x10
+    #[arg(long, short)]
+    global: Vec<GlobalVariable>,
 }
 
 #[derive(Parser, Debug)]
@@ -120,6 +123,29 @@ enum Action {
 struct Args {
     #[command(subcommand)]
     action: Action,
+}
+
+#[derive(Debug, Clone)]
+struct GlobalVariable {
+    name: String,
+    value: i32,
+}
+
+impl std::str::FromStr for GlobalVariable {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (name, value_str) = s.split_once('=')
+            .ok_or_else(|| anyhow!("Global variable must be in format 'NAME=<value>'"))?;
+
+        let value = if let Some(hex_str) = value_str.strip_prefix("0x").or_else(|| value_str.strip_prefix("0X")) {
+            u32::from_str_radix(hex_str, 16).map(|v| v as i32)
+        } else {
+            value_str.parse::<i32>()
+        }.map_err(|_| anyhow!("Failed to parse {value_str} as int"))?;
+
+        Ok(GlobalVariable { name: name.to_string(), value })
+    }
 }
 
 fn do_action_assemble(action: ActionAssembleModule) -> anyhow::Result<()> {
@@ -325,6 +351,11 @@ fn do_action_eval(action: ActionEvalExpression) -> anyhow::Result<()> {
 
     // Evaluate the function
     let mut execution_context = GospelVMRunContext::create(&target_triplet);
+
+    for global in action.global {
+        vm_state.set_global_value(&global.name, global.value)?;
+    }
+
     let function_result = compiled_expression.execute(Vec::new(), &mut execution_context)
         .map_err(|x| anyhow!("Failed to eval expression: {}", x.to_string()))?;
     // Print the result now
