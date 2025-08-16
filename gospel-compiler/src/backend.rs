@@ -1221,7 +1221,7 @@ impl CompilerStructFragmentGenerator for CompilerStructMemberFragment {
             if let Some(array_size_expression) = &self.array_size_expression {
                 let array_size_expression_type = builder.compile_expression(&self.scope, array_size_expression)?;
                 CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Int, array_size_expression_type)?;
-                builder.function_definition.add_string_instruction(GospelOpcode::TypeArrayCreate, self.member_name.as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+                builder.function_definition.add_simple_instruction(GospelOpcode::TypeArrayCreate, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
             }
             
             // If user-provided alignment expression is present, evaluate it and pass to the VM
