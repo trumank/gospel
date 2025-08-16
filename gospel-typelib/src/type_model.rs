@@ -115,7 +115,7 @@ impl TargetTriplet {
     }
     pub fn parse(triplet_str: &str) -> anyhow::Result<TargetTriplet> {
         let splits: Vec<&str> = triplet_str.split('-').collect();
-        if splits.len() <= 2 {
+        if splits.len() < 2 {
             bail!("Target triplet string too short, need at least 2 parts (<arch>-<os>)");
         }
         if splits.len() > 3 {
