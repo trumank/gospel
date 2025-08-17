@@ -67,5 +67,5 @@ struct Test {
     void* Unknown;
 };
 
-struct EmptyStruct {};
+struct alignas(int) EmptyStruct {};
 constexpr int SizeofEmptyStruct = sizeof(EmptyStruct);

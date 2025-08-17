@@ -511,6 +511,11 @@ impl UserDefinedType {
             }
         }
 
+        // Struct size cannot be zero, it has to be at least 1 byte even for empty structs
+        if current_size == 0 {
+            current_size = 1;
+        }
+
         // Align the size to the class alignment now
         let unaligned_size = current_size;
         current_size = align_value(current_size, current_alignment);
