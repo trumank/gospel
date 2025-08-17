@@ -222,7 +222,32 @@ fn do_action_call(action: ActionCallFunction) -> anyhow::Result<()> {
 
     // Print the result now
     let serialized_result = if let GospelVMValue::TypeReference(type_index) = function_result {
-        serde_json::to_string_pretty(&execution_context.type_tree(type_index))?
+                let type_tree = execution_context.type_tree(type_index);
+        for typ in &type_tree.types {
+            match typ {
+                gospel_typelib::type_model::Type::UDT(typ) => {
+                    let layout = typ.layout(&type_tree, &target_triplet);
+                    println!("{}.layout {{ // 0x{:x}", typ.name.as_deref().unwrap_or("<unknown>"), layout.size);
+                    for (member, member_layout) in typ.members.iter().zip(&layout.member_layouts) {
+                        match member_layout {
+                            gospel_typelib::type_model::ResolvedUDTMemberLayout::Field(field) => {
+                                println!("    0x{:x} {}", field.offset, member.name().unwrap_or("<unknown>"));
+                            },
+                            gospel_typelib::type_model::ResolvedUDTMemberLayout::Bitfield(field) => {
+                                println!("    0x{:x} {} : {}", field.offset, member.name().unwrap_or("<unknown>"), field.bitfield_width);
+                            }
+                            _ => {}
+                        }
+
+                    }
+                    println!("}}");
+                },
+                _ => {}
+            }
+        }
+        // println!("{}", function_result.value_type());
+
+        serde_json::to_string_pretty(&type_tree)?
     } else { serde_json::to_string_pretty(&function_result)? };
     println!("{}", serialized_result);
     Ok({})
