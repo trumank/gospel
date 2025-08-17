@@ -3,6 +3,7 @@ use std::fs::{read, read_to_string, write};
 use std::path::PathBuf;
 use std::process::exit;
 use std::rc::Rc;
+use std::str::FromStr;
 use anyhow::{anyhow, bail};
 use clap::Parser;
 use gospel_typelib::type_model::{TargetTriplet, TypeGraphLike};
@@ -100,6 +101,9 @@ struct ActionEvalExpression {
     /// Global variable to set (must be int) e.g. VERSION=12 or SIZE=0x10
     #[arg(long, short)]
     global: Vec<GlobalVariable>,
+    /// Type of the value yielded by the expression. If not specified, default expression type is Typename
+    #[arg(long, short = 'x')]
+    expression_type: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -340,6 +344,9 @@ fn do_action_eval(action: ActionEvalExpression) -> anyhow::Result<()> {
         TargetTriplet::current_target()
             .ok_or_else(|| anyhow!("Current platform is not a valid target. Please specify target manually with --target "))?
     };
+    let expression_value_type = if let Some(value_type_string) = &action.expression_type {
+        ExpressionValueType::from_str(value_type_string).map_err(|x| anyhow!("Unknown expression value type: {}. Allowed expression value types are typename and int", x))?
+    } else { ExpressionValueType::Typename };
     if action.input.is_empty() {
         bail!("No source files provided");
     }
@@ -366,7 +373,7 @@ fn do_action_eval(action: ActionEvalExpression) -> anyhow::Result<()> {
     // Compile the provided expression into a generated function
     let parsed_expression = parse_expression("<stdin>", action.expression.as_str())
         .map_err(|x| anyhow!("Failed to parse expression: {}", x))?;
-    let function_reference = module_writer.add_simple_function("@stdin_repl", ExpressionValueType::Typename, &parsed_expression).to_simple_result()
+    let function_reference = module_writer.add_simple_function("@stdin_repl", expression_value_type, &parsed_expression).to_simple_result()
         .map_err(|x| anyhow!("Failed to compile expression: {}", x))?;
 
     let mut vm_state = GospelVMState::create();

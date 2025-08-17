@@ -66,3 +66,6 @@ type Test2 = TArray<float>::typename TemplatedData<char>;
 struct Test {
     void* Unknown;
 };
+
+struct EmptyStruct {};
+constexpr int SizeofEmptyStruct = sizeof(EmptyStruct);
