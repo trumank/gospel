@@ -1,5 +1,5 @@
 ﻿use serde::{Deserialize, Serialize};
-use strum_macros::{Display, EnumString, FromRepr};
+use strum::{Display, EnumString, FromRepr};
 use gospel_typelib::type_model::TargetTriplet;
 use crate::bytecode::GospelInstruction;
 

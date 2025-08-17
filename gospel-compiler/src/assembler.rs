@@ -4,7 +4,7 @@ use std::rc::Rc;
 use anyhow::{anyhow};
 use bitflags::{bitflags};
 use logos::{Lexer, Logos};
-use strum_macros::Display;
+use strum::Display;
 use gospel_vm::bytecode::{GospelInstruction, GospelOpcode};
 use gospel_vm::gospel::{GospelPlatformConfigProperty, GospelValueType};
 use gospel_vm::writer::{GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceObjectReference, GospelSourceSlotBinding, GospelSourceStaticValue, GospelSourceStructDefinition, GospelSourceStructField};

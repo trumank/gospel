@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
-use strum_macros::{Display, EnumString};
+use strum::{Display, EnumString};
 
 /// Aligns the value up to the nearest multiple of the alignment
 pub fn align_value(value: usize, align: usize) -> usize {

@@ -9,8 +9,7 @@ edition.workspace = true
 
 [dependencies]
 anyhow = "1.0.93"
-strum = "0.26.3"
-strum_macros = "0.26.3"
+strum = { version = "0.27.2", features = ["derive"] }
 serde = { version = "1.0.219", features = ["derive"] }
 bitcode = { version = "0.6.6", features = ["serde"] }
 gospel-typelib = { version = "0.1.0", path = "../gospel-typelib" }

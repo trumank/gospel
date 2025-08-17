@@ -3,7 +3,7 @@ use crate::lex_util::get_line_number_and_offset_from_index;
 use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
 use std::fmt::{Display, Formatter};
-use strum_macros::Display;
+use strum::Display;
 use fancy_regex::{Captures, Regex};
 use gospel_typelib::type_model::PrimitiveType;
 

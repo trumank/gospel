@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use anyhow::anyhow;
 use itertools::Itertools;
-use strum_macros::Display;
+use strum::Display;
 use gospel_vm::bytecode::GospelOpcode;
 use gospel_vm::module::GospelContainer;
 use gospel_vm::gospel::{GospelPlatformConfigProperty, GospelValueType};

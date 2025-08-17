@@ -1,9 +1,8 @@
 ﻿use std::str::FromStr;
-use strum_macros::{Display, EnumProperty, EnumString, FromRepr};
+use strum::{Display, EnumProperty, EnumString, FromRepr};
 use std::string::ToString;
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
-use strum::EnumProperty;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, FromRepr, EnumProperty, Display, EnumString, Serialize, Deserialize)]
 #[repr(u8)]

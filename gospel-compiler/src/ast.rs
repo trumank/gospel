@@ -1,10 +1,10 @@
 use std::fmt::{Display, Formatter};
 use serde::{Deserialize, Serialize};
-use strum_macros::Display;
+use strum::{Display, EnumString};
 use gospel_typelib::type_model::PrimitiveType;
 
 /// Describes value type of the expression in the source grammar
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Display, Default)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Display, Default, EnumString)]
 pub enum ExpressionValueType {
     #[default]
     Int,

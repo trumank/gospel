@@ -7,7 +7,7 @@ use std::rc::{Rc};
 use std::str::FromStr;
 use anyhow::{anyhow, bail};
 use itertools::Itertools;
-use strum_macros::Display;
+use strum::Display;
 use crate::bytecode::{GospelInstruction, GospelOpcode};
 use crate::module::GospelContainer;
 use crate::gospel::{GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelFunctionDefinition, GospelObjectIndex, GospelValueType};
