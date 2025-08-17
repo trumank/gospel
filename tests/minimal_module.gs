@@ -1,6 +1,4 @@
-﻿import module::additional_module_file::MinimalStruct;
-
-// Definitions for types with explicit sizes
+﻿// Definitions for types with explicit sizes
 type int8_t = char;
 type uint8_t = unsigned char;
 type int16_t = short int;
@@ -65,4 +63,6 @@ class UClass : UStruct {};
 type Test1 = TArray<int32_t>::typename TemplatedData<char>;
 type Test2 = TArray<float>::typename TemplatedData<char>;
 
-type AdditionalModuleAlias = MinimalStruct;
+struct Test {
+    void* Unknown;
+};

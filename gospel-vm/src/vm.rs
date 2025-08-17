@@ -175,7 +175,8 @@ impl GospelVMRunContext {
     }
     fn validate_sizes_for_all_types(&mut self) -> GospelVMResult<()> {
         for type_index in 0..self.types.len() {
-            if !self.types[type_index].size_has_been_validated {
+            // Only UDTs need to be validated, other types are automatically considered valid
+            if !self.types[type_index].size_has_been_validated && matches!(self.types[type_index].wrapped_type, Type::UDT(_)) {
                 self.validate_type_size_known(type_index, None)?;
             }
         }
