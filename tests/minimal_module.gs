@@ -69,3 +69,6 @@ struct Test {
 
 struct alignas(int) EmptyStruct {};
 const int SizeofEmptyStruct = sizeof(EmptyStruct);
+
+template<int Test = 5> struct TemplateWithDefault {};
+type DefaultInstantiation = TemplateWithDefault<>;

@@ -589,6 +589,7 @@ impl<'a> CompilerParserInstance<'a> {
     fn parse_ambiguous_expression_list<T: Clone, S: Fn(&mut CompilerParserInstance<'a>) -> anyhow::Result<(T, bool)>>(mut self, terminator_token: CompilerToken, prefix_parser: S) -> anyhow::Result<AmbiguousParsingResult<'a, Vec<(T, Option<Expression>)>>> {
         // Empty expression list is allowed and is not ambiguous
         if self.ctx.peek()? == terminator_token {
+            self.ctx.discard_next()?;
             let result_elements: Vec<(T, Option<Expression>)> = Vec::new();
             return Ok(AmbiguousParsingResult::unambiguous(self, result_elements))
         }
