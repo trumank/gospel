@@ -317,7 +317,7 @@ pub struct DataStatement {
 /// Represents a member declaration inside the struct definition
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberDeclaration {
-    pub alignment_expression: Option<Expression>,
+    pub alignment_expression: Option<ExpressionWithCondition>,
     pub member_type_expression: Expression,
     pub name: String,
     pub array_size_expression: Option<Expression>,
@@ -355,11 +355,11 @@ pub enum StructInnerDeclaration {
     EmptyDeclaration,
 }
 
-/// Represents a base class declaration for a struct, possibly gated behind a condition
+/// Represents a declaration for a struct that might be gated behind a condition
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BaseClassDeclaration {
+pub struct ExpressionWithCondition {
     pub condition_expression: Option<Expression>,
-    pub type_expression: Expression,
+    pub expression: Expression,
     #[serde(default)]
     pub source_context: ASTSourceContext,
 }
@@ -370,9 +370,10 @@ pub struct StructStatement {
     pub template_declaration: Option<TemplateDeclaration>,
     pub access_specifier: Option<DeclarationAccessSpecifier>,
     pub struct_kind: UserDefinedTypeKind,
-    pub alignment_expression: Option<Expression>,
+    pub alignment_expression: Option<ExpressionWithCondition>,
+    pub member_pack_expression: Option<ExpressionWithCondition>,
     pub name: Option<String>,
-    pub base_class_expressions: Vec<BaseClassDeclaration>,
+    pub base_class_expressions: Vec<ExpressionWithCondition>,
     pub declarations: Vec<StructInnerDeclaration>,
     #[serde(default)]
     pub source_context: ASTSourceContext,

@@ -937,6 +937,17 @@ impl GospelVMExecutionState<'_> {
                         user_defined_type.user_alignment = Some(max(user_defined_type.user_alignment.unwrap_or(1), user_type_alignment));
                     }
                 }
+                GospelOpcode::TypeUDTSetMemberPackAlignment => {
+                    let member_pack_alignment = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
+
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_udt_type_not_finalized(type_index, run_context)?;
+
+                    if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
+                        user_defined_type.member_pack_alignment = Some(member_pack_alignment);
+                    }
+                }
                 GospelOpcode::TypeUDTAddBaseClass => {
                     // Base class must be complete by the time it is added to this class
                     let base_class_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
@@ -978,7 +989,8 @@ impl GospelVMExecutionState<'_> {
                     let field_name_index = state.immediate_value_checked(instruction, 0)? as i32;
                     let field_name = if field_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(field_name_index as usize)?) };
 
-                    let user_alignment = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
+                    let raw_user_alignment = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))?;
+                    let user_alignment = if raw_user_alignment == -1 { None } else { Some(raw_user_alignment as usize) };
                     let field_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
@@ -989,7 +1001,7 @@ impl GospelVMExecutionState<'_> {
                         if field_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == field_name.as_deref()) {
                             vm_bail!(Some(state), "Type #{} already contains a definition for field named {}", type_index, field_name.as_ref().unwrap());
                         }
-                        let result_field = UserDefinedTypeField{name: field_name, user_alignment: Some(user_alignment), member_type_index: field_type_index};
+                        let result_field = UserDefinedTypeField{name: field_name, user_alignment, member_type_index: field_type_index};
                         user_defined_type.members.push(UserDefinedTypeMember::Field(result_field))
                     }
                 }

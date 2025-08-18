@@ -87,3 +87,10 @@ union TestUnion {
 };
 constexpr int SizeofTestUnion = sizeof(TestUnion const *volatile const);
 constexpr int ConstEqualityTest = TestUnion const == TestUnion;
+
+template<int Condition>
+struct member_pack(2) if (Condition == 1) alignas(4) if (Condition == 1) TestAlignmentStruct {
+    long long int TestMember;
+};
+constexpr int TestAlignmentStruct1 = alignof(TestAlignmentStruct<1>);
+constexpr int TestAlignmentStruct2 = alignof(TestAlignmentStruct<2>);

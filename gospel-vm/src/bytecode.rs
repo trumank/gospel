@@ -198,6 +198,8 @@ pub enum GospelOpcode {
     TypeFunctionGetReturnValueType = 0xB3, // ; [pop stack] -> [push stack]
     #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
     TypeFunctionGetArgumentType = 0xB4, // ; [pop stack] [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "2"))]
+    TypeUDTSetMemberPackAlignment = 0xB5, // ; [pop stack] [pop stack] ->
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]

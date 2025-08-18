@@ -12,7 +12,7 @@ use gospel_vm::bytecode::GospelOpcode;
 use gospel_vm::module::GospelContainer;
 use gospel_vm::gospel::{GospelPlatformConfigProperty, GospelValueType};
 use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter, GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceObjectReference, GospelSourceSlotBinding, GospelSourceStaticValue, GospelSourceStructDefinition, GospelSourceStructField};
-use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayTypeExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, BuiltinIdentifierExpression, BuiltinIdentifier, DeclarationAccessSpecifier, PrimitiveTypeExpression, BaseClassDeclaration};
+use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayTypeExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, BuiltinIdentifierExpression, BuiltinIdentifier, DeclarationAccessSpecifier, PrimitiveTypeExpression, ExpressionWithCondition};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CompilerSourceContext {
@@ -924,32 +924,48 @@ impl CompilerFunctionBuilder {
             Ok(ExpressionValueType::Int)
         }
     }
-    fn compile_type_layout_alignment_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, alignment_expression: &Expression, source_context: &CompilerSourceContext) -> CompilerResult<()> {
-        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
-
-        let alignment_expression_type = self.compile_coerce_alignment_expression(scope, alignment_expression, source_context)?;
-        Self::check_expression_type(source_context, ExpressionValueType::Int, alignment_expression_type)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::TypeUDTSetUserAlignment, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
-        Ok({})
-    }
-    fn compile_type_layout_base_class_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, base_class_expression: &BaseClassDeclaration) -> CompilerResult<()> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: base_class_expression.source_context.clone()};
-        let possibly_jump_to_end_fixup = if let Some(condition_expression) = &base_class_expression.condition_expression {
+    fn compile_condition_wrapped_expression<S: Fn(&mut Self, &Expression, &CompilerSourceContext) -> CompilerResult<()>>(&mut self, scope: &Rc<CompilerLexicalScope>, conditional_declaration: &ExpressionWithCondition, code_generator: S) -> CompilerResult<()> {
+        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: conditional_declaration.source_context.clone()};
+        let possibly_jump_to_end_fixup = if let Some(condition_expression) = &conditional_declaration.condition_expression {
             let condition_expression_type = self.compile_expression(scope, condition_expression)?;
             Self::check_expression_type(&source_context, ExpressionValueType::Int, condition_expression_type)?;
             Some(self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz, Self::get_line_number(&source_context)).with_source_context(&source_context)?.1)
         } else { None };
 
-        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
-        let base_class_expression_type = self.compile_expression(scope, &base_class_expression.type_expression)?;
-        Self::check_expression_type(&source_context, ExpressionValueType::Typename, base_class_expression_type)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::TypeUDTAddBaseClass, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        code_generator(self, &conditional_declaration.expression, &source_context)?;
 
         if let Some(jump_to_end_fixup) = possibly_jump_to_end_fixup {
             let end_instruction_index = self.function_definition.current_instruction_count();
             self.function_definition.fixup_control_flow_instruction(jump_to_end_fixup, end_instruction_index).with_source_context(&source_context)?;
         }
         Ok({})
+    }
+    fn compile_type_layout_alignment_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, alignment_expression: &ExpressionWithCondition) -> CompilerResult<()> {
+        self.compile_condition_wrapped_expression(scope, alignment_expression, |builder, expression, source_context| {
+            builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+            let expression_type = builder.compile_coerce_alignment_expression(scope, expression, source_context)?;
+            Self::check_expression_type(&source_context, ExpressionValueType::Int, expression_type)?;
+            builder.function_definition.add_simple_instruction(GospelOpcode::TypeUDTSetUserAlignment, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+            Ok({})
+        })
+    }
+    fn compile_type_layout_member_pack_alignment_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, member_pack_alignment_expression: &ExpressionWithCondition) -> CompilerResult<()> {
+        self.compile_condition_wrapped_expression(scope, member_pack_alignment_expression, |builder, expression, source_context| {
+            builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+            let expression_type = builder.compile_expression(scope, expression)?;
+            Self::check_expression_type(&source_context, ExpressionValueType::Int, expression_type)?;
+            builder.function_definition.add_simple_instruction(GospelOpcode::TypeUDTSetMemberPackAlignment, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+            Ok({})
+        })
+    }
+    fn compile_type_layout_base_class_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, base_class_expression: &ExpressionWithCondition) -> CompilerResult<()> {
+        self.compile_condition_wrapped_expression(scope, base_class_expression, |builder, expression, source_context| {
+            builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+            let expression_type = builder.compile_expression(scope, expression)?;
+            Self::check_expression_type(&source_context, ExpressionValueType::Typename, expression_type)?;
+            builder.function_definition.add_simple_instruction(GospelOpcode::TypeUDTAddBaseClass, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+            Ok({})
+        })
     }
     fn compile_type_layout_finalization(&mut self, type_layout_slot_index: u32, type_layout_metadata_slot_index: u32, source_context: &CompilerSourceContext) -> CompilerResult<()> {
         self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
@@ -1225,7 +1241,7 @@ struct CompilerStructMemberFragment {
     scope: Rc<CompilerLexicalScope>,
     member_name: String,
     member_type_expression: Expression,
-    alignment_expression: Option<Expression>,
+    alignment_expression: Option<ExpressionWithCondition>,
     array_size_expression: Option<Expression>,
     bitfield_width_expression: Option<Expression>,
 }
@@ -1252,8 +1268,13 @@ impl CompilerStructFragmentGenerator for CompilerStructMemberFragment {
             
             // If user-provided alignment expression is present, evaluate it and pass to the VM
             if let Some(alignment_expression) = &self.alignment_expression {
-                let alignment_expression_type = builder.compile_coerce_alignment_expression(&self.scope, alignment_expression, &self.source_context)?;
-                CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Int, alignment_expression_type)?;
+                builder.function_definition.add_int_constant_instruction(-1, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+                builder.compile_condition_wrapped_expression(&self.scope, alignment_expression, |builder, expression, source_context| {
+                    builder.function_definition.add_simple_instruction(GospelOpcode::Pop, CompilerFunctionBuilder::get_line_number(source_context)).with_source_context(source_context)?;
+                    let alignment_expression_type = builder.compile_coerce_alignment_expression(&self.scope, expression, &self.source_context)?;
+                    CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Int, alignment_expression_type)?;
+                    Ok({})
+                })?;
                 builder.function_definition.add_string_instruction(GospelOpcode::TypeUDTAddFieldWithUserAlignment, self.member_name.as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
             } else {
                 // Otherwise, this is a normal field without explicit alignment
@@ -1277,8 +1298,9 @@ struct CompilerStructFunctionGenerator {
     struct_name: String,
     struct_kind: UserDefinedTypeKind,
     struct_meta_layout: CompilerStructMetaLayoutReference,
-    alignment_expression: Option<Expression>,
-    base_class_expressions: Vec<BaseClassDeclaration>,
+    alignment_expression: Option<ExpressionWithCondition>,
+    member_pack_alignment_expression: Option<ExpressionWithCondition>,
+    base_class_expressions: Vec<ExpressionWithCondition>,
     source_context: CompilerSourceContext,
     fragments: Vec<Box<dyn CompilerStructFragmentGenerator>>,
 }
@@ -1289,7 +1311,10 @@ impl CompilerFunctionCodeGenerator for CompilerStructFunctionGenerator {
         let type_layout_metadata_slot_index = function_builder.compile_type_layout_metadata_struct_initialization(&self.struct_meta_layout)?;
 
         if let Some(alignment_expression) = &self.alignment_expression {
-            function_builder.compile_type_layout_alignment_expression(&function_builder.function_scope.clone(), type_layout_slot_index, alignment_expression, &self.source_context)?;
+            function_builder.compile_type_layout_alignment_expression(&function_builder.function_scope.clone(), type_layout_slot_index, alignment_expression)?;
+        }
+        if let Some(member_pack_alignment_expression) = &self.member_pack_alignment_expression {
+            function_builder.compile_type_layout_member_pack_alignment_expression(&function_builder.function_scope.clone(), type_layout_slot_index, member_pack_alignment_expression)?;
         }
         for base_class_expression in &self.base_class_expressions {
             function_builder.compile_type_layout_base_class_expression(&function_builder.function_scope.clone(), type_layout_slot_index, base_class_expression)?;
@@ -1721,6 +1746,7 @@ impl CompilerInstance {
                 struct_kind: statement.struct_kind,
                 struct_meta_layout: meta_layout,
                 alignment_expression: statement.alignment_expression.clone(),
+                member_pack_alignment_expression: statement.member_pack_expression.clone(),
                 base_class_expressions: statement.base_class_expressions.clone(),
                 fragments,
             }))?;

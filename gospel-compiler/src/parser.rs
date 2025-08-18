@@ -5,7 +5,7 @@ use logos::{Lexer, Logos};
 use std::fmt::{Display, Formatter};
 use strum::Display;
 use fancy_regex::{Captures, Regex};
-use crate::ast::BaseClassDeclaration;
+use crate::ast::ExpressionWithCondition;
 use gospel_typelib::type_model::{PrimitiveType, UserDefinedTypeKind};
 
 #[derive(Logos, Debug, Clone, PartialEq, Display)]
@@ -86,6 +86,9 @@ enum CompilerToken {
     #[token("alignas")]
     #[strum(to_string = "alignas")]
     Alignas,
+    #[token("member_pack")]
+    #[strum(to_string = "member_pack")]
+    MemberPack,
     #[token("namespace")]
     #[strum(to_string = "namespace")]
     Namespace,
@@ -783,7 +786,8 @@ impl<'a> CompilerParserInstance<'a> {
         }
         // Consume the scope exit token now
         parser.ctx.discard_next()?;
-        let result_expression = StructStatement{ declarations, source_context, template_declaration: None, access_specifier: None, struct_kind, alignment_expression: None, name: None, base_class_expressions: Vec::new() };
+        let result_expression = StructStatement{ declarations, source_context, template_declaration: None, access_specifier: None, struct_kind,
+            alignment_expression: None, member_pack_expression: None, name: None, base_class_expressions: Vec::new() };
         Ok(AmbiguousExpression::unambiguous(parser, Expression::StructDeclarationExpression(Box::new(result_expression))))
     }
     fn parse_conditional_statement(mut self) -> anyhow::Result<ExactStatementCase<'a>> {
@@ -1478,9 +1482,9 @@ impl<'a> CompilerParserInstance<'a> {
                 StructInnerDeclaration::ConditionalDeclaration(Box::new(conditional_statement))
             }))
     }
-    fn parse_optional_alignment_expression(mut self) -> anyhow::Result<ExactParseCase<'a, Option<Expression>>> {
+    fn parse_optional_struct_conditional_declaration(mut self, operator_token: CompilerToken) -> anyhow::Result<ExactParseCase<'a, Option<ExpressionWithCondition>>> {
         // Parse optional alignment expression
-        if self.ctx.peek()? == CompilerToken::Alignas {
+        if self.ctx.peek()? == operator_token {
             self.ctx.discard_next()?;
             let alignment_expression_open_bracket = self.ctx.next()?;
             self.ctx.check_token(alignment_expression_open_bracket, CompilerToken::SubExpressionStart)?;
@@ -1490,14 +1494,23 @@ impl<'a> CompilerParserInstance<'a> {
                     let alignment_expression_close_bracket = parser.ctx.next()?;
                     parser.ctx.check_token(alignment_expression_close_bracket, CompilerToken::SubExpressionEnd)?;
                     Ok(AmbiguousExpression::unambiguous(parser, expression))
-                })?.disambiguate()?.map_data(|x| Some(x)))
+                })?
+               .flat_map_result(|mut parser, expression| {
+                   let source_context = parser.ctx.source_context();
+                   if parser.ctx.peek()? == CompilerToken::If {
+                       let condition_expression_case = parser.parse_postfix_conditional_expression()?;
+                       Ok(condition_expression_case.map_data(|condition_expression| Some(ExpressionWithCondition {condition_expression: Some(condition_expression), expression, source_context})).to_parse_result())
+                   } else {
+                       Ok(AmbiguousParsingResult::unambiguous(parser, Some(ExpressionWithCondition {condition_expression: None, expression, source_context})))
+                   }
+               })?.disambiguate_generic(|x| x.as_ref().unwrap().expression.to_string())?)
         } else {
             Ok(ExactParseCase::create(self, None))
         }
     }
     fn parse_struct_member_declaration(self) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
         let source_context = self.ctx.source_context();
-        self.parse_optional_alignment_expression()?
+        self.parse_optional_struct_conditional_declaration(CompilerToken::Alignas)?
             .map_result(|parser, alignment_expression| {
                 Ok(parser.parse_complete_expression()?.map_data(|x| (alignment_expression.clone(), x)))
             })?
@@ -1649,8 +1662,11 @@ impl<'a> CompilerParserInstance<'a> {
     fn parse_struct_statement(mut self, struct_kind: UserDefinedTypeKind, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>) -> anyhow::Result<ExactParseCase<'a, StructStatement>> {
         self.ctx.discard_next()?;
         let source_context = self.ctx.source_context();
-        self.parse_optional_alignment_expression()?
-        .map_result(|mut parser, alignment_expression| {
+        let member_pack_expression_case = self.parse_optional_struct_conditional_declaration(CompilerToken::MemberPack)?;
+        let alignment_expression_case = member_pack_expression_case.parser.parse_optional_struct_conditional_declaration(CompilerToken::Alignas)?;
+
+        ExactParseCase::create(alignment_expression_case.parser, (alignment_expression_case.data, member_pack_expression_case.data))
+        .map_result(|mut parser, (alignment_expression, member_pack_expression)| {
             let struct_name_token = parser.ctx.next()?;
             let name = parser.ctx.check_identifier(struct_name_token)?;
 
@@ -1665,21 +1681,21 @@ impl<'a> CompilerParserInstance<'a> {
                 }, |mut parser_case| {
                     if parser_case.parser.ctx.peek()? == CompilerToken::If {
                         let condition_expression = parser_case.parser.parse_postfix_conditional_expression()?;
-                        Ok(condition_expression.map_data(|y| BaseClassDeclaration{type_expression: parser_case.data.1.unwrap(), condition_expression: Some(y), source_context: parser_case.data.0}))
+                        Ok(condition_expression.map_data(|y| ExpressionWithCondition { expression: parser_case.data.1.unwrap(), condition_expression: Some(y), source_context: parser_case.data.0}))
                     } else {
-                        Ok(parser_case.map_data(|x| BaseClassDeclaration{type_expression: x.1.unwrap(), condition_expression: None, source_context: x.0}))
+                        Ok(parser_case.map_data(|x| ExpressionWithCondition { expression: x.1.unwrap(), condition_expression: None, source_context: x.0}))
                     }
-                }, |x| x.type_expression.to_string())?
+                }, |x| x.expression.to_string())?
                 .map_data(|base_class_expressions| {
-                    (alignment_expression.clone(), name.clone(), base_class_expressions)
+                    (alignment_expression.clone(), member_pack_expression.clone(), name.clone(), base_class_expressions)
                 }))
             } else {
                 // Next token should be scope enter if it is not a base class separator
                 parser.ctx.check_token(scope_enter_or_base_class_separator, CompilerToken::ScopeStart)?;
-                Ok(AmbiguousParsingResult::unambiguous(parser, (alignment_expression, name, Vec::new())))
+                Ok(AmbiguousParsingResult::unambiguous(parser, (alignment_expression, member_pack_expression, name, Vec::new())))
             }
         })?
-        .flat_map_result(|parser, (alignment_expression, name, base_class_expressions)| {
+        .flat_map_result(|parser, (alignment_expression, member_pack_expression, name, base_class_expressions)| {
             let mut declarations: Vec<StructInnerDeclaration> = Vec::new();
 
             // Parse struct statements until we encounter the scope exit token
@@ -1694,7 +1710,8 @@ impl<'a> CompilerParserInstance<'a> {
             let terminator_token = current_parser.ctx.next()?;
             current_parser.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
 
-            let result_statement = StructStatement{ source_context: source_context.clone(), template_declaration: template_declaration.clone(), access_specifier, struct_kind, alignment_expression, name: Some(name), base_class_expressions, declarations };
+            let result_statement = StructStatement{ source_context: source_context.clone(), template_declaration: template_declaration.clone(), access_specifier,
+                struct_kind, alignment_expression, member_pack_expression, name: Some(name), base_class_expressions, declarations };
             Ok(AmbiguousParsingResult::unambiguous(current_parser, result_statement))
         })?.disambiguate()
     }
@@ -2190,9 +2207,7 @@ impl<'a> CompilerParserInstance<'a> {
     fn member_declaration_to_source_text(declaration: &MemberDeclaration) -> String {
         let mut result_builder = String::with_capacity(20);
         if declaration.alignment_expression.is_some() {
-            result_builder.push_str("alignas(");
-            result_builder.push_str(Self::expression_to_source_text(declaration.alignment_expression.as_ref().unwrap()).as_str());
-            result_builder.push_str(") ");
+            result_builder.push_str(Self::expression_with_condition_to_source_text(declaration.alignment_expression.as_ref().unwrap(), Some("alignas")).as_str());
         }
         result_builder.push_str(Self::expression_to_source_text(&declaration.member_type_expression).as_str());
         result_builder.push(' ');
@@ -2258,9 +2273,11 @@ impl<'a> CompilerParserInstance<'a> {
         result_builder.push_str(")");
         result_builder
     }
-    fn base_class_declaration_to_source_text(base_class: &BaseClassDeclaration) -> String {
+    fn expression_with_condition_to_source_text(base_class: &ExpressionWithCondition, operator_name: Option<&str>) -> String {
         let mut result_builder = String::with_capacity(50);
-        result_builder.push_str(Self::expression_to_source_text(&base_class.type_expression).as_str());
+        if operator_name.is_some() { result_builder.push_str(operator_name.unwrap()); result_builder.push_str("("); }
+        result_builder.push_str(Self::expression_to_source_text(&base_class.expression).as_str());
+        if operator_name.is_some() { result_builder.push_str(")"); }
         if let Some(conditional_expression) = &base_class.condition_expression {
             result_builder.push_str(" ");
             result_builder.push_str(Self::postfix_conditional_expression_to_source_text(conditional_expression).as_str());
@@ -2278,15 +2295,16 @@ impl<'a> CompilerParserInstance<'a> {
             result_builder.push(' ');
         }
         result_builder.push_str("struct ");
+        if statement.member_pack_expression.is_some() {
+            result_builder.push_str(Self::expression_with_condition_to_source_text(statement.alignment_expression.as_ref().unwrap(), Some("member_pack")).as_str());
+        }
         if statement.alignment_expression.is_some() {
-            result_builder.push_str("alignas(");
-            result_builder.push_str(Self::expression_to_source_text(statement.alignment_expression.as_ref().unwrap()).as_str());
-            result_builder.push_str(") ");
+            result_builder.push_str(Self::expression_with_condition_to_source_text(statement.alignment_expression.as_ref().unwrap(), Some("alignas")).as_str());
         }
         result_builder.push_str(statement.name.as_ref().map(|x| x.as_str()).unwrap_or("<unnamed struct>"));
         if !statement.base_class_expressions.is_empty() {
             result_builder.push_str(" : ");
-            let expressions_source_text: Vec<String> = statement.base_class_expressions.iter().map(|x| Self::base_class_declaration_to_source_text(x)).collect();
+            let expressions_source_text: Vec<String> = statement.base_class_expressions.iter().map(|x| Self::expression_with_condition_to_source_text(x, None)).collect();
             result_builder.push_str(expressions_source_text.join(", ").as_str());
         }
         result_builder.push_str(" { ");
@@ -2414,11 +2432,6 @@ impl Display for StructInnerDeclaration {
 impl Display for DataStatement {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", CompilerParserInstance::data_statement_to_source_text(self))
-    }
-}
-impl Display for BaseClassDeclaration {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", CompilerParserInstance::base_class_declaration_to_source_text(self))
     }
 }
 impl Display for StructStatement {
