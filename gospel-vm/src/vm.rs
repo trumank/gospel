@@ -915,6 +915,7 @@ impl GospelVMExecutionState<'_> {
                     }
                     let return_value_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     let this_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_index_user_defined_type(this_type_index, run_context)?;
 
                     let function_type = FunctionType{return_value_type_index, argument_type_indices, this_type_index: Some(this_type_index)};
                     let result_type_index = run_context.store_type(Type::Function(function_type));

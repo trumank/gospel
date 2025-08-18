@@ -95,3 +95,14 @@ struct member_pack(2) if (Condition == 1) alignas(4) if (Condition == 1) TestAli
 };
 constexpr int TestAlignmentStruct1 = alignof(TestAlignmentStruct<1>);
 constexpr int TestAlignmentStruct2 = alignof(TestAlignmentStruct<2>);
+
+class TestClassWithVirtualFunctions {
+    virtual ~TestClassWithVirtualFunctions();
+
+    virtual void TestFunction1() const;
+    virtual char TestFunction2();
+    virtual TestClassWithVirtualFunctions* Duplicate(void*const, int);
+
+    int TestMember;
+};
+constexpr int SizeofTestClassWithVirtualFunctions = sizeof(TestClassWithVirtualFunctions);

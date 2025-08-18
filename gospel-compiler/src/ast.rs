@@ -345,6 +345,17 @@ pub struct BlockDeclaration {
     pub source_context: ASTSourceContext,
 }
 
+/// Represents a virtual function declaration
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VirtualFunctionDeclaration {
+    pub name: String,
+    pub return_value_type: Expression,
+    pub parameter_types: Vec<Expression>,
+    pub constant: bool,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
+}
+
 /// Represents a declaration in the struct definition
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StructInnerDeclaration {
@@ -353,6 +364,7 @@ pub enum StructInnerDeclaration {
     MemberDeclaration(Box<MemberDeclaration>),
     ConditionalDeclaration(Box<ConditionalDeclaration>),
     BlockDeclaration(Box<BlockDeclaration>),
+    VirtualFunctionDeclaration(Box<VirtualFunctionDeclaration>),
     EmptyDeclaration,
 }
 

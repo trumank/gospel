@@ -274,8 +274,8 @@ impl GospelSourceFunctionDefinition {
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[field_type_value, member_name_index])?, line_number))
     }
     pub fn add_variadic_instruction(&mut self, opcode: GospelOpcode, argument_count: u32, line_number: i32) -> anyhow::Result<u32> {
-        if opcode != GospelOpcode::Call && opcode != GospelOpcode::BindClosure && opcode != GospelOpcode::PCall {
-            bail!("Invalid opcode for variadic instruction (only Call is allowed)");
+        if opcode != GospelOpcode::Call && opcode != GospelOpcode::BindClosure && opcode != GospelOpcode::PCall && opcode != GospelOpcode::TypeFunctionCreateMember && opcode != GospelOpcode::TypeFunctionCreateGlobal {
+            bail!("Invalid opcode for variadic instruction (only Call, BindClosure, PCall and TypeFunctionCreateMember/Global are allowed)");
         }
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[argument_count])?, line_number))
     }

@@ -1,4 +1,4 @@
-﻿use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, BuiltinIdentifier, BuiltinIdentifierExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression};
+﻿use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, BuiltinIdentifier, BuiltinIdentifierExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression, VirtualFunctionDeclaration};
 use crate::lex_util::get_line_number_and_offset_from_index;
 use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
@@ -41,6 +41,9 @@ enum CompilerToken {
     #[token("volatile")]
     #[strum(to_string = "volatile")]
     Volatile,
+    #[token("virtual")]
+    #[strum(to_string = "virtual")]
+    Virtual,
     #[token("let")]
     #[strum(to_string = "let")]
     Let,
@@ -603,6 +606,13 @@ impl<'a> CompilerParserInstance<'a> {
             let result_expression = IntegerConstantExpression{ constant_value: literal_value, source_context };
             Ok(AmbiguousExpression::unambiguous(self, Expression::IntegerConstantExpression(Box::new(result_expression))))
         } else { Err(self.ctx.fail(format!("Expected integer literal, got {}", integer_constant_token))) }
+    }
+    fn parse_ambiguous_expression_list_simple(self, terminator_token: CompilerToken) -> anyhow::Result<AmbiguousParsingResult<'a, Vec<Expression>>> {
+        self.parse_ambiguous_expression_list_extended(terminator_token, |parser| {
+            Ok(ExactParseCase::create(parser, ((), true)))
+        }, |parser_case| {
+            Ok(parser_case.map_data(|x| x.1.unwrap()))
+        }, |x| x.to_string())
     }
     fn parse_ambiguous_expression_list<T: Clone, S: Fn(&mut Self) -> anyhow::Result<(T, bool)>>(self, terminator_token: CompilerToken, prefix_parser: S) -> anyhow::Result<AmbiguousParsingResult<'a, Vec<(T, Option<Expression>)>>> {
         self.parse_ambiguous_expression_list_extended(terminator_token, |mut parser| {
@@ -1589,6 +1599,58 @@ impl<'a> CompilerParserInstance<'a> {
         let result_statement = BlockDeclaration{ source_context, declarations };
         Ok(ExactStructInnerDeclarationCase::create(current_parser, StructInnerDeclaration::BlockDeclaration(Box::new(result_statement))))
     }
+    fn parse_regular_virtual_function_declaration(self, source_context: &ASTSourceContext) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
+        self.parse_complete_expression()?.flat_map_result(|mut parser, return_value_type| {
+            let function_name_token = parser.ctx.next()?;
+            let function_name = parser.ctx.check_identifier(function_name_token)?;
+
+            let argument_list_start_token = parser.ctx.next()?;
+            parser.ctx.check_token(argument_list_start_token, CompilerToken::SubExpressionStart)?;
+
+            Ok(parser.parse_ambiguous_expression_list_simple(CompilerToken::SubExpressionEnd)?.map_data(|argument_list| { (function_name.clone(), return_value_type.clone(), argument_list) }))
+        })?.flat_map_result(|mut parser, (function_name, return_value_type, argument_list)| {
+            let is_function_constant = if parser.ctx.peek()? == CompilerToken::Const {
+                parser.ctx.discard_next()?;
+                true
+            } else { false };
+
+            let statement_terminator_token = parser.ctx.next()?;
+            parser.ctx.check_token(statement_terminator_token, CompilerToken::Terminator)?;
+
+            let result_declaration = VirtualFunctionDeclaration{name: function_name, return_value_type, parameter_types: argument_list, source_context: source_context.clone(), constant: is_function_constant};
+            Ok(AmbiguousParsingResult::unambiguous(parser, StructInnerDeclaration::VirtualFunctionDeclaration(Box::new(result_declaration))))
+        })?.disambiguate()
+    }
+    fn parse_destructor_virtual_function_declaration(mut self, source_context: &ASTSourceContext) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
+        let destructor_token = self.ctx.next()?;
+        self.ctx.check_token(destructor_token, CompilerToken::BitwiseInverse)?;
+
+        let owner_struct_name_token = self.ctx.next()?;
+        self.ctx.check_identifier(owner_struct_name_token)?;
+        let function_name = String::from("@destructor");
+
+        let argument_list_start_token = self.ctx.next()?;
+        self.ctx.check_token(argument_list_start_token, CompilerToken::SubExpressionStart)?;
+
+        let argument_list_end_token = self.ctx.next()?;
+        self.ctx.check_token(argument_list_end_token, CompilerToken::SubExpressionEnd)?;
+
+        let statement_terminator_token = self.ctx.next()?;
+        self.ctx.check_token(statement_terminator_token, CompilerToken::Terminator)?;
+
+        let return_value_type = PrimitiveTypeExpression{primitive_type: PrimitiveType::Void, source_context: source_context.clone()};
+        let result_declaration = VirtualFunctionDeclaration{name: function_name, return_value_type: Expression::PrimitiveTypeExpression(Box::new(return_value_type)), parameter_types: Vec::new(), constant: false, source_context: source_context.clone()};
+        Ok(ExactStructInnerDeclarationCase::create(self, StructInnerDeclaration::VirtualFunctionDeclaration(Box::new(result_declaration))))
+    }
+    fn parse_virtual_function_declaration(mut self) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
+        let virtual_function_token = self.ctx.next()?;
+        self.ctx.check_token(virtual_function_token, CompilerToken::Virtual)?;
+        let source_context = self.ctx.source_context();
+
+        if self.ctx.peek()? == CompilerToken::BitwiseInverse {
+            self.parse_destructor_virtual_function_declaration(&source_context)
+        } else { self.parse_regular_virtual_function_declaration(&source_context) }
+    }
     fn parse_templated_access_specifier_struct_inner_declaration(mut self, template_declaration: TemplateDeclaration, access_specifier: DeclarationAccessSpecifier) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
         // discard access specifier token
         self.ctx.discard_next()?;
@@ -1657,6 +1719,7 @@ impl<'a> CompilerParserInstance<'a> {
             CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, None, None)?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
             CompilerToken::If => self.parse_struct_conditional_declaration(),
             CompilerToken::ScopeStart => self.parse_struct_block_declaration(),
+            CompilerToken::Virtual => self.parse_virtual_function_declaration(),
             CompilerToken::Terminator => self.parse_empty_struct_inner_declaration(),
             // In all other cases assume it is a member declaration. Telling for sure is difficult because it can start with an arbitrary type expression
             _ => self.parse_struct_member_declaration(),
@@ -2274,6 +2337,21 @@ impl<'a> CompilerParserInstance<'a> {
         result_builder.push(';');
         result_builder
     }
+    fn virtual_function_to_source_text(virtual_function: &VirtualFunctionDeclaration) -> String {
+        let mut result_builder = String::with_capacity(50);
+        result_builder.push_str("virtual ");
+        result_builder.push_str(Self::expression_to_source_text(&virtual_function.return_value_type).as_str());
+        result_builder.push_str(" ");
+        result_builder.push_str(virtual_function.name.as_str());
+        result_builder.push_str("(");
+        result_builder.push_str(Self::delimited_expression_list_to_source_text(&virtual_function.parameter_types).as_str());
+        result_builder.push_str(")");
+        if virtual_function.constant {
+            result_builder.push_str(" const");
+        }
+        result_builder.push_str(";");
+        result_builder
+    }
     fn struct_inner_declaration_to_source_text(declaration: &StructInnerDeclaration) -> String {
         match declaration {
             StructInnerDeclaration::BlockDeclaration(inner_declaration) => Self::block_declaration_to_source_text(&**inner_declaration),
@@ -2281,6 +2359,7 @@ impl<'a> CompilerParserInstance<'a> {
             StructInnerDeclaration::MemberDeclaration(inner_declaration) => Self::member_declaration_to_source_text(&**inner_declaration),
             StructInnerDeclaration::DataDeclaration(inner_declaration) => Self::data_statement_to_source_text(&**inner_declaration),
             StructInnerDeclaration::NestedStructDeclaration(inner_declaration) => Self::struct_statement_to_source_text(&**inner_declaration),
+            StructInnerDeclaration::VirtualFunctionDeclaration(inner_declaration) => Self::virtual_function_to_source_text(&**inner_declaration),
             StructInnerDeclaration::EmptyDeclaration => ";".to_string(),
         }
     }
