@@ -146,7 +146,7 @@ fn fork_type_graph_internal<'a, T : TypeGraphLike<'a>>(graph: &'a T, type_index:
     type_lookup.insert(type_index, new_index);
 
     let copied_type = match graph.type_by_index(type_index) {
-        Type::Pointer(pointer_type) => Type::Pointer(PointerType{pointee_type_index: fork_type_graph_internal(graph, pointer_type.pointee_type_index, result, type_lookup)}),
+        Type::Pointer(pointer_type) => Type::Pointer(PointerType{pointee_type_index: fork_type_graph_internal(graph, pointer_type.pointee_type_index, result, type_lookup), is_reference: pointer_type.is_reference}),
         Type::Array(array_type) => Type::Array(ArrayType{element_type_index: fork_type_graph_internal(graph, array_type.element_type_index, result, type_lookup), array_length: array_type.array_length}),
         Type::CVQualified(cv_qualified_type) => Type::CVQualified(CVQualifiedType{base_type_index: fork_type_graph_internal(graph, type_index, result, type_lookup), constant: cv_qualified_type.constant, volatile: cv_qualified_type.volatile}),
         Type::Primitive(primitive_type) => Type::Primitive(primitive_type.clone()),
@@ -279,6 +279,8 @@ impl ArrayType {
 pub struct PointerType {
     /// Index of the pointee type for this pointer
     pub pointee_type_index: usize,
+    /// True if this pointer is a C++ reference
+    pub is_reference: bool,
 }
 impl PointerType {
     /// Returns the pointee type for the pointer type

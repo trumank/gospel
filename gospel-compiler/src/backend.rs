@@ -553,9 +553,14 @@ impl CompilerFunctionBuilder {
                 self.function_definition.add_simple_instruction(GospelOpcode::TypeCalculateSize, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
                 Ok(ExpressionValueType::Int)
             }
-            UnaryOperator::StructMakePointer => {
+            UnaryOperator::CreatePointerType => {
                 Self::check_expression_type(&source_context, ExpressionValueType::Typename, inner_expression_type)?;
                 self.function_definition.add_simple_instruction(GospelOpcode::TypePointerCreate, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+                Ok(ExpressionValueType::Typename)
+            }
+            UnaryOperator::CreateReferenceType => {
+                Self::check_expression_type(&source_context, ExpressionValueType::Typename, inner_expression_type)?;
+                self.function_definition.add_simple_instruction(GospelOpcode::TypePointerCreateReference, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
                 Ok(ExpressionValueType::Typename)
             }
             UnaryOperator::BoolNegate => {

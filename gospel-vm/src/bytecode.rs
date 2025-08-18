@@ -200,6 +200,10 @@ pub enum GospelOpcode {
     TypeFunctionGetArgumentType = 0xB4, // ; [pop stack] [pop stack] -> [push stack]
     #[strum(props(stack_in_count = "2"))]
     TypeUDTSetMemberPackAlignment = 0xB5, // ; [pop stack] [pop stack] ->
+    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
+    TypePointerCreateReference = 0xB6, // ; [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
+    TypePointerIsReference = 0xB7, // ; [pop stack] -> [push stack]
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]

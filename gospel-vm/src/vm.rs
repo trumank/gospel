@@ -875,7 +875,13 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::TypePointerCreate => {
                     let pointee_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
-                    let pointer_type = PointerType{pointee_type_index};
+                    let pointer_type = PointerType{pointee_type_index, is_reference: false};
+                    let result_type_index = run_context.store_type(Type::Pointer(pointer_type));
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
+                }
+                GospelOpcode::TypePointerCreateReference => {
+                    let pointee_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    let pointer_type = PointerType{pointee_type_index, is_reference: true};
                     let result_type_index = run_context.store_type(Type::Pointer(pointer_type));
                     state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
                 }
@@ -1128,13 +1134,21 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::TypePointerGetPointeeType => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
-
                     let result_type_index = if let Type::Pointer(pointer_type) = run_context.type_by_index(type_index) {
                         pointer_type.pointee_type_index
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a pointer type; cannot retrieve pointee type", type_index);
                     };
                     state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
+                }
+                GospelOpcode::TypePointerIsReference => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    let result_value = if let Type::Pointer(pointer_type) = run_context.type_by_index(type_index) {
+                        if pointer_type.is_reference { 1 } else { 0 }
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not a pointer type; cannot determine if it is a reference type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result_value))?;
                 }
                 GospelOpcode::TypeArrayGetElementType => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;

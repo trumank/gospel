@@ -98,7 +98,8 @@ pub struct BinaryExpression {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnaryOperator {
-    StructMakePointer,
+    CreatePointerType,
+    CreateReferenceType,
     StructSizeOf,
     StructAlignOf,
     BitwiseInverse,

@@ -73,7 +73,7 @@ enum CompilerToken {
     Assignment,
     #[token("&")]
     #[strum(to_string = "&")]
-    BitwiseAnd,
+    ReferenceOrBitwiseAnd,
     #[token("*")]
     #[strum(to_string = "*")]
     PointerOrMultiply,
@@ -499,7 +499,7 @@ impl<'a> CompilerParserInstance<'a> {
     fn try_parse_binary_operator(token: CompilerToken) -> Option<(BinaryOperator, bool)> {
         match token {
             CompilerToken::BitwiseOr => Some((BinaryOperator::BitwiseOr, false)),
-            CompilerToken::BitwiseAnd => Some((BinaryOperator::BitwiseAnd, false)),
+            CompilerToken::ReferenceOrBitwiseAnd => Some((BinaryOperator::BitwiseAnd, false)),
             CompilerToken::BitwiseXor => Some((BinaryOperator::BitwiseXor, false)),
             CompilerToken::BitwiseShiftLeft => Some((BinaryOperator::BitwiseShiftLeft, false)),
             CompilerToken::Add => Some((BinaryOperator::ArithmeticAdd, false)),
@@ -1231,10 +1231,27 @@ impl<'a> CompilerParserInstance<'a> {
                         forked_parser.ctx.check_token(pointer_operator_token, CompilerToken::PointerOrMultiply)?;
                         let source_context = forked_parser.ctx.source_context();
 
-                        let result_expression = UnaryExpression{ operator: UnaryOperator::StructMakePointer, expression, source_context };
+                        let result_expression = UnaryExpression{ operator: UnaryOperator::CreatePointerType, expression, source_context };
                         Self::wrap_expression_with_possible_cv_qualifiers(AmbiguousExpression::unambiguous(forked_parser, Expression::UnaryExpression(Box::new(result_expression))))
                     } else {
                         // This is a normal case where we do not digest the pointer token, so just return the expression as-is
+                        Ok(AmbiguousExpression::unambiguous(forked_parser, expression))
+                    }
+                })
+            } else if parser.ctx.peek_or_eof()? == Some(CompilerToken::ReferenceOrBitwiseAnd) {
+                // This could be a reference unary operator, but this is ambiguous because it could also be interpreted as an AND logical operator
+                // So we need to pursue both options, and hopefully we will be able to disambiguate them later
+                ExactExpressionCase{ parser, data: simple_expression }.repeat(2).flat_map_result(|mut forked_parser, (expression, case_index)| {
+                    if case_index == 0 {
+                        // This is a reference unary operator case, so consume the reference token now
+                        let pointer_operator_token = forked_parser.ctx.next()?;
+                        forked_parser.ctx.check_token(pointer_operator_token, CompilerToken::ReferenceOrBitwiseAnd)?;
+                        let source_context = forked_parser.ctx.source_context();
+
+                        let result_expression = UnaryExpression{ operator: UnaryOperator::CreateReferenceType, expression, source_context };
+                        Self::wrap_expression_with_possible_cv_qualifiers(AmbiguousExpression::unambiguous(forked_parser, Expression::UnaryExpression(Box::new(result_expression))))
+                    } else {
+                        // This is a normal case where we do not digest the reference token, so just return the expression as-is
                         Ok(AmbiguousExpression::unambiguous(forked_parser, expression))
                     }
                 })
@@ -1917,7 +1934,8 @@ impl<'a> CompilerParserInstance<'a> {
     }
     fn unary_operator_to_source_text(operator: UnaryOperator) -> (&'static str, bool, bool, bool) {
         match operator {
-            UnaryOperator::StructMakePointer => ("*", true, true, true),
+            UnaryOperator::CreatePointerType => ("*", true, true, true),
+            UnaryOperator::CreateReferenceType => ("&", true, true, true),
             UnaryOperator::ArithmeticNegate => ("-", false, false, false),
             UnaryOperator::BitwiseInverse => ("~", false, false, false),
             UnaryOperator::BoolNegate => ("!", false, false, false),
