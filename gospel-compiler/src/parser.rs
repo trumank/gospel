@@ -5,6 +5,7 @@ use logos::{Lexer, Logos};
 use std::fmt::{Display, Formatter};
 use strum::Display;
 use fancy_regex::{Captures, Regex};
+use crate::ast::BaseClassDeclaration;
 use gospel_typelib::type_model::PrimitiveType;
 
 #[derive(Logos, Debug, Clone, PartialEq, Display)]
@@ -397,16 +398,19 @@ impl<'a, T : Clone> AmbiguousParsingResult<'a, T> {
         }
         AmbiguousParsingResult::<'a, O>::checked_from_cases(result_cases, errored_cases)
     }
-}
-impl<'a, T : Clone + ToString> AmbiguousParsingResult<'a, T> {
-    fn disambiguate(mut self) -> anyhow::Result<ExactParseCase<'a, T>> {
+    fn disambiguate_generic<S: Fn(&T) -> String>(mut self, to_string: S) -> anyhow::Result<ExactParseCase<'a, T>> {
         if self.cases.len() != 1 {
             let context_message = self.cases[0].parser.ctx.context_str();
-            let error_messages: Vec<String> = self.cases.iter_mut().map(|x| x.data.to_string()).collect();
+            let error_messages: Vec<String> = self.cases.iter_mut().map(|x| to_string(&x.data)).collect();
             Err(anyhow!("Ambiguous source text {}\ncould be {}", context_message, error_messages.join("\nor ")))
         } else {
             Ok(self.cases.pop().unwrap())
         }
+    }
+}
+impl<'a, T : Clone + ToString> AmbiguousParsingResult<'a, T> {
+    fn disambiguate(self) -> anyhow::Result<ExactParseCase<'a, T>> {
+        self.disambiguate_generic(|x| x.to_string())
     }
 }
 
@@ -592,9 +596,9 @@ impl<'a> CompilerParserInstance<'a> {
             Ok(ExactParseCase::create(parser, data))
         }, |parser_case| {
             Ok(parser_case)
-        })
+        }, |x| x.1.as_ref().unwrap().to_string())
     }
-    fn parse_ambiguous_expression_list_extended<T: Clone, R: Clone, PR: Fn(Self) -> anyhow::Result<ExactParseCase<'a, (T, bool)>>, PO: Fn(ExactParseCase<'a, (T, Option<Expression>)>) -> anyhow::Result<ExactParseCase<R>>>(mut self, terminator_token: CompilerToken, prefix_parser: PR, postfix_parser: PO) -> anyhow::Result<AmbiguousParsingResult<'a, Vec<R>>> {
+    fn parse_ambiguous_expression_list_extended<T: Clone, R: Clone, PR: Fn(Self) -> anyhow::Result<ExactParseCase<'a, (T, bool)>>, PO: Fn(ExactParseCase<'a, (T, Option<Expression>)>) -> anyhow::Result<ExactParseCase<R>>, POS: Fn(&R) -> String>(mut self, terminator_token: CompilerToken, prefix_parser: PR, postfix_parser: PO, to_string: POS) -> anyhow::Result<AmbiguousParsingResult<'a, Vec<R>>> {
         // Empty expression list is allowed and is not ambiguous
         if self.ctx.peek()? == terminator_token {
             self.ctx.discard_next()?;
@@ -645,32 +649,28 @@ impl<'a> CompilerParserInstance<'a> {
 
             // Parse the ambiguous argument and do some processing to remove expressions that cannot be valid under any circumstances (e.g. not followed by item separator or terminator token)
             // If there are no valid combinations, but we have existing cases, assume one of them is valid and this grammar take is not
-            let possible_arguments = Self::parse_complete_expression(prefix_parser).and_then(|x| x.flat_map_result(|mut forked_parser, expression| {
-                let separator_or_terminator_token = forked_parser.ctx.peek()?;
+            let possible_arguments = Self::parse_complete_expression(prefix_parser).and_then(|x| x.flat_map_result(|forked_parser, expression| {
+                let mut postfix_expression_case = postfix_parser(ExactParseCase::create(forked_parser, (prefix_user_data.clone(), Some(expression))))?;
+                let separator_or_terminator_token = postfix_expression_case.parser.ctx.peek()?;
                 if separator_or_terminator_token != terminator_token && separator_or_terminator_token != CompilerToken::Separator {
-                    Err(forked_parser.ctx.fail(format!("Expected , or {}, got {}", terminator_token.clone(), separator_or_terminator_token)))
-                } else { Ok(AmbiguousExpression::unambiguous(forked_parser, expression)) }
+                    return Err(postfix_expression_case.parser.ctx.fail(format!("Expected , or {}, got {}", terminator_token.clone(), separator_or_terminator_token)))
+                };
+                Ok(postfix_expression_case.to_parse_result())
             }));
             if possible_arguments.is_err() && !finished_cases.is_empty() {
                 break;
             }
 
-            let mut confirmed_argument_values: Vec<ExactExpressionCase> = Vec::new();
+            let mut confirmed_argument_values: Vec<ExactParseCase<'a, R>> = Vec::new();
             for mut argument_value in possible_arguments?.cases {
                 // Digesting next token is safe here because we have confirmed that this is a valid grammar during earlier disambiguation pass
                 let separator_or_terminator_token = argument_value.parser.ctx.next()?;
 
                 // This is a tentative end of the argument list, so add it to the resulting cases
                 if separator_or_terminator_token == terminator_token {
-                    // If this case failed to parse due to the postfix, just discard it
-                    let postfix_expression_case_result = postfix_parser(argument_value.map_data(|x| (prefix_user_data.clone(), Some(x))));
-                    if postfix_expression_case_result.is_err() && !finished_cases.is_empty() {
-                        continue;
-                    }
-                    let postfix_expression_case = postfix_expression_case_result?;
                     let mut complete_arguments: Vec<R> = stashed_arguments.clone();
-                    complete_arguments.push(postfix_expression_case.data);
-                    finished_cases.push(ExactParseCase::create(postfix_expression_case.parser, complete_arguments))
+                    complete_arguments.push(argument_value.data);
+                    finished_cases.push(ExactParseCase::create(argument_value.parser, complete_arguments))
                 } else {
                     // This is not the last argument in the template argument list, as indicated by the comma, which means that we should stash it and continue looking
                     // However, for ambiguous grammar that cannot be resolved at this point, we have to first stash all comma variants and safety check that there is a single one before appending it
@@ -681,15 +681,9 @@ impl<'a> CompilerParserInstance<'a> {
             if confirmed_argument_values.len() != 1 && !finished_cases.is_empty() {
                 break;
             }
-            let result_expression_case = AmbiguousExpression::from_cases(confirmed_argument_values).disambiguate()?.map_data(|x| (prefix_user_data, Some(x)));
-            let postfix_expression_case_result = postfix_parser(result_expression_case);
-            if postfix_expression_case_result.is_err() && !finished_cases.is_empty() {
-                break;
-            }
-            let postfix_expression_case = postfix_expression_case_result?;
-
-            stashed_arguments.push(postfix_expression_case.data);
-            stashed_parser = postfix_expression_case.parser;
+            let result_expression_case = AmbiguousParsingResult::from_cases(confirmed_argument_values).disambiguate_generic(|x| to_string(x))?;
+            stashed_arguments.push(result_expression_case.data);
+            stashed_parser = result_expression_case.parser;
         }
         Ok(AmbiguousParsingResult::from_cases(finished_cases))
     }
@@ -1593,6 +1587,20 @@ impl<'a> CompilerParserInstance<'a> {
             _ => self.parse_struct_member_declaration(),
         }
     }
+    fn parse_postfix_conditional_expression(mut self) -> anyhow::Result<ExactExpressionCase<'a>> {
+        let conditional_statement_token = self.ctx.next()?;
+        self.ctx.check_token(conditional_statement_token, CompilerToken::If)?;
+
+        let condition_enter_bracket_token = self.ctx.next()?;
+        self.ctx.check_token(condition_enter_bracket_token, CompilerToken::SubExpressionStart)?;
+
+        Ok(self.parse_complete_expression()?
+        .flat_map_result(|mut parser, expression| {
+            let condition_exit_bracket_token = parser.ctx.next()?;
+            parser.ctx.check_token(condition_exit_bracket_token, CompilerToken::SubExpressionEnd)?;
+            Ok(AmbiguousExpression::unambiguous(parser, expression))
+        })?.disambiguate()?)
+    }
     fn parse_struct_statement(mut self, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>) -> anyhow::Result<ExactParseCase<'a, StructStatement>> {
         let struct_statement_token = self.ctx.next()?;
         self.ctx.check_token(struct_statement_token, CompilerToken::Struct)?;
@@ -1605,11 +1613,20 @@ impl<'a> CompilerParserInstance<'a> {
             // Parse base classes if the next token is a base class separator
             let scope_enter_or_base_class_separator = parser.ctx.next()?;
             if scope_enter_or_base_class_separator == CompilerToken::BaseClass {
-                Ok(parser.parse_ambiguous_expression_list(CompilerToken::ScopeStart, |_| { Ok(((), true)) })?
-                    .map_data(|base_class_expressions_raw| {
-                        let base_class_expressions: Vec<Expression> = base_class_expressions_raw.into_iter().map(|(_, expr)| expr.unwrap()).collect();
-                        (alignment_expression.clone(), name.clone(), base_class_expressions)
-                    }))
+                Ok(parser.parse_ambiguous_expression_list_extended(CompilerToken::ScopeStart, |parser| {
+                    let source_context = parser.ctx.source_context();
+                    Ok(ExactParseCase::create(parser, (source_context, true)))
+                }, |mut parser_case| {
+                    if parser_case.parser.ctx.peek()? == CompilerToken::If {
+                        let condition_expression = parser_case.parser.parse_postfix_conditional_expression()?;
+                        Ok(condition_expression.map_data(|y| BaseClassDeclaration{type_expression: parser_case.data.1.unwrap(), condition_expression: Some(y), source_context: parser_case.data.0}))
+                    } else {
+                        Ok(parser_case.map_data(|x| BaseClassDeclaration{type_expression: x.1.unwrap(), condition_expression: None, source_context: x.0}))
+                    }
+                }, |x| x.type_expression.to_string())?
+                .map_data(|base_class_expressions| {
+                    (alignment_expression.clone(), name.clone(), base_class_expressions)
+                }))
             } else {
                 // Next token should be scope enter if it is not a base class separator
                 parser.ctx.check_token(scope_enter_or_base_class_separator, CompilerToken::ScopeStart)?;
@@ -2164,6 +2181,22 @@ impl<'a> CompilerParserInstance<'a> {
             StructInnerDeclaration::EmptyDeclaration => ";".to_string(),
         }
     }
+    fn postfix_conditional_expression_to_source_text(expression: &Expression) -> String {
+        let mut result_builder = String::with_capacity(50);
+        result_builder.push_str("if (");
+        result_builder.push_str(Self::expression_to_source_text(expression).as_str());
+        result_builder.push_str(")");
+        result_builder
+    }
+    fn base_class_declaration_to_source_text(base_class: &BaseClassDeclaration) -> String {
+        let mut result_builder = String::with_capacity(50);
+        result_builder.push_str(Self::expression_to_source_text(&base_class.type_expression).as_str());
+        if let Some(conditional_expression) = &base_class.condition_expression {
+            result_builder.push_str(" ");
+            result_builder.push_str(Self::postfix_conditional_expression_to_source_text(conditional_expression).as_str());
+        }
+        result_builder
+    }
     fn struct_statement_to_source_text(statement: &StructStatement) -> String {
         let mut result_builder = String::with_capacity(50);
         if statement.template_declaration.is_some() {
@@ -2183,7 +2216,8 @@ impl<'a> CompilerParserInstance<'a> {
         result_builder.push_str(statement.name.as_ref().map(|x| x.as_str()).unwrap_or("<unnamed struct>"));
         if !statement.base_class_expressions.is_empty() {
             result_builder.push_str(" : ");
-            result_builder.push_str(Self::delimited_expression_list_to_source_text(&statement.base_class_expressions).as_str());
+            let expressions_source_text: Vec<String> = statement.base_class_expressions.iter().map(|x| Self::base_class_declaration_to_source_text(x)).collect();
+            result_builder.push_str(expressions_source_text.join(", ").as_str());
         }
         result_builder.push_str(" { ");
         for declaration in &statement.declarations {
@@ -2310,6 +2344,11 @@ impl Display for StructInnerDeclaration {
 impl Display for DataStatement {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", CompilerParserInstance::data_statement_to_source_text(self))
+    }
+}
+impl Display for BaseClassDeclaration {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", CompilerParserInstance::base_class_declaration_to_source_text(self))
     }
 }
 impl Display for StructStatement {

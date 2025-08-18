@@ -10,7 +10,7 @@ use gospel_vm::bytecode::GospelOpcode;
 use gospel_vm::module::GospelContainer;
 use gospel_vm::gospel::{GospelPlatformConfigProperty, GospelValueType};
 use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter, GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceObjectReference, GospelSourceSlotBinding, GospelSourceStaticValue, GospelSourceStructDefinition, GospelSourceStructField};
-use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayTypeExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, BuiltinIdentifierExpression, BuiltinIdentifier, DeclarationAccessSpecifier, PrimitiveTypeExpression};
+use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayTypeExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, BuiltinIdentifierExpression, BuiltinIdentifier, DeclarationAccessSpecifier, PrimitiveTypeExpression, BaseClassDeclaration};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CompilerSourceContext {
@@ -917,12 +917,23 @@ impl CompilerFunctionBuilder {
         self.function_definition.add_simple_instruction(GospelOpcode::TypeUDTSetUserAlignment, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         Ok({})
     }
-    fn compile_type_layout_base_class_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, base_class_expression: &Expression, source_context: &CompilerSourceContext) -> CompilerResult<()> {
-        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+    fn compile_type_layout_base_class_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, base_class_expression: &BaseClassDeclaration) -> CompilerResult<()> {
+        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: base_class_expression.source_context.clone()};
+        let possibly_jump_to_end_fixup = if let Some(condition_expression) = &base_class_expression.condition_expression {
+            let condition_expression_type = self.compile_expression(scope, condition_expression)?;
+            Self::check_expression_type(&source_context, ExpressionValueType::Int, condition_expression_type)?;
+            Some(self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz, Self::get_line_number(&source_context)).with_source_context(&source_context)?.1)
+        } else { None };
 
-        let base_class_expression_type = self.compile_expression(scope, base_class_expression)?;
-        Self::check_expression_type(source_context, ExpressionValueType::Typename, base_class_expression_type)?;
+        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        let base_class_expression_type = self.compile_expression(scope, &base_class_expression.type_expression)?;
+        Self::check_expression_type(&source_context, ExpressionValueType::Typename, base_class_expression_type)?;
         self.function_definition.add_simple_instruction(GospelOpcode::TypeUDTAddBaseClass, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+
+        if let Some(jump_to_end_fixup) = possibly_jump_to_end_fixup {
+            let end_instruction_index = self.function_definition.current_instruction_count();
+            self.function_definition.fixup_control_flow_instruction(jump_to_end_fixup, end_instruction_index).with_source_context(&source_context)?;
+        }
         Ok({})
     }
     fn compile_type_layout_finalization(&mut self, type_layout_slot_index: u32, type_layout_metadata_slot_index: u32, source_context: &CompilerSourceContext) -> CompilerResult<()> {
@@ -1251,7 +1262,7 @@ struct CompilerStructFunctionGenerator {
     struct_name: String,
     struct_meta_layout: CompilerStructMetaLayoutReference,
     alignment_expression: Option<Expression>,
-    base_class_expressions: Vec<Expression>,
+    base_class_expressions: Vec<BaseClassDeclaration>,
     source_context: CompilerSourceContext,
     fragments: Vec<Box<dyn CompilerStructFragmentGenerator>>,
 }
@@ -1265,7 +1276,7 @@ impl CompilerFunctionCodeGenerator for CompilerStructFunctionGenerator {
             function_builder.compile_type_layout_alignment_expression(&function_builder.function_scope.clone(), type_layout_slot_index, alignment_expression, &self.source_context)?;
         }
         for base_class_expression in &self.base_class_expressions {
-            function_builder.compile_type_layout_base_class_expression(&function_builder.function_scope.clone(), type_layout_slot_index, base_class_expression, &self.source_context)?;
+            function_builder.compile_type_layout_base_class_expression(&function_builder.function_scope.clone(), type_layout_slot_index, base_class_expression)?;
         }
         self.fragments.iter().map(|struct_fragment| {
             struct_fragment.compile_fragment(&mut function_builder, type_layout_slot_index, type_layout_metadata_slot_index, &self.struct_meta_layout)

@@ -346,6 +346,15 @@ pub enum StructInnerDeclaration {
     EmptyDeclaration,
 }
 
+/// Represents a base class declaration for a struct, possibly gated behind a condition
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BaseClassDeclaration {
+    pub condition_expression: Option<Expression>,
+    pub type_expression: Expression,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
+}
+
 /// Declaration of a (potentially templated) struct
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructStatement {
@@ -353,7 +362,7 @@ pub struct StructStatement {
     pub access_specifier: Option<DeclarationAccessSpecifier>,
     pub alignment_expression: Option<Expression>,
     pub name: Option<String>,
-    pub base_class_expressions: Vec<Expression>,
+    pub base_class_expressions: Vec<BaseClassDeclaration>,
     pub declarations: Vec<StructInnerDeclaration>,
     #[serde(default)]
     pub source_context: ASTSourceContext,

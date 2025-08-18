@@ -72,3 +72,9 @@ const int SizeofEmptyStruct = sizeof(EmptyStruct);
 
 template<int Test = 5> struct TemplateWithDefault {};
 type DefaultInstantiation = TemplateWithDefault<>;
+
+template<int Condition>
+struct ConditionalParentStruct : TArray<int32_t> if (Condition == 1), EmptyStruct {};
+
+type ConditionalParentStruct1 = ConditionalParentStruct<1>;
+type ConditionalParentStruct2 = ConditionalParentStruct<2>;
