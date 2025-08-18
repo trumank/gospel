@@ -1,4 +1,4 @@
-﻿use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, BuiltinIdentifier, BuiltinIdentifierExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression};
+﻿use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, BuiltinIdentifier, BuiltinIdentifierExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression};
 use crate::lex_util::get_line_number_and_offset_from_index;
 use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
@@ -35,6 +35,12 @@ enum CompilerToken {
     #[token("constexpr")]
     #[strum(to_string = "constexpr")]
     Constexpr,
+    #[token("const")]
+    #[strum(to_string = "const")]
+    Const,
+    #[token("volatile")]
+    #[strum(to_string = "volatile")]
+    Volatile,
     #[token("let")]
     #[strum(to_string = "let")]
     Let,
@@ -985,7 +991,7 @@ impl<'a> CompilerParserInstance<'a> {
             let array_exit_expression = parser.ctx.next()?;
             parser.ctx.check_token(array_exit_expression, CompilerToken::ArraySubscriptEnd)?;
             let result_expression = ArrayTypeExpression { element_type_expression: element_type_expression.clone(), array_length_expression: length_expression, source_context: source_context.clone() };
-            Ok(AmbiguousExpression::unambiguous(parser, Expression::ArrayIndexExpression(Box::new(result_expression))))
+            Self::wrap_expression_with_possible_cv_qualifiers(AmbiguousExpression::unambiguous(parser, Expression::ArrayIndexExpression(Box::new(result_expression))))
         })
     }
     fn parse_bracketed_unary_operator_expression(mut self, operator: UnaryOperator) -> anyhow::Result<AmbiguousExpression<'a>> {
@@ -1183,8 +1189,33 @@ impl<'a> CompilerParserInstance<'a> {
         }
         AmbiguousExpression::checked_from_cases(result_cases, failed_cases)
     }
+    fn wrap_expression_with_possible_cv_qualifiers(ambiguous_expression: AmbiguousExpression<'a>) -> anyhow::Result<AmbiguousExpression<'a>> {
+        ambiguous_expression.flat_map_result(|mut parser, expression| {
+            let source_context = parser.ctx.source_context();
+            let mut seen_const = false;
+            let mut seen_volatile = false;
+            loop {
+                let next_token = parser.ctx.peek_or_eof()?;
+                if next_token == Some(CompilerToken::Const) {
+                    if seen_const { return Err(parser.ctx.fail("Duplicate const modifier applied to type")); }
+                    parser.ctx.discard_next()?;
+                    seen_const = true;
+                } else if next_token == Some(CompilerToken::Volatile) {
+                    if seen_volatile { return Err(parser.ctx.fail("Duplicate volatile modifier applied to type")); }
+                    parser.ctx.discard_next()?;
+                    seen_volatile = true;
+                } else { break; }
+            }
+            if seen_const || seen_volatile {
+                let result_expression = CVQualifiedExpression{base_expression: expression, constant: seen_const, volatile: seen_volatile, source_context};
+                Ok(AmbiguousParsingResult::unambiguous(parser, Expression::CVQualifiedExpression(Box::new(result_expression))))
+            } else {
+                Ok(AmbiguousParsingResult::unambiguous(parser, expression))
+            }
+        })
+    }
     fn parse_expression_affinity_high(self) -> anyhow::Result<AmbiguousExpression<'a>> {
-        self.parse_expression_affinity_higher()?
+        Self::wrap_expression_with_possible_cv_qualifiers(self.parse_expression_affinity_higher()?)?
         .flat_map_result(|mut parser, simple_expression| {
             if parser.ctx.peek_or_eof()? == Some(CompilerToken::PointerOrMultiply) {
                 // This could be a pointer unary operator, but this is ambiguous because it could also be interpreted as a start of multiplication binary operator
@@ -1197,7 +1228,7 @@ impl<'a> CompilerParserInstance<'a> {
                         let source_context = forked_parser.ctx.source_context();
 
                         let result_expression = UnaryExpression{ operator: UnaryOperator::StructMakePointer, expression, source_context };
-                        Ok(AmbiguousExpression::unambiguous(forked_parser, Expression::UnaryExpression(Box::new(result_expression))))
+                        Self::wrap_expression_with_possible_cv_qualifiers(AmbiguousExpression::unambiguous(forked_parser, Expression::UnaryExpression(Box::new(result_expression))))
                     } else {
                         // This is a normal case where we do not digest the pointer token, so just return the expression as-is
                         Ok(AmbiguousExpression::unambiguous(forked_parser, expression))
@@ -2111,6 +2142,13 @@ impl<'a> CompilerParserInstance<'a> {
             PrimitiveType::Char32 => String::from("char32_t"),
         }
     }
+    fn cv_qualified_expression_to_source_text(expression: &CVQualifiedExpression) -> String {
+        let mut result_builder = String::with_capacity(50);
+        result_builder.push_str(Self::expression_to_source_text(&expression.base_expression).as_str());
+        if expression.constant { result_builder.push_str(" const"); }
+        if expression.volatile { result_builder.push_str(" volatile"); }
+        result_builder
+    }
     fn expression_to_source_text(expression: &Expression) -> String {
         match expression {
             Expression::UnaryExpression(expr) => Self::unary_expression_to_source_text(&**expr),
@@ -2124,6 +2162,7 @@ impl<'a> CompilerParserInstance<'a> {
             Expression::StructDeclarationExpression(expr) => Self::struct_declaration_expression_to_source_text(&**expr),
             Expression::BuiltinIdentifierExpression(expr) => Self::builtin_expression_to_source_text(&**expr),
             Expression::PrimitiveTypeExpression(expr) => Self::primitive_type_expression_to_source_text(&**expr),
+            Expression::CVQualifiedExpression(expr) => Self::cv_qualified_expression_to_source_text(&**expr),
         }
     }
     fn block_declaration_to_source_text(declaration: &BlockDeclaration) -> String {

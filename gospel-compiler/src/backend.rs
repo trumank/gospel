@@ -6,6 +6,7 @@ use std::rc::{Rc, Weak};
 use anyhow::anyhow;
 use itertools::Itertools;
 use strum::Display;
+use crate::ast::CVQualifiedExpression;
 use gospel_typelib::type_model::UserDefinedTypeKind;
 use gospel_vm::bytecode::GospelOpcode;
 use gospel_vm::module::GospelContainer;
@@ -222,6 +223,7 @@ impl CompilerFunctionBuilder {
             Expression::StructDeclarationExpression(struct_declaration_expression) => { self.compile_struct_declaration_expression(scope, &*struct_declaration_expression) }
             Expression::BuiltinIdentifierExpression(builtin_identifier_expression) => { self.compile_builtin_identifier_expression(scope, &*builtin_identifier_expression) }
             Expression::PrimitiveTypeExpression(primitive_type_expression) => { self.compile_primitive_type_expression(scope, &*primitive_type_expression) }
+            Expression::CVQualifiedExpression(cv_qualified_expression) => { self.compile_cv_qualified_expression(scope, &*cv_qualified_expression) }
         }
     }
     fn compile_builtin_identifier_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &BuiltinIdentifierExpression) -> CompilerResult<ExpressionValueType> {
@@ -238,6 +240,18 @@ impl CompilerFunctionBuilder {
     fn compile_primitive_type_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &PrimitiveTypeExpression) -> CompilerResult<ExpressionValueType> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
         self.function_definition.add_string_instruction(GospelOpcode::TypePrimitiveCreate, &expression.primitive_type.to_string(), Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        Ok(ExpressionValueType::Typename)
+    }
+    fn compile_cv_qualified_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &CVQualifiedExpression) -> CompilerResult<ExpressionValueType> {
+        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
+        let base_expression_type = self.compile_expression(scope, &expression.base_expression)?;
+        Self::check_expression_type(&source_context, ExpressionValueType::Typename, base_expression_type)?;
+        if expression.constant {
+            self.function_definition.add_simple_instruction(GospelOpcode::TypeAddConstantQualifier, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        }
+        if expression.volatile {
+            self.function_definition.add_simple_instruction(GospelOpcode::TypeAddVolatileQualifier, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        }
         Ok(ExpressionValueType::Typename)
     }
     fn compile_struct_declaration_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &StructStatement) -> CompilerResult<ExpressionValueType> {

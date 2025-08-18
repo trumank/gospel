@@ -229,6 +229,14 @@ pub struct PrimitiveTypeExpression {
     pub source_context: ASTSourceContext,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CVQualifiedExpression {
+    pub base_expression: Expression,
+    pub constant: bool,
+    pub volatile: bool,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
+}
 
 /// Represents a generic expression
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,6 +252,7 @@ pub enum Expression {
     BinaryExpression(Box<BinaryExpression>),
     BuiltinIdentifierExpression(Box<BuiltinIdentifierExpression>),
     PrimitiveTypeExpression(Box<PrimitiveTypeExpression>),
+    CVQualifiedExpression(Box<CVQualifiedExpression>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

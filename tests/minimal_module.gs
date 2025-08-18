@@ -85,4 +85,5 @@ union TestUnion {
     void* Test3;
     char Test4;
 };
-constexpr int SizeofTestUnion = sizeof(TestUnion);
+constexpr int SizeofTestUnion = sizeof(TestUnion const *volatile const);
+constexpr int ConstEqualityTest = TestUnion const == TestUnion;
