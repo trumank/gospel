@@ -1688,15 +1688,11 @@ impl GospelVMContainer {
     fn execute_function_cached_internal(self: &Rc<Self>, index: u32, args: &Vec<GospelVMValue>, run_context: &mut GospelVMRunContext, previous_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<GospelVMValue> {
         let key_closure = GospelVMClosure{container: self.clone(), function_index: index, arguments: args.clone()};
 
-        // Check if we have previously called this function with the same argument list. If we have, reuse the previously calculated value
-        if let Some(existing_return_value_slot) = run_context.call_result_lookup.get(&key_closure) {
-            // If there is an existing return value in the slot, this function is either currently on the stack with a return value pre-set, or is on the stack and not completed yet
-            return if let Some(existing_return_value) = existing_return_value_slot.borrow().clone() {
-                Ok(existing_return_value)
-            } else {
-                Err(vm_error!(previous_frame, "Attempt to recursively call {} with the same arguments as the existing stack frame - this will always result in infinite recursion"))
-            }
-        }
+        // Check if we have previously called this function with the same argument list
+        if let Some(existing_return_value_slot) = run_context.call_result_lookup.get(&key_closure) &&
+            let Some(existing_return_value) = existing_return_value_slot.borrow().clone() {
+            return Ok(existing_return_value)
+        };
 
         // We have not previously called this function with the matching argument list, so prepare the stack frame and run the bytecode
         let return_value_slot = Rc::new(RefCell::new(None));
