@@ -1,7 +1,7 @@
 use std::fmt::{Display, Formatter};
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
-use gospel_typelib::type_model::PrimitiveType;
+use gospel_typelib::type_model::{PrimitiveType, UserDefinedTypeKind};
 
 /// Describes value type of the expression in the source grammar
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Display, Default, EnumString)]
@@ -360,6 +360,7 @@ pub struct BaseClassDeclaration {
 pub struct StructStatement {
     pub template_declaration: Option<TemplateDeclaration>,
     pub access_specifier: Option<DeclarationAccessSpecifier>,
+    pub struct_kind: UserDefinedTypeKind,
     pub alignment_expression: Option<Expression>,
     pub name: Option<String>,
     pub base_class_expressions: Vec<BaseClassDeclaration>,

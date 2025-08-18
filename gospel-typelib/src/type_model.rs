@@ -177,7 +177,7 @@ fn fork_type_graph_internal<'a, T : TypeGraphLike<'a>>(graph: &'a T, type_index:
                     }
                 });
             }
-            Type::UDT(UserDefinedType{name: user_defined_type.name.clone(), user_alignment: user_defined_type.user_alignment, base_class_indices, members})
+            Type::UDT(UserDefinedType{kind: user_defined_type.kind.clone(), name: user_defined_type.name.clone(), user_alignment: user_defined_type.user_alignment, base_class_indices, members})
         }
     };
     result.types[new_index] = copied_type;
@@ -393,9 +393,20 @@ pub struct ResolvedUDTLayout {
     pub member_layouts: Vec<ResolvedUDTMemberLayout>,
 }
 
+/// Represents a kind of the user defined type, which could be a struct, class, or a union
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize, Display, EnumString)]
+pub enum UserDefinedTypeKind {
+    #[default]
+    Struct,
+    Class,
+    Union,
+}
+
 /// Represents a user defined struct, class or union type, with optional base classes and fields defined in it
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct UserDefinedType {
+    /// Kind of the user defined type
+    pub kind: UserDefinedTypeKind,
     /// Name of this user defined type if set
     pub name: Option<String>,
     /// User requested alignment for this UDT, if present
@@ -412,78 +423,97 @@ impl UserDefinedType {
             let Type::UDT(first_base_class) = type_graph.type_by_index(self.base_class_indices[0]) {
             first_base_class.has_vtable(type_graph)
         } else { false };
-        has_inherited_vtable || self.members.iter().any(|x| matches!(x, UserDefinedTypeMember::VirtualFunction(_)))
+        has_inherited_vtable || (self.kind != UserDefinedTypeKind::Union && self.members.iter().any(|x| matches!(x, UserDefinedTypeMember::VirtualFunction(_))))
     }
     /// Resolved the layout of this user defined type for a particular target triplet
     pub fn layout<'a, S: TypeGraphLike<'a>>(&self, type_graph: &'a S, target_triplet: &TargetTriplet) -> ResolvedUDTLayout {
         let mut current_size: usize = 0;
         let mut current_alignment: usize = max(1, self.user_alignment.unwrap_or(0));
 
-        let base_class_layouts: Vec<ResolvedUDTLayout> = self.base_class_indices.iter()
-            .map(|x| type_graph.type_by_index(*x))
-            .filter_map(|x| if let Type::UDT(base_class) = x { Some(base_class) } else { None })
-            .map(|x| x.layout(type_graph, target_triplet))
-            .collect();
-        let has_inherited_vtable = !base_class_layouts.is_empty() && base_class_layouts[0].vtable.is_some();
-        let virtual_function_count = self.members.iter().filter(|x| matches!(x, UserDefinedTypeMember::VirtualFunction(_))).count();
-
-        // Potentially allocate space in the layout for virtual function table
+        let mut base_class_offsets: Vec<usize> = Vec::new();
         let mut vtable_layout: Option<ResolvedUDTVtableLayout> = None;
         let mut vtable_function_start_offset: usize = 0;
-        if has_inherited_vtable || virtual_function_count > 0 {
-            if !has_inherited_vtable {
-                // Virtual function table is not inherited from the first base class, need to allocate space for it
-                let size_and_alignment = target_triplet.address_size();
-                current_size = align_value(current_size, size_and_alignment);
-                current_alignment = max(current_alignment, size_and_alignment);
-                let slot_size = target_triplet.address_size();
-                vtable_function_start_offset = 0;
-                vtable_layout = Some(ResolvedUDTVtableLayout{offset: current_size, slot_size, size: slot_size * virtual_function_count});
-                current_size += size_and_alignment;
 
-            } else {
-                // Virtual function table is inherited from the base class, no need to allocate extra space for it. We still need to adjust the size to account for extra functions though
-                let inherited_vtable = base_class_layouts[0].vtable.as_ref().unwrap();
-                vtable_function_start_offset = inherited_vtable.size;
-                let combined_vtable_size = inherited_vtable.size + inherited_vtable.slot_size * virtual_function_count;
-                vtable_layout = Some(ResolvedUDTVtableLayout{offset: inherited_vtable.offset, slot_size: inherited_vtable.slot_size, size: combined_vtable_size});
+        // Unions cannot have virtual functions or derive from any types
+        // TODO: Having base classes or virtual functions in a union should result in type layout error
+        if self.kind != UserDefinedTypeKind::Union {
+            let base_class_layouts: Vec<ResolvedUDTLayout> = self.base_class_indices.iter()
+                .map(|x| type_graph.type_by_index(*x))
+                .filter_map(|x| if let Type::UDT(base_class) = x { Some(base_class) } else { None })
+                .map(|x| x.layout(type_graph, target_triplet))
+                .collect();
+            let has_inherited_vtable = !base_class_layouts.is_empty() && base_class_layouts[0].vtable.is_some();
+            let virtual_function_count = self.members.iter().filter(|x| matches!(x, UserDefinedTypeMember::VirtualFunction(_))).count();
+
+            // Potentially allocate space in the layout for virtual function table
+            if has_inherited_vtable || virtual_function_count > 0 {
+                if !has_inherited_vtable {
+                    // Virtual function table is not inherited from the first base class, need to allocate space for it
+                    let size_and_alignment = target_triplet.address_size();
+                    current_size = align_value(current_size, size_and_alignment);
+                    current_alignment = max(current_alignment, size_and_alignment);
+                    let slot_size = target_triplet.address_size();
+                    vtable_function_start_offset = 0;
+                    vtable_layout = Some(ResolvedUDTVtableLayout{offset: current_size, slot_size, size: slot_size * virtual_function_count});
+                    current_size += size_and_alignment;
+
+                } else {
+                    // Virtual function table is inherited from the base class, no need to allocate extra space for it. We still need to adjust the size to account for extra functions though
+                    let inherited_vtable = base_class_layouts[0].vtable.as_ref().unwrap();
+                    vtable_function_start_offset = inherited_vtable.size;
+                    let combined_vtable_size = inherited_vtable.size + inherited_vtable.slot_size * virtual_function_count;
+                    vtable_layout = Some(ResolvedUDTVtableLayout{offset: inherited_vtable.offset, slot_size: inherited_vtable.slot_size, size: combined_vtable_size});
+                }
+            }
+
+            // Layout base classes sequentially
+            for base_class in &base_class_layouts {
+                let base_class_alignment = base_class.alignment;
+                let base_class_size = if target_triplet.uses_aligned_base_class_size() { base_class.size } else { base_class.unaligned_size };
+
+                current_size = align_value(current_size, base_class_alignment);
+                current_alignment = max(current_alignment, base_class_alignment);
+                base_class_offsets.push(current_size);
+                current_size += base_class_size;
             }
         }
 
-        // Layout base classes sequentially
-        let mut base_class_offsets: Vec<usize> = Vec::with_capacity(base_class_layouts.len());
-        for base_class in &base_class_layouts {
-            let base_class_alignment = base_class.alignment;
-            let base_class_size = if target_triplet.uses_aligned_base_class_size() { base_class.size } else { base_class.unaligned_size };
-
-            current_size = align_value(current_size, base_class_alignment);
-            current_alignment = max(current_alignment, base_class_alignment);
-            base_class_offsets.push(current_size);
-            current_size += base_class_size;
-        }
-
-        // Layout fields in memory sequentially, merging multiple bitfields into the single field when possible
+        // Layout fields in memory sequentially or in parallel, merging multiple bitfields into the single field when possible
         let mut member_layouts: Vec<ResolvedUDTMemberLayout> = Vec::with_capacity(self.members.len());
         let mut current_virtual_function_index: usize = 0;
+
+        let start_member_offset = current_size;
+        let mut layout_align_member = |member_size: usize, member_alignment: usize| -> usize {
+            if self.kind == UserDefinedTypeKind::Union {
+                current_size = max(current_size, align_value(start_member_offset, member_alignment) + member_size);
+                current_alignment = max(current_alignment, member_alignment);
+                start_member_offset
+            } else {
+                current_size = align_value(current_size, member_alignment);
+                current_alignment = max(current_alignment, member_alignment);
+                let result_member_offset = current_size;
+                current_size += member_size;
+                result_member_offset
+            }
+        };
+
         for member_index in 0..self.members.len() {
             let member = &self.members[member_index];
             
             if let UserDefinedTypeMember::VirtualFunction(_) = member {
-                let virtual_function_offset = vtable_function_start_offset + vtable_layout.as_ref().unwrap().slot_size * current_virtual_function_index;
-                current_virtual_function_index += 1;
-                let result_layout = ResolvedUDTVirtualFunctionLocation{ offset: virtual_function_offset };
-                member_layouts.push(ResolvedUDTMemberLayout::VirtualFunction(result_layout));
-
+                // TODO: Having a virtual function in a union should result in type layout error
+                if vtable_layout.is_some() {
+                    let virtual_function_offset = vtable_function_start_offset + vtable_layout.as_ref().unwrap().slot_size * current_virtual_function_index;
+                    current_virtual_function_index += 1;
+                    let result_layout = ResolvedUDTVirtualFunctionLocation{ offset: virtual_function_offset };
+                    member_layouts.push(ResolvedUDTMemberLayout::VirtualFunction(result_layout));
+                }
             } else if let UserDefinedTypeMember::Field(field) = member {
                 let member_type = field.member_type(type_graph);
                 let member_alignment = max(1, max(member_type.alignment(type_graph, target_triplet), field.user_alignment.unwrap_or(0)));
                 let member_size = member_type.size(type_graph, target_triplet);
 
-                current_size = align_value(current_size, member_alignment);
-                current_alignment = max(current_alignment, member_alignment);
-                let member_offset = current_size;
-                current_size += member_size;
-
+                let member_offset = layout_align_member(member_size, member_alignment);
                 let result_layout = ResolvedUDTFieldLayout{ offset: member_offset, alignment: member_alignment, size: member_size };
                 member_layouts.push(ResolvedUDTMemberLayout::Field(result_layout));
 
@@ -500,11 +530,8 @@ impl UserDefinedType {
                     member_layouts.push(ResolvedUDTMemberLayout::Bitfield(result_layout));
                 } else {
                     let member_size_and_alignment = bitfield.primitive_type.size_and_alignment(target_triplet);
-                    current_size = align_value(current_size, member_size_and_alignment);
-                    current_alignment = max(current_alignment, member_size_and_alignment);
-                    let member_offset = current_size;
-                    current_size += member_size_and_alignment;
 
+                    let member_offset = layout_align_member(member_size_and_alignment, member_size_and_alignment);
                     let result_layout = ResolvedUDTBitfieldLayout{ offset: member_offset, size: member_size_and_alignment, bitfield_offset: 0, bitfield_width: min(bitfield.bitfield_width, maximum_bitfield_width) };
                     member_layouts.push(ResolvedUDTMemberLayout::Bitfield(result_layout));
                 }

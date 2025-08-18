@@ -235,13 +235,21 @@ impl GospelSourceFunctionDefinition {
     }
     pub fn add_string_instruction(&mut self, opcode: GospelOpcode, string: &str, line_number: i32) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::TypeUDTAddField && opcode != GospelOpcode::TypeUDTAddFieldWithUserAlignment &&
-            opcode != GospelOpcode::TypeUDTAddBitfield && opcode != GospelOpcode::TypeUDTAddVirtualFunction && opcode != GospelOpcode::TypeUDTAllocate &&
+            opcode != GospelOpcode::TypeUDTAddBitfield && opcode != GospelOpcode::TypeUDTAddVirtualFunction &&
             opcode != GospelOpcode::TypeUDTHasField && opcode != GospelOpcode::TypeUDTTypeofField && opcode != GospelOpcode::TypeUDTCalculateVirtualFunctionOffset &&
             opcode != GospelOpcode::Abort && opcode != GospelOpcode::TypePrimitiveCreate {
-            bail!("Invalid opcode for named instruction (TypeLayoutAllocate, TypeLayoutDefineMember, TypeLayoutDoesMemberExist, TypeLayoutGetMemberOffset, TypeLayoutGetMemberSize, TypeLayoutGetMemberTypeLayout and Abort are allowed)");
+            bail!("Invalid opcode for named instruction (TypeUDTAllocate, TypeLayoutDoesMemberExist, TypeLayoutGetMemberOffset, TypeLayoutGetMemberSize, TypeLayoutGetMemberTypeLayout and Abort are allowed)");
         }
         let string_index = self.add_string_reference_internal(string);
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[string_index])?, line_number))
+    }
+    pub fn add_double_string_instruction(&mut self, opcode: GospelOpcode, string1: &str, string2: &str, line_number: i32) -> anyhow::Result<u32> {
+        if opcode != GospelOpcode::TypeUDTAllocate {
+            bail!("Invalid opcode for named instruction (only TypeUDTAllocate is allowed)");
+        }
+        let string_index1 = self.add_string_reference_internal(string1);
+        let string_index2 = self.add_string_reference_internal(string2);
+        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[string_index1, string_index2])?, line_number))
     }
     pub fn add_struct_instruction(&mut self, opcode: GospelOpcode, struct_reference: GospelSourceObjectReference, line_number: i32) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::StructAllocate && opcode != GospelOpcode::StructIsStructOfType {

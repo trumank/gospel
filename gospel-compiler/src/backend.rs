@@ -6,6 +6,7 @@ use std::rc::{Rc, Weak};
 use anyhow::anyhow;
 use itertools::Itertools;
 use strum::Display;
+use gospel_typelib::type_model::UserDefinedTypeKind;
 use gospel_vm::bytecode::GospelOpcode;
 use gospel_vm::module::GospelContainer;
 use gospel_vm::gospel::{GospelPlatformConfigProperty, GospelValueType};
@@ -877,11 +878,11 @@ impl CompilerFunctionBuilder {
         innermost_loop_statement.borrow_mut().loop_codegen_data.as_mut().unwrap().loop_start_fixups.push(continue_fixup);
         Ok({})
     }
-    fn compile_type_layout_initialization(&mut self, type_name: &str) -> CompilerResult<u32> {
+    fn compile_type_layout_initialization(&mut self, type_name: &str, type_kind: UserDefinedTypeKind) -> CompilerResult<u32> {
         let source_context = self.function_scope.source_context.clone();
         let slot_index = self.function_definition.add_slot(GospelValueType::TypeReference, GospelSourceSlotBinding::Uninitialized).with_source_context(&source_context)?;
 
-        self.function_definition.add_string_instruction(GospelOpcode::TypeUDTAllocate, type_name, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        self.function_definition.add_double_string_instruction(GospelOpcode::TypeUDTAllocate, type_name, type_kind.to_string().as_str(), Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
 
         self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
@@ -1260,6 +1261,7 @@ impl CompilerStructFragmentGenerator for BlankStructFragmentGenerator {
 #[derive(Debug)]
 struct CompilerStructFunctionGenerator {
     struct_name: String,
+    struct_kind: UserDefinedTypeKind,
     struct_meta_layout: CompilerStructMetaLayoutReference,
     alignment_expression: Option<Expression>,
     base_class_expressions: Vec<BaseClassDeclaration>,
@@ -1269,7 +1271,7 @@ struct CompilerStructFunctionGenerator {
 impl CompilerFunctionCodeGenerator for CompilerStructFunctionGenerator {
     fn generate(&self, function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<()> {
         let mut function_builder = CompilerFunctionBuilder::create(function_scope)?;
-        let type_layout_slot_index = function_builder.compile_type_layout_initialization(self.struct_name.as_str())?;
+        let type_layout_slot_index = function_builder.compile_type_layout_initialization(self.struct_name.as_str(), self.struct_kind)?;
         let type_layout_metadata_slot_index = function_builder.compile_type_layout_metadata_struct_initialization(&self.struct_meta_layout)?;
 
         if let Some(alignment_expression) = &self.alignment_expression {
@@ -1702,6 +1704,7 @@ impl CompilerInstance {
             module_codegen_data.push_delayed_function_definition(&function_scope, Box::new(CompilerStructFunctionGenerator{
                 source_context,
                 struct_name: function_name.to_string(),
+                struct_kind: statement.struct_kind,
                 struct_meta_layout: meta_layout,
                 alignment_expression: statement.alignment_expression.clone(),
                 base_class_expressions: statement.base_class_expressions.clone(),

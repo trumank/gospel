@@ -118,8 +118,8 @@ pub enum GospelOpcode {
     TypeFunctionCreateGlobal = 0x75, // <imm>; [pop stack] [pop stack] x <imm> -> [push stack]
     #[strum(props(immediate_count = "1", stack_in_count = "2", stack_out_count = "1", stack_variable_input_count_immediate = "0"))]
     TypeFunctionCreateMember = 0x76, // <imm>; [pop stack] [pop stack] [pop stack] x <imm> -> [push stack]
-    #[strum(props(immediate_count = "1", stack_out_count = "1"))]
-    TypeUDTAllocate = 0x77, // <imm>; -> [push stack]
+    #[strum(props(immediate_count = "2", stack_out_count = "1"))]
+    TypeUDTAllocate = 0x77, // <imm> <imm>; -> [push stack]
     #[strum(props(stack_in_count = "2"))]
     TypeUDTSetUserAlignment = 0x78, // ; [pop stack] [pop stack] ->
     #[strum(props(stack_in_count = "2"))]

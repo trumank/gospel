@@ -78,3 +78,11 @@ struct ConditionalParentStruct : TArray<int32_t> if (Condition == 1), EmptyStruc
 
 type ConditionalParentStruct1 = ConditionalParentStruct<1>;
 type ConditionalParentStruct2 = ConditionalParentStruct<2>;
+
+union TestUnion {
+    long long int Test1;
+    short int Test2;
+    void* Test3;
+    char Test4;
+};
+const int SizeofTestUnion = sizeof(TestUnion);

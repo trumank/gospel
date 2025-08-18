@@ -14,7 +14,7 @@ use crate::gospel::{GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, 
 use crate::writer::{GospelSourceObjectReference, GospelSourceStaticValue};
 use serde::{Deserialize, Serialize, Serializer};
 use serde::ser::SerializeStruct;
-use gospel_typelib::type_model::{ArrayType, CVQualifiedType, FunctionType, PointerType, PrimitiveType, ResolvedUDTLayout, ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeBitfield, UserDefinedTypeField, UserDefinedTypeMember, UserDefinedTypeVirtualFunction};
+use gospel_typelib::type_model::{ArrayType, CVQualifiedType, FunctionType, PointerType, PrimitiveType, ResolvedUDTLayout, ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeBitfield, UserDefinedTypeField, UserDefinedTypeKind, UserDefinedTypeMember, UserDefinedTypeVirtualFunction};
 use crate::reflection::{GospelContainerReflector, GospelModuleReflector};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -918,7 +918,11 @@ impl GospelVMExecutionState<'_> {
                     let type_name_index = state.immediate_value_checked(instruction, 0)? as i32;
                     let type_name = if type_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(type_name_index as usize)?) };
 
-                    let user_defined_type = UserDefinedType{name: type_name, ..UserDefinedType::default()};
+                    let type_kind_index = state.immediate_value_checked(instruction, 1)? as usize;
+                    let type_kind = UserDefinedTypeKind::from_str(state.copy_referenced_string_checked(type_kind_index)?.as_str())
+                        .map_err(|x| vm_error!(Some(&state), "Unknown UDT kind name: {}", x.to_string()))?;
+
+                    let user_defined_type = UserDefinedType{kind: type_kind, name: type_name, ..UserDefinedType::default()};
                     let result_type_index = run_context.store_user_defined_type(user_defined_type, state.stack_frame_token);
                     state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
                 }
@@ -943,6 +947,9 @@ impl GospelVMExecutionState<'_> {
                     state.validate_udt_type_not_finalized(type_index, run_context)?;
 
                     if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
+                        if user_defined_type.kind == UserDefinedTypeKind::Union {
+                            vm_bail!(Some(state), "Union types cannot have base classes");
+                        }
                         if user_defined_type.base_class_indices.contains(&base_class_type_index) {
                             vm_bail!(Some(state), "Base class #{} specified more than once as a direct base class for type #{}", base_class_type_index, type_index);
                         }
@@ -1042,6 +1049,9 @@ impl GospelVMExecutionState<'_> {
                     }
 
                     if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
+                        if user_defined_type.kind == UserDefinedTypeKind::Union {
+                            vm_bail!(Some(state), "Union types cannot have virtual functions");
+                        }
                         if function_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == function_name.as_deref()) {
                             vm_bail!(Some(state), "Type #{} already contains a definition for field named {}", type_index, function_name.as_ref().unwrap());
                         }
