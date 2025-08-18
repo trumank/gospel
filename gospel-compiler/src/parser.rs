@@ -586,41 +586,58 @@ impl<'a> CompilerParserInstance<'a> {
             Ok(AmbiguousExpression::unambiguous(self, Expression::IntegerConstantExpression(Box::new(result_expression))))
         } else { Err(self.ctx.fail(format!("Expected integer literal, got {}", integer_constant_token))) }
     }
-    fn parse_ambiguous_expression_list<T: Clone, S: Fn(&mut CompilerParserInstance<'a>) -> anyhow::Result<(T, bool)>>(mut self, terminator_token: CompilerToken, prefix_parser: S) -> anyhow::Result<AmbiguousParsingResult<'a, Vec<(T, Option<Expression>)>>> {
+    fn parse_ambiguous_expression_list<T: Clone, S: Fn(&mut Self) -> anyhow::Result<(T, bool)>>(self, terminator_token: CompilerToken, prefix_parser: S) -> anyhow::Result<AmbiguousParsingResult<'a, Vec<(T, Option<Expression>)>>> {
+        self.parse_ambiguous_expression_list_extended(terminator_token, |mut parser| {
+            let data = prefix_parser(&mut parser)?;
+            Ok(ExactParseCase::create(parser, data))
+        }, |parser_case| {
+            Ok(parser_case)
+        })
+    }
+    fn parse_ambiguous_expression_list_extended<T: Clone, R: Clone, PR: Fn(Self) -> anyhow::Result<ExactParseCase<'a, (T, bool)>>, PO: Fn(ExactParseCase<'a, (T, Option<Expression>)>) -> anyhow::Result<ExactParseCase<R>>>(mut self, terminator_token: CompilerToken, prefix_parser: PR, postfix_parser: PO) -> anyhow::Result<AmbiguousParsingResult<'a, Vec<R>>> {
         // Empty expression list is allowed and is not ambiguous
         if self.ctx.peek()? == terminator_token {
             self.ctx.discard_next()?;
-            let result_elements: Vec<(T, Option<Expression>)> = Vec::new();
+            let result_elements: Vec<R> = Vec::new();
             return Ok(AmbiguousParsingResult::unambiguous(self, result_elements))
         }
-        let mut finished_cases: Vec<ExactParseCase<'a, Vec<(T, Option<Expression>)>>> = Vec::new();
-        let mut stashed_arguments: Vec<(T, Option<Expression>)> = Vec::new();
+        let mut finished_cases: Vec<ExactParseCase<'a, Vec<R>>> = Vec::new();
+        let mut stashed_arguments: Vec<R> = Vec::new();
         let mut stashed_parser: CompilerParserInstance = self;
         loop {
             // Give the callback a chance to parse the prefix and save some data. If we failed to parse the prefix, use the existing cases
-            let prefix_user_data_result = prefix_parser(&mut stashed_parser);
+            let prefix_user_data_result = prefix_parser(stashed_parser);
             if prefix_user_data_result.is_err() && !finished_cases.is_empty() {
                 break;
             }
-            let (prefix_user_data, should_digest_expression) = prefix_user_data_result?;
+            let prefix_user_data_case = prefix_user_data_result?;
+            let prefix_parser = prefix_user_data_case.parser;
+            let (prefix_user_data, should_digest_expression) = prefix_user_data_case.data;
 
             // If we should not digest the expression here, just add an element with user data and empty expression to the list
             if !should_digest_expression {
-                let separator_or_terminator_token = stashed_parser.ctx.next()?;
+                let postfix_expression_case_result = postfix_parser(ExactParseCase::create(prefix_parser, (prefix_user_data, None)));
+                if postfix_expression_case_result.is_err() && !finished_cases.is_empty() {
+                    break;
+                }
+                let mut postfix_expression_case = postfix_expression_case_result?;
+
+                let separator_or_terminator_token = postfix_expression_case.parser.ctx.next()?;
                 if separator_or_terminator_token == CompilerToken::Separator {
                     // This is a next item in the argument list, there will be an argument after this one, so just add this argument to the list and continue
-                    stashed_arguments.push((prefix_user_data, None));
+                    stashed_arguments.push(postfix_expression_case.data);
+                    stashed_parser = postfix_expression_case.parser;
                     continue;
                 } else if separator_or_terminator_token == terminator_token {
                     // This is the last argument in the list, construct a new case and add it to the list, and then break
-                    let mut complete_arguments: Vec<(T, Option<Expression>)> = stashed_arguments.clone();
-                    complete_arguments.push((prefix_user_data.clone(), None));
-                    finished_cases.push(ExactParseCase::create(stashed_parser, complete_arguments));
+                    let mut complete_arguments: Vec<R> = stashed_arguments.clone();
+                    complete_arguments.push(postfix_expression_case.data);
+                    finished_cases.push(ExactParseCase::create(postfix_expression_case.parser, complete_arguments));
                     break;
                 } else {
                     // This is invalid grammar at this point. If we have other cases parsed, return only them and abandon this stash, otherwise, this is an error (because this would be a first argument missing a terminator after it)
                     if finished_cases.is_empty() {
-                        return Err(stashed_parser.ctx.fail(format!("Expected , or {}, got {}", terminator_token.clone(), separator_or_terminator_token)));
+                        return Err(postfix_expression_case.parser.ctx.fail(format!("Expected , or {}, got {}", terminator_token.clone(), separator_or_terminator_token)));
                     }
                     break;
                 }
@@ -628,7 +645,7 @@ impl<'a> CompilerParserInstance<'a> {
 
             // Parse the ambiguous argument and do some processing to remove expressions that cannot be valid under any circumstances (e.g. not followed by item separator or terminator token)
             // If there are no valid combinations, but we have existing cases, assume one of them is valid and this grammar take is not
-            let possible_arguments = Self::parse_complete_expression(stashed_parser).and_then(|x| x.flat_map_result(|mut forked_parser, expression| {
+            let possible_arguments = Self::parse_complete_expression(prefix_parser).and_then(|x| x.flat_map_result(|mut forked_parser, expression| {
                 let separator_or_terminator_token = forked_parser.ctx.peek()?;
                 if separator_or_terminator_token != terminator_token && separator_or_terminator_token != CompilerToken::Separator {
                     Err(forked_parser.ctx.fail(format!("Expected , or {}, got {}", terminator_token.clone(), separator_or_terminator_token)))
@@ -645,9 +662,15 @@ impl<'a> CompilerParserInstance<'a> {
 
                 // This is a tentative end of the argument list, so add it to the resulting cases
                 if separator_or_terminator_token == terminator_token {
-                    let mut complete_arguments: Vec<(T, Option<Expression>)> = stashed_arguments.clone();
-                    complete_arguments.push((prefix_user_data.clone(), Some(argument_value.data)));
-                    finished_cases.push(ExactParseCase::create(argument_value.parser, complete_arguments))
+                    // If this case failed to parse due to the postfix, just discard it
+                    let postfix_expression_case_result = postfix_parser(argument_value.map_data(|x| (prefix_user_data.clone(), Some(x))));
+                    if postfix_expression_case_result.is_err() && !finished_cases.is_empty() {
+                        continue;
+                    }
+                    let postfix_expression_case = postfix_expression_case_result?;
+                    let mut complete_arguments: Vec<R> = stashed_arguments.clone();
+                    complete_arguments.push(postfix_expression_case.data);
+                    finished_cases.push(ExactParseCase::create(postfix_expression_case.parser, complete_arguments))
                 } else {
                     // This is not the last argument in the template argument list, as indicated by the comma, which means that we should stash it and continue looking
                     // However, for ambiguous grammar that cannot be resolved at this point, we have to first stash all comma variants and safety check that there is a single one before appending it
@@ -658,9 +681,15 @@ impl<'a> CompilerParserInstance<'a> {
             if confirmed_argument_values.len() != 1 && !finished_cases.is_empty() {
                 break;
             }
-            let result_expression_case = AmbiguousExpression::from_cases(confirmed_argument_values).disambiguate()?;
-            stashed_arguments.push((prefix_user_data, Some(result_expression_case.data)));
-            stashed_parser = result_expression_case.parser;
+            let result_expression_case = AmbiguousExpression::from_cases(confirmed_argument_values).disambiguate()?.map_data(|x| (prefix_user_data, Some(x)));
+            let postfix_expression_case_result = postfix_parser(result_expression_case);
+            if postfix_expression_case_result.is_err() && !finished_cases.is_empty() {
+                break;
+            }
+            let postfix_expression_case = postfix_expression_case_result?;
+
+            stashed_arguments.push(postfix_expression_case.data);
+            stashed_parser = postfix_expression_case.parser;
         }
         Ok(AmbiguousParsingResult::from_cases(finished_cases))
     }
