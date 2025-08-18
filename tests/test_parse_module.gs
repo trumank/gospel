@@ -1,14 +1,11 @@
-﻿import core::uint8;
-import core::uint32;
-import core::{float, double};
-import unreal;
+﻿import unreal;
 
-extern int UE_VERSION_MAJOR;
-extern int UE_WITH_CASE_PRESERVING_NAME;
-extern int UE_NAME_OUTLINE_NUMBER;
+input int UE_VERSION_MAJOR = 5;
+input int UE_WITH_CASE_PRESERVING_NAME;
+input int UE_NAME_OUTLINE_NUMBER;
 
 type FReal = if (UE_VERSION_MAJOR == 5) double else float;
-type FPartialIdentifierTest = core::float;
+type FPartialIdentifierTest = float;
 
 namespace A::B {
     namespace C {
@@ -72,11 +69,11 @@ struct FWrapperStruct {
 
 type DynamicTemplateInstantiationTest = FWrapperStruct<FVector>::typename Inner<float>;
 
-int ComplexExpressionTest = {
-    int LocalVariable = UE_VERSION_MINOR;
+const int ComplexExpressionTest = {
+    let int LocalVariable = UE_VERSION_MINOR;
     LocalVariable += 5;
     LocalVariable = LocalVariable / 1;
-    int Result = 3;
+    let int Result = 3;
     if (LocalVariable == 4) {
         Result = sizeof(FVector);
     }
@@ -89,8 +86,8 @@ int ComplexExpressionTest = {
     (Result[10])::int Variable
 };
 
-int SizeOfVector = sizeof(FVector);
-int AlignmentOfVector = alignof(FVector);
+const int SizeOfVector = sizeof(FVector);
+const int AlignmentOfVector = alignof(FVector);
 
 template<typename T>
 struct TTypeCompatibleBytes {
@@ -116,7 +113,7 @@ struct TArray {
 };
 type FByteArray = TArray<uint8>;
 
-int BinaryOperatorPrecedenceTest = A | B ^ C & D >> E << F + G - H * I[A + B] / J % K > L < M >= N <= O && P || Q == R != S;
-int UnaryOperatorTest = sizeof(A*) + alignof(B*) + ~C + -D + !E * (F + G);
+const int BinaryOperatorPrecedenceTest = A | B ^ C & D >> E << F + G - H * I[A + B] / J % K > L < M >= N <= O && P || Q == R != S;
+const int UnaryOperatorTest = sizeof(A*) + alignof(B*) + ~C + -D + !E * (F + G);
 
 ;

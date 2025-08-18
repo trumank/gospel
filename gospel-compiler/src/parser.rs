@@ -1,4 +1,4 @@
-﻿use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, ExternStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, BuiltinIdentifier, BuiltinIdentifierExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression};
+﻿use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, BuiltinIdentifier, BuiltinIdentifierExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression};
 use crate::lex_util::get_line_number_and_offset_from_index;
 use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
@@ -13,9 +13,9 @@ enum CompilerToken {
     #[token("import")]
     #[strum(to_string = "import")]
     Import,
-    #[token("extern")]
-    #[strum(to_string = "extern")]
-    Extern,
+    #[token("input")]
+    #[strum(to_string = "input")]
+    Input,
     #[token("template")]
     #[strum(to_string = "template")]
     Template,
@@ -26,9 +26,12 @@ enum CompilerToken {
     #[token("class")]
     #[strum(to_string = "struct")]
     Struct,
-    #[token("constexpr int")]
-    #[strum(to_string = "constexpr int")]
-    ConstexprInt,
+    #[token("const")]
+    #[strum(to_string = "const")]
+    Const,
+    #[token("let")]
+    #[strum(to_string = "let")]
+    Let,
     #[token("typename")]
     #[strum(to_string = "typename")]
     Typename,
@@ -437,10 +440,9 @@ impl<'a> CompilerParserInstance<'a> {
     }
     fn parse_expression_value_type(&mut self, token: CompilerToken) -> anyhow::Result<ExpressionValueType> {
         match token {
-            CompilerToken::ConstexprInt => Ok(ExpressionValueType::Int),
-            CompilerToken::Struct => Ok(ExpressionValueType::Typename),
+            CompilerToken::PrimitiveTypeInt => Ok(ExpressionValueType::Int),
             CompilerToken::Typename => Ok(ExpressionValueType::Typename),
-            _ => Err(self.ctx.fail(format!("Expected int, struct, or typename, got {}", token))),
+            _ => Err(self.ctx.fail(format!("Expected int or typename, got {}", token))),
         }
     }
     fn parse_partial_identifier(&mut self) -> anyhow::Result<PartialIdentifier> {
@@ -846,8 +848,12 @@ impl<'a> CompilerParserInstance<'a> {
             Ok(AmbiguousParsingResult::unambiguous(parser, Statement::AssignmentStatement(Box::new(result_statement))))
         })?.disambiguate()
     }
-    fn parse_local_var_statement(mut self, value_type: ExpressionValueType) -> anyhow::Result<ExactStatementCase<'a>> {
+    fn parse_local_var_statement(mut self) -> anyhow::Result<ExactStatementCase<'a>> {
         self.ctx.discard_next()?;
+
+        let value_type_token = self.ctx.next()?;
+        let value_type = self.parse_expression_value_type(value_type_token)?;
+
         let source_context = self.ctx.source_context();
         let variable_name_token = self.ctx.next()?;
         let name = self.ctx.check_identifier(variable_name_token)?;
@@ -928,8 +934,7 @@ impl<'a> CompilerParserInstance<'a> {
             CompilerToken::Continue => self.parse_continue_loop_statement(),
             CompilerToken::Terminator => self.parse_empty_statement(),
             CompilerToken::ScopeStart => self.parse_block_statement(),
-            CompilerToken::ConstexprInt => self.parse_local_var_statement(ExpressionValueType::Int),
-            CompilerToken::Type => self.parse_local_var_statement(ExpressionValueType::Typename),
+            CompilerToken::Let => self.parse_local_var_statement(),
             _ => self.parse_assignment_statement(), // assume anything else is an assignment statement (because it starts with an expression)
         }
     }
@@ -1323,9 +1328,9 @@ impl<'a> CompilerParserInstance<'a> {
         let result_statement = ModuleImportStatement{statement_type: ModuleImportStatementType::QualifiedImport(namespace_or_qualified_import), source_context};
         Ok(ExactModuleTopLevelDeclarationCase::create(self, ModuleTopLevelDeclaration::ImportStatement(result_statement)))
     }
-    fn parse_extern_statement(mut self, access_specifier: Option<DeclarationAccessSpecifier>) -> anyhow::Result<ExactModuleTopLevelDeclarationCase<'a>> {
-        let extern_statement_token = self.ctx.next()?;
-        self.ctx.check_token(extern_statement_token, CompilerToken::Extern)?;
+    fn parse_input_statement(mut self, access_specifier: Option<DeclarationAccessSpecifier>) -> anyhow::Result<ExactModuleTopLevelDeclarationCase<'a>> {
+        let statement_token = self.ctx.next()?;
+        self.ctx.check_token(statement_token, CompilerToken::Input)?;
         let source_context = self.ctx.source_context();
 
         let value_type_token = self.ctx.next()?;
@@ -1333,16 +1338,42 @@ impl<'a> CompilerParserInstance<'a> {
         let global_name_token = self.ctx.next()?;
         let global_name = self.ctx.check_identifier(global_name_token)?;
 
-        // Should end with a statement terminator
-        let terminator_token = self.ctx.next()?;
-        self.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
+        if self.ctx.peek_or_eof()? == Some(CompilerToken::Assignment) {
+            self.ctx.discard_next()?;
+            Ok(self.parse_complete_expression()?.flat_map_result(|mut parser, expression| {
+                // Should end with a statement terminator
+                let terminator_token = parser.ctx.next()?;
+                parser.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
 
-        let result_statement = ExternStatement{source_context, global_name, access_specifier, value_type};
-        Ok(ExactModuleTopLevelDeclarationCase::create(self, ModuleTopLevelDeclaration::ExternStatement(result_statement)))
+                // Input variable declaration with default value
+                let result_statement = InputStatement{source_context: source_context.clone(), global_name: global_name.clone(), access_specifier, value_type, default_value: Some(expression)};
+                Ok(AmbiguousParsingResult::unambiguous(parser, ModuleTopLevelDeclaration::InputStatement(result_statement)))
+            })?.disambiguate()?)
+        } else {
+            // Should end with a statement terminator
+            let terminator_token = self.ctx.next()?;
+            self.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
+
+            // Input variable declaration with no default value
+            let result_statement = InputStatement{source_context, global_name, access_specifier, value_type, default_value: None};
+            Ok(ExactModuleTopLevelDeclarationCase::create(self, ModuleTopLevelDeclaration::InputStatement(result_statement)))
+        }
     }
-    fn parse_data_statement(mut self, value_type: ExpressionValueType, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>) -> anyhow::Result<ExactParseCase<'a, DataStatement>> {
-        // Discard the value type token. It has been previously parsed for us because we have context dependent grammar for some declarations (e.g. using instead of struct)
+    fn parse_const_statement(mut self, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>) -> anyhow::Result<ExactParseCase<'a, DataStatement>> {
         self.ctx.discard_next()?;
+
+        let value_type_token = self.ctx.next()?;
+        let value_type = self.parse_expression_value_type(value_type_token)?;
+        if value_type == ExpressionValueType::Typename {
+            return Err(self.ctx.fail("Typename not allowed as const declaration type. Use type alias instead"));
+        }
+        self.parse_data_statement_internal(value_type, template_declaration, access_specifier)
+    }
+    fn parse_type_statement(mut self, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>) -> anyhow::Result<ExactParseCase<'a, DataStatement>> {
+        self.ctx.discard_next()?;
+        self.parse_data_statement_internal(ExpressionValueType::Typename, template_declaration, access_specifier)
+    }
+    fn parse_data_statement_internal(mut self, value_type: ExpressionValueType, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>) -> anyhow::Result<ExactParseCase<'a, DataStatement>> {
         let source_context = self.ctx.source_context();
         let data_name_token = self.ctx.next()?;
         let name = self.ctx.check_identifier(data_name_token)?;
@@ -1472,8 +1503,8 @@ impl<'a> CompilerParserInstance<'a> {
         self.ctx.discard_next()?;
         let statement_token = self.ctx.peek()?;
         match statement_token {
-            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
-            CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, Some(template_declaration), Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+            CompilerToken::Const => Ok(self.parse_const_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+            CompilerToken::Type => Ok(self.parse_type_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
             _ => Err(self.ctx.fail(format!("Expected data or nested struct declaration following template declaration and access specifier, got {}", statement_token))),
         }
@@ -1487,8 +1518,8 @@ impl<'a> CompilerParserInstance<'a> {
                 CompilerToken::Internal => parser.parse_templated_access_specifier_struct_inner_declaration(template_declaration, DeclarationAccessSpecifier::Internal),
                 CompilerToken::Local => parser.parse_templated_access_specifier_struct_inner_declaration(template_declaration, DeclarationAccessSpecifier::Local),
                 // data and struct declarations
-                CompilerToken::ConstexprInt => Ok(parser.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
-                CompilerToken::Type => Ok(parser.parse_data_statement(ExpressionValueType::Typename, Some(template_declaration), None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+                CompilerToken::Const => Ok(parser.parse_const_statement(Some(template_declaration), None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+                CompilerToken::Type => Ok(parser.parse_type_statement(Some(template_declaration), None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
                 CompilerToken::Struct => Ok(parser.parse_struct_statement(Some(template_declaration), None)?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
                 _ => Err(parser.ctx.fail(format!("Expected access specifier, data or nested struct declaration following template declaration, got {}", template_statement_token))),
             }?;
@@ -1506,8 +1537,8 @@ impl<'a> CompilerParserInstance<'a> {
         let statement_token = self.ctx.peek()?;
         match statement_token {
             // data and struct declarations
-            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, None, Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
-            CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, None, Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+            CompilerToken::Const => Ok(self.parse_const_statement(None, Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+            CompilerToken::Type => Ok(self.parse_type_statement(None, Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(None, Some(access_specifier))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
             _ => Err(self.ctx.fail(format!("Expected data or nested struct declaration following access specifier, got {}", statement_token))),
         }
@@ -1522,8 +1553,8 @@ impl<'a> CompilerParserInstance<'a> {
             CompilerToken::Internal => self.parse_access_specifier_struct_inner_declaration(DeclarationAccessSpecifier::Internal),
             CompilerToken::Local => self.parse_access_specifier_struct_inner_declaration(DeclarationAccessSpecifier::Local),
             // data, struct, conditional, scope and blank declarations
-            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, None, None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
-            CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, None, None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+            CompilerToken::Const => Ok(self.parse_const_statement(None, None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+            CompilerToken::Type => Ok(self.parse_type_statement(None, None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(None, None)?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
             CompilerToken::If => self.parse_struct_conditional_declaration(),
             CompilerToken::ScopeStart => self.parse_struct_block_declaration(),
@@ -1580,8 +1611,8 @@ impl<'a> CompilerParserInstance<'a> {
         let statement_token = self.ctx.peek()?;
         Ok(match statement_token {
             // data and struct declarations
-            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
-            CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+            CompilerToken::Const => Ok(self.parse_const_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+            CompilerToken::Type => Ok(self.parse_type_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
             _ => Err(self.ctx.fail(format!("Expected data or struct declaration following template declaration and access specifier, got {}", statement_token))),
         }?)
@@ -1595,8 +1626,8 @@ impl<'a> CompilerParserInstance<'a> {
                 CompilerToken::Internal => parser.parse_templated_access_specifier_namespace_level_statement(template_declaration, DeclarationAccessSpecifier::Internal),
                 CompilerToken::Local => parser.parse_templated_access_specifier_namespace_level_statement(template_declaration, DeclarationAccessSpecifier::Local),
                 // data and struct declarations
-                CompilerToken::ConstexprInt => Ok(parser.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
-                CompilerToken::Type => Ok(parser.parse_data_statement(ExpressionValueType::Typename, Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+                CompilerToken::Const => Ok(parser.parse_const_statement(Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+                CompilerToken::Type => Ok(parser.parse_type_statement(Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
                 CompilerToken::Struct => Ok(parser.parse_struct_statement(Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
                 _ => Err(parser.ctx.fail(format!("Expected access access specifier, data or struct declaration following template declaration, got {}", template_statement_token))),
             }?.to_parse_result())
@@ -1613,8 +1644,8 @@ impl<'a> CompilerParserInstance<'a> {
         let statement_token = self.ctx.peek()?;
         match statement_token {
             // data, struct and namespace declarations
-            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
-            CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+            CompilerToken::Const => Ok(self.parse_const_statement(None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+            CompilerToken::Type => Ok(self.parse_type_statement(None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
             CompilerToken::Namespace => Ok(self.parse_namespace_statement(Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::NamespaceStatement(x))),
             _ => Err(self.ctx.fail(format!("Expected data or struct declaration following access specifier, got {}", statement_token))),
@@ -1630,8 +1661,8 @@ impl<'a> CompilerParserInstance<'a> {
             CompilerToken::Internal => self.parse_access_specifier_namespace_level_statement(DeclarationAccessSpecifier::Internal),
             CompilerToken::Local => self.parse_access_specifier_namespace_level_statement(DeclarationAccessSpecifier::Local),
             // data, struct, namespace and blank declarations
-            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, None, None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
-            CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, None, None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+            CompilerToken::Const => Ok(self.parse_const_statement(None, None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+            CompilerToken::Type => Ok(self.parse_type_statement(None, None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(None, None)?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
             CompilerToken::Namespace => Ok(self.parse_namespace_statement(None)?.map_data(|x| NamespaceLevelDeclaration::NamespaceStatement(x))),
             CompilerToken::Terminator => self.parse_empty_namespace_level_statement(),
@@ -1673,8 +1704,8 @@ impl<'a> CompilerParserInstance<'a> {
         let statement_token = self.ctx.peek()?;
         Ok(match statement_token {
             // data and struct declarations
-            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
-            CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Const => Ok(self.parse_const_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Type => Ok(self.parse_type_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
             _ => Err(self.ctx.fail(format!("Expected data or struct declaration following template declaration and access specifier, got {}", statement_token))),
         }?)
@@ -1688,8 +1719,8 @@ impl<'a> CompilerParserInstance<'a> {
                 CompilerToken::Internal => parser.parse_templated_access_specifier_top_level_statement(template_declaration, DeclarationAccessSpecifier::Internal),
                 CompilerToken::Local => parser.parse_templated_access_specifier_top_level_statement(template_declaration, DeclarationAccessSpecifier::Local),
                 // data and struct declarations
-                CompilerToken::ConstexprInt => Ok(parser.parse_data_statement(ExpressionValueType::Int, Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
-                CompilerToken::Type => Ok(parser.parse_data_statement(ExpressionValueType::Typename, Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
+                CompilerToken::Const => Ok(parser.parse_const_statement(Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
+                CompilerToken::Type => Ok(parser.parse_type_statement(Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
                 CompilerToken::Struct => Ok(parser.parse_struct_statement(Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
                 _ => Err(parser.ctx.fail(format!("Expected access specifier, data or struct declaration following template declaration, got {}", template_statement_token))),
             }?.to_parse_result())
@@ -1700,9 +1731,9 @@ impl<'a> CompilerParserInstance<'a> {
         self.ctx.discard_next()?;
         let statement_token = self.ctx.peek()?;
         match statement_token {
-            CompilerToken::Extern => self.parse_extern_statement(Some(access_specifier)),
-            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
-            CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Input => self.parse_input_statement(Some(access_specifier)),
+            CompilerToken::Const => Ok(self.parse_const_statement(None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Type => Ok(self.parse_type_statement(None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
             CompilerToken::Namespace => Ok(self.parse_namespace_statement(Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::NamespaceStatement(x))),
             _ => Err(self.ctx.fail(format!("Expected extern, data or struct declaration following access specifier, got {}", statement_token))),
@@ -1719,9 +1750,9 @@ impl<'a> CompilerParserInstance<'a> {
             CompilerToken::Local => self.parse_access_specifier_top_level_statement(DeclarationAccessSpecifier::Local),
             // import, extern, data, struct, namespace or blank declarations
             CompilerToken::Import => self.parse_import_statement(),
-            CompilerToken::Extern => self.parse_extern_statement(None),
-            CompilerToken::ConstexprInt => Ok(self.parse_data_statement(ExpressionValueType::Int, None, None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
-            CompilerToken::Type => Ok(self.parse_data_statement(ExpressionValueType::Typename, None, None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Input => self.parse_input_statement(None),
+            CompilerToken::Const => Ok(self.parse_const_statement(None, None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Type => Ok(self.parse_type_statement(None, None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(None, None)?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
             CompilerToken::Namespace => Ok(self.parse_namespace_statement(None)?.map_data(|x| ModuleTopLevelDeclaration::NamespaceStatement(x))),
             CompilerToken::Terminator => self.parse_empty_top_level_statement(),
@@ -2156,7 +2187,7 @@ impl<'a> CompilerParserInstance<'a> {
         result_builder.push_str("};");
         result_builder
     }
-    fn extern_statement_to_source_text(statement: &ExternStatement) -> String {
+    fn extern_statement_to_source_text(statement: &InputStatement) -> String {
         let mut result_builder = String::with_capacity(20);
         if let Some(access_specifier) = statement.access_specifier {
             result_builder.push_str(Self::access_specifier_to_source_text(access_specifier));
@@ -2189,7 +2220,7 @@ impl<'a> CompilerParserInstance<'a> {
         match declaration {
             ModuleTopLevelDeclaration::StructStatement(inner_declaration) => Self::struct_statement_to_source_text(inner_declaration),
             ModuleTopLevelDeclaration::DataStatement(inner_declaration) => Self::data_statement_to_source_text(inner_declaration),
-            ModuleTopLevelDeclaration::ExternStatement(inner_declaration) => Self::extern_statement_to_source_text(inner_declaration),
+            ModuleTopLevelDeclaration::InputStatement(inner_declaration) => Self::extern_statement_to_source_text(inner_declaration),
             ModuleTopLevelDeclaration::ImportStatement(inner_declaration) => Self::import_statement_to_source_text(inner_declaration),
             ModuleTopLevelDeclaration::NamespaceStatement(inner_declaration) => Self::namespace_statement_to_source_text(inner_declaration),
             ModuleTopLevelDeclaration::EmptyStatement => ";".to_string(),

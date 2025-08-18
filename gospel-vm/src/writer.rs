@@ -276,8 +276,7 @@ impl GospelSourceFunctionDefinition {
 /// Generic sink for building gospel modules (into containers or reference containers)
 pub trait GospelModuleVisitor : Debug {
     fn module_name(&self) -> Option<String>;
-    fn declare_global(&mut self, name: &str) -> anyhow::Result<()>;
-    fn define_global(&mut self, name: &str, value: i32) -> anyhow::Result<()>;
+    fn define_global(&mut self, name: &str, default_value: Option<i32>) -> anyhow::Result<()>;
     fn declare_function(&mut self, source: GospelSourceFunctionDeclaration) -> anyhow::Result<()>;
     fn define_function(&mut self, source: GospelSourceFunctionDefinition) -> anyhow::Result<()>;
     fn define_struct(&mut self, source: GospelSourceStructDefinition) -> anyhow::Result<()>;
@@ -450,11 +449,8 @@ impl GospelModuleVisitor for GospelContainerWriter {
     fn module_name(&self) -> Option<String> {
         Some(self.container_name.clone())
     }
-    fn declare_global(&mut self, name: &str) -> anyhow::Result<()> {
-        self.find_or_define_global(name, None).map(|_| {})
-    }
-    fn define_global(&mut self, name: &str, value: i32) -> anyhow::Result<()> {
-        self.find_or_define_global(name, Some(value)).map(|_| {})
+    fn define_global(&mut self, name: &str, value: Option<i32>) -> anyhow::Result<()> {
+        self.find_or_define_global(name, value).map(|_| {})
     }
     fn declare_function(&mut self, source: GospelSourceFunctionDeclaration) -> anyhow::Result<()> {
         if source.function_name.module_name != self.container_name {

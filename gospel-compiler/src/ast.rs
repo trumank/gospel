@@ -267,12 +267,13 @@ pub struct ModuleImportStatement {
     pub source_context: ASTSourceContext,
 }
 
-/// Represents an external data declaration
+/// Represents an input data declaration with an optional default value expression
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExternStatement {
+pub struct InputStatement {
     pub access_specifier: Option<DeclarationAccessSpecifier>,
     pub global_name: String,
     pub value_type: ExpressionValueType,
+    pub default_value: Option<Expression>,
     #[serde(default)]
     pub source_context: ASTSourceContext,
 }
@@ -380,7 +381,7 @@ pub struct NamespaceStatement {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ModuleTopLevelDeclaration {
     ImportStatement(ModuleImportStatement),
-    ExternStatement(ExternStatement),
+    InputStatement(InputStatement),
     DataStatement(DataStatement),
     StructStatement(StructStatement),
     EmptyStatement,

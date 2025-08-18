@@ -502,10 +502,10 @@ impl GospelAssembler {
 
         // If this declaration is marked extern, treat it as declaration, otherwise, treat it as definition
         if attributes.intersects(AssemblerAttributeList::Extern) {
-            self.visitor.borrow_mut().declare_global(&global_variable_name)
+            self.visitor.borrow_mut().define_global(&global_variable_name, None)
                 .map_err(|x| ctx.fail(x.to_string()))
         } else {
-            self.visitor.borrow_mut().define_global(&global_variable_name, global_default_value.unwrap())
+            self.visitor.borrow_mut().define_global(&global_variable_name, global_default_value)
                 .map_err(|x| ctx.fail(x.to_string()))
         }
     }

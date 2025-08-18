@@ -10,7 +10,7 @@ use gospel_vm::bytecode::GospelOpcode;
 use gospel_vm::module::GospelContainer;
 use gospel_vm::gospel::{GospelPlatformConfigProperty, GospelValueType};
 use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter, GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceObjectReference, GospelSourceSlotBinding, GospelSourceStaticValue, GospelSourceStructDefinition, GospelSourceStructField};
-use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, ExternStatement, DeclarationStatement, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayTypeExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, BuiltinIdentifierExpression, BuiltinIdentifier, DeclarationAccessSpecifier, PrimitiveTypeExpression};
+use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayTypeExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, BuiltinIdentifierExpression, BuiltinIdentifier, DeclarationAccessSpecifier, PrimitiveTypeExpression};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CompilerSourceContext {
@@ -967,7 +967,7 @@ pub trait CompilerModuleBuilder : CompilerModuleBuilderInternal {
         source_file.declarations.iter().map(|top_level_declaration| match top_level_declaration {
             ModuleTopLevelDeclaration::EmptyStatement => { Ok({}) }
             ModuleTopLevelDeclaration::ImportStatement(import_statement) => { CompilerInstance::pre_compile_import_statement(&file_scope, import_statement) }
-            ModuleTopLevelDeclaration::ExternStatement(extern_statement) => { CompilerInstance::compile_extern_statement(&file_scope, extern_statement) }
+            ModuleTopLevelDeclaration::InputStatement(extern_statement) => { CompilerInstance::compile_input_statement(&file_scope, extern_statement) }
             ModuleTopLevelDeclaration::NamespaceStatement(namespace_statement) => { CompilerInstance::compile_namespace_statement(&file_scope, namespace_statement, DeclarationVisibility::Public) }
             ModuleTopLevelDeclaration::DataStatement(data_statement) => { CompilerInstance::pre_compile_data_statement(&file_scope, data_statement, DeclarationVisibility::Public)?; Ok({}) }
             ModuleTopLevelDeclaration::StructStatement(struct_statement) => { CompilerInstance::compile_struct_statement(&file_scope, struct_statement, None, DeclarationVisibility::Public)?; Ok({}) }
@@ -1424,15 +1424,20 @@ impl CompilerInstance {
             }
         }).chain_compiler_result(|| compiler_error!(source_context, "Failed to compile namespace declaration"))
     }
-    fn compile_extern_statement(scope: &Rc<CompilerLexicalScope>, statement: &ExternStatement) -> CompilerResult<()> {
+    fn compile_input_statement(scope: &Rc<CompilerLexicalScope>, statement: &InputStatement) -> CompilerResult<()> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
         let name = statement.global_name.clone();
         if statement.value_type != ExpressionValueType::Int {
             compiler_bail!(&source_context, "Global data can only be of Int type, attempting to declare global data {} as {}", name.as_str(), statement.value_type);
         }
         scope.declare(&name, CompilerLexicalDeclarationClass::GlobalData((statement.value_type, name.clone())), DeclarationVisibility::Public, &source_context.line_context)?;
+        let default_value = if let Some(default_value_expression) = &statement.default_value {
+            if let Expression::IntegerConstantExpression(int_constant_expr) = default_value_expression {
+                Some(int_constant_expr.constant_value)
+            } else { compiler_bail!(&source_context, "Global data can only be initialized with an integer constant expression (for time being)"); }
+        } else { None };
         if let Some(module_codegen_data) = scope.module_codegen() {
-            module_codegen_data.visitor.borrow_mut().declare_global(name.as_str()).with_source_context(&source_context)?;
+            module_codegen_data.visitor.borrow_mut().define_global(name.as_str(), default_value).with_source_context(&source_context)?;
         }
         Ok({})
     }

@@ -68,4 +68,4 @@ struct Test {
 };
 
 struct alignas(int) EmptyStruct {};
-constexpr int SizeofEmptyStruct = sizeof(EmptyStruct);
+const int SizeofEmptyStruct = sizeof(EmptyStruct);
