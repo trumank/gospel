@@ -32,9 +32,9 @@ enum CompilerToken {
     #[token("union")]
     #[strum(to_string = "union")]
     Union,
-    #[token("const")]
-    #[strum(to_string = "const")]
-    Const,
+    #[token("constexpr")]
+    #[strum(to_string = "constexpr")]
+    Constexpr,
     #[token("let")]
     #[strum(to_string = "let")]
     Let,
@@ -1389,13 +1389,13 @@ impl<'a> CompilerParserInstance<'a> {
             Ok(ExactModuleTopLevelDeclarationCase::create(self, ModuleTopLevelDeclaration::InputStatement(result_statement)))
         }
     }
-    fn parse_const_statement(mut self, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>) -> anyhow::Result<ExactParseCase<'a, DataStatement>> {
+    fn parse_constexpr_statement(mut self, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>) -> anyhow::Result<ExactParseCase<'a, DataStatement>> {
         self.ctx.discard_next()?;
 
         let value_type_token = self.ctx.next()?;
         let value_type = self.parse_expression_value_type(value_type_token)?;
         if value_type == ExpressionValueType::Typename {
-            return Err(self.ctx.fail("Typename not allowed as const declaration type. Use type alias instead"));
+            return Err(self.ctx.fail("Typename not allowed as constexpr declaration type. Use type alias instead"));
         }
         self.parse_data_statement_internal(value_type, template_declaration, access_specifier)
     }
@@ -1533,7 +1533,7 @@ impl<'a> CompilerParserInstance<'a> {
         self.ctx.discard_next()?;
         let statement_token = self.ctx.peek()?;
         match statement_token {
-            CompilerToken::Const => Ok(self.parse_const_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
             CompilerToken::Type => Ok(self.parse_type_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, Some(template_declaration), Some(access_specifier))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
             CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, Some(template_declaration), Some(access_specifier))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
@@ -1550,7 +1550,7 @@ impl<'a> CompilerParserInstance<'a> {
                 CompilerToken::Internal => parser.parse_templated_access_specifier_struct_inner_declaration(template_declaration, DeclarationAccessSpecifier::Internal),
                 CompilerToken::Local => parser.parse_templated_access_specifier_struct_inner_declaration(template_declaration, DeclarationAccessSpecifier::Local),
                 // data and struct declarations
-                CompilerToken::Const => Ok(parser.parse_const_statement(Some(template_declaration), None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+                CompilerToken::Constexpr => Ok(parser.parse_constexpr_statement(Some(template_declaration), None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
                 CompilerToken::Type => Ok(parser.parse_type_statement(Some(template_declaration), None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
                 CompilerToken::Struct => Ok(parser.parse_struct_statement(UserDefinedTypeKind::Struct, Some(template_declaration), None)?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
                 CompilerToken::Class => Ok(parser.parse_struct_statement(UserDefinedTypeKind::Class, Some(template_declaration), None)?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
@@ -1571,7 +1571,7 @@ impl<'a> CompilerParserInstance<'a> {
         let statement_token = self.ctx.peek()?;
         match statement_token {
             // data and struct declarations
-            CompilerToken::Const => Ok(self.parse_const_statement(None, Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(None, Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
             CompilerToken::Type => Ok(self.parse_type_statement(None, Some(access_specifier))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, None, Some(access_specifier))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
             CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, None, Some(access_specifier))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
@@ -1589,7 +1589,7 @@ impl<'a> CompilerParserInstance<'a> {
             CompilerToken::Internal => self.parse_access_specifier_struct_inner_declaration(DeclarationAccessSpecifier::Internal),
             CompilerToken::Local => self.parse_access_specifier_struct_inner_declaration(DeclarationAccessSpecifier::Local),
             // data, struct, conditional, scope and blank declarations
-            CompilerToken::Const => Ok(self.parse_const_statement(None, None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(None, None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
             CompilerToken::Type => Ok(self.parse_type_statement(None, None)?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, None, None)?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
             CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, None, None)?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
@@ -1655,7 +1655,7 @@ impl<'a> CompilerParserInstance<'a> {
             let mut current_parser = parser;
             while current_parser.ctx.peek()? != CompilerToken::ScopeEnd {
                 let struct_inner_statement = current_parser.parse_struct_inner_declaration()?;
-                declarations.push(struct_inner_statement.data);
+                declarations. push(struct_inner_statement.data);
                 current_parser = struct_inner_statement.parser;
             }
             current_parser.ctx.discard_next()?;
@@ -1673,7 +1673,7 @@ impl<'a> CompilerParserInstance<'a> {
         let statement_token = self.ctx.peek()?;
         Ok(match statement_token {
             // data and struct declarations
-            CompilerToken::Const => Ok(self.parse_const_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
             CompilerToken::Type => Ok(self.parse_type_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
             CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
@@ -1690,7 +1690,7 @@ impl<'a> CompilerParserInstance<'a> {
                 CompilerToken::Internal => parser.parse_templated_access_specifier_namespace_level_statement(template_declaration, DeclarationAccessSpecifier::Internal),
                 CompilerToken::Local => parser.parse_templated_access_specifier_namespace_level_statement(template_declaration, DeclarationAccessSpecifier::Local),
                 // data and struct declarations
-                CompilerToken::Const => Ok(parser.parse_const_statement(Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+                CompilerToken::Constexpr => Ok(parser.parse_constexpr_statement(Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
                 CompilerToken::Type => Ok(parser.parse_type_statement(Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
                 CompilerToken::Struct => Ok(parser.parse_struct_statement(UserDefinedTypeKind::Struct, Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
                 CompilerToken::Class => Ok(parser.parse_struct_statement(UserDefinedTypeKind::Class, Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
@@ -1710,7 +1710,7 @@ impl<'a> CompilerParserInstance<'a> {
         let statement_token = self.ctx.peek()?;
         match statement_token {
             // data, struct and namespace declarations
-            CompilerToken::Const => Ok(self.parse_const_statement(None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
             CompilerToken::Type => Ok(self.parse_type_statement(None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
             CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
@@ -1729,7 +1729,7 @@ impl<'a> CompilerParserInstance<'a> {
             CompilerToken::Internal => self.parse_access_specifier_namespace_level_statement(DeclarationAccessSpecifier::Internal),
             CompilerToken::Local => self.parse_access_specifier_namespace_level_statement(DeclarationAccessSpecifier::Local),
             // data, struct, namespace and blank declarations
-            CompilerToken::Const => Ok(self.parse_const_statement(None, None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
+            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(None, None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
             CompilerToken::Type => Ok(self.parse_type_statement(None, None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, None, None)?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
             CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, None, None)?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
@@ -1774,7 +1774,7 @@ impl<'a> CompilerParserInstance<'a> {
         let statement_token = self.ctx.peek()?;
         Ok(match statement_token {
             // data and struct declarations
-            CompilerToken::Const => Ok(self.parse_const_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
             CompilerToken::Type => Ok(self.parse_type_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
             CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
@@ -1791,7 +1791,7 @@ impl<'a> CompilerParserInstance<'a> {
                 CompilerToken::Internal => parser.parse_templated_access_specifier_top_level_statement(template_declaration, DeclarationAccessSpecifier::Internal),
                 CompilerToken::Local => parser.parse_templated_access_specifier_top_level_statement(template_declaration, DeclarationAccessSpecifier::Local),
                 // data and struct declarations
-                CompilerToken::Const => Ok(parser.parse_const_statement(Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
+                CompilerToken::Constexpr => Ok(parser.parse_constexpr_statement(Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
                 CompilerToken::Type => Ok(parser.parse_type_statement(Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
                 CompilerToken::Struct => Ok(parser.parse_struct_statement(UserDefinedTypeKind::Struct, Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
                 CompilerToken::Class => Ok(parser.parse_struct_statement(UserDefinedTypeKind::Class, Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
@@ -1806,7 +1806,7 @@ impl<'a> CompilerParserInstance<'a> {
         let statement_token = self.ctx.peek()?;
         match statement_token {
             CompilerToken::Input => self.parse_input_statement(Some(access_specifier)),
-            CompilerToken::Const => Ok(self.parse_const_statement(None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
             CompilerToken::Type => Ok(self.parse_type_statement(None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
             CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
@@ -1827,7 +1827,7 @@ impl<'a> CompilerParserInstance<'a> {
             // import, extern, data, struct, namespace or blank declarations
             CompilerToken::Import => self.parse_import_statement(),
             CompilerToken::Input => self.parse_input_statement(None),
-            CompilerToken::Const => Ok(self.parse_const_statement(None, None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(None, None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
             CompilerToken::Type => Ok(self.parse_type_statement(None, None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
             CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, None, None)?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
             CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, None, None)?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),

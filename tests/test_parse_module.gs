@@ -69,7 +69,7 @@ struct FWrapperStruct {
 
 type DynamicTemplateInstantiationTest = FWrapperStruct<FVector>::typename Inner<float>;
 
-const int ComplexExpressionTest = {
+constexpr int ComplexExpressionTest = {
     let int LocalVariable = UE_VERSION_MINOR;
     LocalVariable += 5;
     LocalVariable = LocalVariable / 1;
@@ -86,8 +86,8 @@ const int ComplexExpressionTest = {
     (Result[10])::int Variable
 };
 
-const int SizeOfVector = sizeof(FVector);
-const int AlignmentOfVector = alignof(FVector);
+constexpr int SizeOfVector = sizeof(FVector);
+constexpr int AlignmentOfVector = alignof(FVector);
 
 template<typename T>
 struct TTypeCompatibleBytes {
@@ -113,7 +113,7 @@ struct TArray {
 };
 type FByteArray = TArray<uint8>;
 
-const int BinaryOperatorPrecedenceTest = A | B ^ C & D >> E << F + G - H * I[A + B] / J % K > L < M >= N <= O && P || Q == R != S;
-const int UnaryOperatorTest = sizeof(A*) + alignof(B*) + ~C + -D + !E * (F + G);
+constexpr int BinaryOperatorPrecedenceTest = A | B ^ C & D >> E << F + G - H * I[A + B] / J % K > L < M >= N <= O && P || Q == R != S;
+constexpr int UnaryOperatorTest = sizeof(A*) + alignof(B*) + ~C + -D + !E * (F + G);
 
 ;

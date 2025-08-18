@@ -68,7 +68,7 @@ struct Test {
 };
 
 struct alignas(int) EmptyStruct {};
-const int SizeofEmptyStruct = sizeof(EmptyStruct);
+constexpr int SizeofEmptyStruct = sizeof(EmptyStruct);
 
 template<int Test = 5> struct TemplateWithDefault {};
 type DefaultInstantiation = TemplateWithDefault<>;
@@ -85,4 +85,4 @@ union TestUnion {
     void* Test3;
     char Test4;
 };
-const int SizeofTestUnion = sizeof(TestUnion);
+constexpr int SizeofTestUnion = sizeof(TestUnion);
