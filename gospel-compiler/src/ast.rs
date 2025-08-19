@@ -360,6 +360,7 @@ pub struct MemberFunctionDeclaration {
     pub return_value_type: Expression,
     pub parameters: Vec<FunctionParameterDeclaration>,
     pub constant: bool,
+    pub is_override: bool,
     #[serde(default)]
     pub source_context: ASTSourceContext,
 }

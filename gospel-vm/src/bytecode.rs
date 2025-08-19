@@ -129,7 +129,7 @@ pub enum GospelOpcode {
     #[strum(props(immediate_count = "1", stack_in_count = "3"))]
     TypeUDTAddBitfield = 0x7C, // <imm>; [pop stack] [pop stack] [pop stack] ->
     #[strum(props(immediate_count = "2", stack_in_count = "2", stack_out_count = "1", stack_variable_input_count_immediate = "1"))]
-    TypeUDTAddVirtualFunction = 0x7D, // <imm> <imm>; [pop stack] x <imm1> [pop stack] [pop stack] ->
+    TypeUDTAddVirtualFunction = 0x7D, // <imm> <imm>; [pop stack] x <imm1> [pop stack] [pop stack] [pop stack] ->
     #[strum(props(stack_in_count = "2"))]
     TypeUDTAttachMetadata = 0x7E, // ; [pop stack] [pop stack] ->
     #[strum(props(stack_in_count = "1"))]

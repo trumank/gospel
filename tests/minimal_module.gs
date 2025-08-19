@@ -106,4 +106,10 @@ class TestClassWithVirtualFunctions {
 
     int TestMember;
 };
+
+class TestClassWithNoUniqueVirtualFunctions : Test, TestClassWithVirtualFunctions {
+    virtual ~TestClassWithNoUniqueVirtualFunctions();
+    virtual void TestFunction1() const override;
+};
+
 constexpr int SizeofTestClassWithVirtualFunctions = sizeof(TestClassWithVirtualFunctions);

@@ -1295,27 +1295,23 @@ struct CompilerStructVirtualFunctionFragment {
     return_type_expression: Expression,
     parameters: Vec<FunctionParameterDeclaration>,
     constant: bool,
+    is_override: bool,
 }
 impl CompilerStructFragmentGenerator for CompilerStructVirtualFunctionFragment {
     fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, _type_layout_metadata_slot: u32, _meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<()> {
         builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
 
-        builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
-
         let return_value_expression_type = builder.compile_expression(&self.scope, &self.return_type_expression)?;
         CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Typename, return_value_expression_type)?;
+
+        let function_flags = (if self.constant { 1 << 0 } else { 0 }) | (if self.is_override { 1 << 1 } else { 0 });
+        builder.function_definition.add_int_constant_instruction(function_flags, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
 
         for argument_index in 0..self.parameters.len() {
             let argument_expression_type = builder.compile_expression(&self.scope, &self.parameters[argument_index].parameter_type)?;
             CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Typename, argument_expression_type)?;
-        }
-        builder.function_definition.add_variadic_instruction(GospelOpcode::TypeFunctionCreateMember, self.parameters.len() as u32, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
-        if self.constant {
-            builder.function_definition.add_simple_instruction(GospelOpcode::TypeAddConstantQualifier, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
-        }
 
-        for argument_index in 0..self.parameters.len() {
-            if argument_index < self.parameters.len() && let Some(argument_name) = &self.parameters[argument_index].parameter_name {
+            if let Some(argument_name) = &self.parameters[argument_index].parameter_name {
                 let argument_name_index = builder.function_definition.add_string_reference_internal(argument_name.as_str());
                 builder.function_definition.add_int_constant_instruction(argument_name_index as i32, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
             } else {
@@ -1323,7 +1319,7 @@ impl CompilerStructFragmentGenerator for CompilerStructVirtualFunctionFragment {
             }
         }
         builder.function_definition.add_variadic_string_instruction(GospelOpcode::TypeUDTAddVirtualFunction,
-            self.function_name.as_str(), self.parameters.len() as u32, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            self.function_name.as_str(), (self.parameters.len() * 2) as u32, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         Ok({})
     }
 }
@@ -1753,6 +1749,7 @@ impl CompilerInstance {
             return_type_expression: declaration.return_value_type.clone(),
             parameters: declaration.parameters.clone(),
             constant: declaration.constant,
+            is_override: declaration.is_override,
         }))
     }
     fn pre_compile_type_layout_inner_declaration(scope: &Rc<CompilerLexicalScope>, inner_declaration: &StructInnerDeclaration, visibility_override: Option<DeclarationVisibility>) -> CompilerResult<Box<dyn CompilerStructFragmentGenerator>> {

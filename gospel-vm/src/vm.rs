@@ -14,7 +14,7 @@ use crate::gospel::{GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, 
 use crate::writer::{GospelSourceObjectReference, GospelSourceStaticValue};
 use serde::{Deserialize, Serialize, Serializer};
 use serde::ser::SerializeStruct;
-use gospel_typelib::type_model::{ArrayType, CVQualifiedType, FunctionType, PointerType, PrimitiveType, ResolvedUDTLayout, ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeBitfield, UserDefinedTypeField, UserDefinedTypeKind, UserDefinedTypeMember, UserDefinedTypeVirtualFunction};
+use gospel_typelib::type_model::{ArrayType, CVQualifiedType, FunctionType, PointerType, PrimitiveType, ResolvedUDTLayout, ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeBitfield, UserDefinedTypeField, UserDefinedTypeKind, UserDefinedTypeMember, FunctionDeclaration, FunctionParameterDeclaration};
 use crate::reflection::{GospelContainerReflector, GospelModuleReflector};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1022,60 +1022,47 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::TypeUDTAddVirtualFunction => {
                     let function_name_index = state.immediate_value_checked(instruction, 0)? as i32;
-                    let function_name = if function_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(function_name_index as usize)?) };
+                    let function_name = state.copy_referenced_string_checked(function_name_index as usize)?;
 
-                    // Parse argument names payload
-                    let number_of_argument_names = state.immediate_value_checked(instruction, 1)? as usize;
-                    let mut argument_names: Vec<Option<String>> = vec![None; number_of_argument_names];
-                    for index in 0..number_of_argument_names {
-                        let argument_name_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))?;
-                        let argument_name = if argument_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(argument_name_index as usize)?) };
-                        argument_names[number_of_argument_names - index - 1] = argument_name;
+                    let number_of_parameter_stack_values = state.immediate_value_checked(instruction, 1)? as usize;
+                    if number_of_parameter_stack_values % 2 != 0 {
+                        vm_bail!(Some(state), "Invalid number of parameter stack values for TypeUDTAddVirtualFunction; expected even number of stack parameters (pairs of parameter type and name index)");
                     }
 
-                    let function_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    let number_of_parameters = number_of_parameter_stack_values / 2;
+                    let mut parameters: Vec<FunctionParameterDeclaration> = vec![FunctionParameterDeclaration::default(); number_of_parameters];
+                    for index in 0..number_of_parameters {
+                        let parameter_name_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))?;
+                        let parameter_name = if parameter_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(parameter_name_index as usize)?) };
+                        let parameter_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                        parameters[number_of_parameters - index - 1] = FunctionParameterDeclaration{parameter_type_index, parameter_name};
+                    }
+
+                    let function_flags = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as u32;
+                    let is_const_member_function = if function_flags & (1 << 0) != 0 { true } else { false };
+                    let is_function_override = if function_flags & (1 << 1) != 0 { true } else { false };
+
+                    let return_value_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    let new_function_declaration = FunctionDeclaration{name: function_name.clone(), return_value_type_index, parameters, is_const_member_function, is_virtual_function_override: is_function_override};
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
                     state.validate_udt_type_not_finalized(type_index, run_context)?;
 
-                    // Function signature cannot be marked as volatile, only as const
-                    let base_function_type_index = if let Type::CVQualified(cv_qualified_type) = run_context.type_by_index(function_type_index) {
-                        if cv_qualified_type.volatile {
-                            vm_bail!(Some(state), "Function signature types cannot be marked as volatile");
-                        }
-                        cv_qualified_type.base_type_index
-                    } else { function_type_index };
-
-                    // Function signature has to be a function type, with a receiver explicitly set to this type
-                    if let Type::Function(function_type) = run_context.type_by_index(base_function_type_index) {
-                        if let Some(receiver_type_index) = function_type.this_type_index {
-                            if receiver_type_index != type_index {
-                                vm_bail!(Some(state), "Virtual function type must have owner UDT as a receiver type");
-                            }
-                        } else {
-                            vm_bail!(Some(state), "Virtual function type must be a member function type");
-                        }
-                        if function_type.argument_type_indices.len() != number_of_argument_names {
-                            vm_bail!(Some(state), "Argument count mismatch between instruction and function type: Expected {} arguments from function type, but {} argument names were given",
-                                function_type.argument_type_indices.len(), number_of_argument_names);
-                        }
-                    }
-
                     if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
                         if user_defined_type.kind == UserDefinedTypeKind::Union {
                             vm_bail!(Some(state), "Union types cannot have virtual functions");
                         }
-                        if function_name.is_some() && user_defined_type.members.iter().any(|x| !matches!(x, UserDefinedTypeMember::VirtualFunction(_)) && x.name() == function_name.as_deref()) {
-                            vm_bail!(Some(state), "Type #{} already contains a member named {}", type_index, function_name.as_ref().unwrap());
+                        if user_defined_type.members.iter().any(|x| !matches!(x, UserDefinedTypeMember::VirtualFunction(_)) && x.name() == Some(function_name.as_str())) {
+                            vm_bail!(Some(state), "Type #{} already contains a member named {}", type_index, function_name);
                         }
-                        if function_name.is_some() && user_defined_type.members.iter().any(|x| {
-                            if let UserDefinedTypeMember::VirtualFunction(function) = x && x.name() == function_name.as_deref() && function.function_type_index == function_type_index { true } else { false }
+                        if user_defined_type.members.iter().any(|x| {
+                            if let UserDefinedTypeMember::VirtualFunction(function) = x && x.name() == Some(function_name.as_str()) &&
+                                function.function_signature() == new_function_declaration.function_signature() { true } else { false }
                         }) {
-                            vm_bail!(Some(state), "Type #{} already contains a function named {} with identical signature", type_index, function_name.as_ref().unwrap());
+                            vm_bail!(Some(state), "Type #{} already contains a function named {} with identical signature", type_index, function_name);
                         }
-                        let result_function = UserDefinedTypeVirtualFunction{name: function_name, function_type_index, argument_names};
-                        user_defined_type.members.push(UserDefinedTypeMember::VirtualFunction(result_function))
+                        user_defined_type.members.push(UserDefinedTypeMember::VirtualFunction(new_function_declaration))
                     }
                 }
                 GospelOpcode::TypeUDTAttachMetadata => {

@@ -5,8 +5,8 @@ use std::process::exit;
 use std::rc::Rc;
 use std::str::FromStr;
 use anyhow::{anyhow, bail};
-use clap::Parser;
-use gospel_typelib::type_model::{TargetTriplet, TypeGraphLike};
+use clap::{Parser, ValueEnum};
+use gospel_typelib::type_model::{ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, TypeTree};
 use gospel_vm::module::{GospelContainer};
 use gospel_vm::reflection::{GospelContainerReflector, GospelModuleReflector};
 use gospel_vm::vm::{GospelVMContainer, GospelVMRunContext, GospelVMState, GospelVMValue};
@@ -52,6 +52,9 @@ struct ActionCallFunction {
     /// Optional arguments to provide to the function
     #[arg(index = 2)]
     function_args: Vec<String>,
+    /// Output format for the type tree (if result is a type tree)
+    #[arg(long, short = 'f')]
+    output_format: Option<TypeTreeOutputFormat>,
 }
 
 #[derive(Parser, Debug)]
@@ -84,6 +87,12 @@ struct ActionCompileModule {
     files: Vec<PathBuf>,
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
+enum TypeTreeOutputFormat {
+    Simple,
+    Full,
+}
+
 #[derive(Parser, Debug)]
 struct ActionEvalExpression {
     /// Target triple to use as a platform config. When not provided, current platform will be used instead (environment is assumed to be native to the platform)
@@ -104,6 +113,9 @@ struct ActionEvalExpression {
     /// Type of the value yielded by the expression. If not specified, default expression type is Typename
     #[arg(long, short = 'x')]
     expression_type: Option<String>,
+    /// Output format for the type tree (if result is a type tree)
+    #[arg(long, short = 'f')]
+    output_format: Option<TypeTreeOutputFormat>,
 }
 
 #[derive(Parser, Debug)]
@@ -174,6 +186,59 @@ fn do_action_assemble(action: ActionAssembleModule) -> anyhow::Result<()> {
     Ok({})
 }
 
+fn print_full_type_tree(type_tree: &TypeTree, target_triplet: &TargetTriplet) -> anyhow::Result<()> {
+    for type_index in 0..type_tree.types.len() {
+        let alignment = type_tree.type_by_index(type_index).alignment(type_tree, target_triplet);
+        let size = type_tree.type_by_index(type_index).size(type_tree, target_triplet);
+        if type_index == type_tree.root_type_index {
+            print!("[TREE ROOT] ");
+        }
+        println!("Type #{} (alignment: 0x{:x}; size: 0x{:x}): ", type_index, alignment, size);
+        serde_json::to_string_pretty(type_tree.type_by_index(type_index))?.lines().for_each(|x| {
+            println!(" | {}", x);
+        });
+        if let Type::UDT(user_defined_type) = &type_tree.type_by_index(type_index) {
+            println!(" # UDT Layout:");
+            serde_json::to_string_pretty(&user_defined_type.layout(type_tree, target_triplet))?.lines().for_each(|x| {
+                println!(" # {}", x);
+            });
+        }
+    }
+    Ok({})
+}
+
+fn print_simplified_type_tree(type_tree: &TypeTree, target_triplet: &TargetTriplet) -> anyhow::Result<()> {
+    for type_in_tree in &type_tree.types {
+        if let Type::UDT(user_defined_type) = type_in_tree {
+            let layout = user_defined_type.layout(type_tree, &target_triplet);
+            println!("{}.layout {{ // 0x{:x}", user_defined_type.name.as_deref().unwrap_or("<unknown>"), layout.size);
+            for (member, member_layout) in user_defined_type.members.iter().zip(&layout.member_layouts) {
+                match member_layout {
+                    ResolvedUDTMemberLayout::Field(field) => {
+                        println!("    0x{:x} {}", field.offset, member.name().unwrap_or("<unknown>"));
+                    },
+                    ResolvedUDTMemberLayout::Bitfield(field) => {
+                        println!("    0x{:x} {} : {}", field.offset, member.name().unwrap_or("<unknown>"), field.bitfield_width);
+                    }
+                    ResolvedUDTMemberLayout::VirtualFunction(virtual_function) => {
+                        println!("    vtable 0x{:x} offset 0x{:x} {}", virtual_function.vtable_offset, virtual_function.offset, member.name().unwrap_or("<unknown>"));
+                    }
+                }
+            }
+            println!("}}");
+        }
+    }
+    Ok({})
+}
+
+fn print_type_tree(type_tree: &TypeTree, target_triplet: &TargetTriplet, print_format: TypeTreeOutputFormat) -> anyhow::Result<()> {
+    if print_format == TypeTreeOutputFormat::Simple {
+        print_simplified_type_tree(type_tree, target_triplet)
+    } else {
+        print_full_type_tree(type_tree, target_triplet)
+    }
+}
+
 fn do_action_call(action: ActionCallFunction) -> anyhow::Result<()> {
     // Parse target triplet
     let target_triplet = if let Some(target_triplet_name) = &action.target {
@@ -183,6 +248,7 @@ fn do_action_call(action: ActionCallFunction) -> anyhow::Result<()> {
         TargetTriplet::current_target()
             .ok_or_else(|| anyhow!("Current platform is not a valid target. Please specify target manually with --target "))?
     };
+    let output_format = action.output_format.unwrap_or(TypeTreeOutputFormat::Full);
 
     // Load containers to the VM
     let mut vm_state = GospelVMState::create();
@@ -225,35 +291,12 @@ fn do_action_call(action: ActionCallFunction) -> anyhow::Result<()> {
         .map_err(|x| anyhow!("Failed to execute function: {}", x.to_string()))?;
 
     // Print the result now
-    let serialized_result = if let GospelVMValue::TypeReference(type_index) = function_result {
-                let type_tree = execution_context.type_tree(type_index);
-        for typ in &type_tree.types {
-            match typ {
-                gospel_typelib::type_model::Type::UDT(typ) => {
-                    let layout = typ.layout(&type_tree, &target_triplet);
-                    println!("{}.layout {{ // 0x{:x}", typ.name.as_deref().unwrap_or("<unknown>"), layout.size);
-                    for (member, member_layout) in typ.members.iter().zip(&layout.member_layouts) {
-                        match member_layout {
-                            gospel_typelib::type_model::ResolvedUDTMemberLayout::Field(field) => {
-                                println!("    0x{:x} {}", field.offset, member.name().unwrap_or("<unknown>"));
-                            },
-                            gospel_typelib::type_model::ResolvedUDTMemberLayout::Bitfield(field) => {
-                                println!("    0x{:x} {} : {}", field.offset, member.name().unwrap_or("<unknown>"), field.bitfield_width);
-                            }
-                            _ => {}
-                        }
-
-                    }
-                    println!("}}");
-                },
-                _ => {}
-            }
-        }
-        // println!("{}", function_result.value_type());
-
-        serde_json::to_string_pretty(&type_tree)?
-    } else { serde_json::to_string_pretty(&function_result)? };
-    println!("{}", serialized_result);
+    if let GospelVMValue::TypeReference(type_index) = function_result {
+        let type_tree = execution_context.type_tree(type_index);
+        print_type_tree(&type_tree, execution_context.target_triplet(), output_format)?;
+    } else {
+        println!("Value: {}", serde_json::to_string_pretty(&function_result)?);
+    };
     Ok({})
 }
 
@@ -344,6 +387,8 @@ fn do_action_eval(action: ActionEvalExpression) -> anyhow::Result<()> {
         TargetTriplet::current_target()
             .ok_or_else(|| anyhow!("Current platform is not a valid target. Please specify target manually with --target "))?
     };
+    let output_format = action.output_format.unwrap_or(TypeTreeOutputFormat::Full);
+
     let expression_value_type = if let Some(value_type_string) = &action.expression_type {
         ExpressionValueType::from_str(value_type_string).map_err(|x| anyhow!("Unknown expression value type: {}. Allowed expression value types are typename and int", x))?
     } else { ExpressionValueType::Typename };
@@ -390,11 +435,14 @@ fn do_action_eval(action: ActionEvalExpression) -> anyhow::Result<()> {
 
     let function_result = compiled_expression.execute(Vec::new(), &mut execution_context)
         .map_err(|x| anyhow!("Failed to eval expression: {}", x.to_string()))?;
+
     // Print the result now
-    let serialized_result = if let GospelVMValue::TypeReference(type_index) = function_result {
-        serde_json::to_string_pretty(&execution_context.type_tree(type_index))?
-    } else { serde_json::to_string_pretty(&function_result)? };
-    println!("{}", serialized_result);
+    if let GospelVMValue::TypeReference(type_index) = function_result {
+        let type_tree = execution_context.type_tree(type_index);
+        print_type_tree(&type_tree, execution_context.target_triplet(), output_format)?;
+    } else {
+        println!("Value: {}", serde_json::to_string_pretty(&function_result)?);
+    };
     Ok({})
 }
 

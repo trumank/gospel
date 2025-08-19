@@ -92,6 +92,9 @@ enum CompilerToken {
     #[token("member_pack")]
     #[strum(to_string = "member_pack")]
     MemberPack,
+    #[token("override")]
+    #[strum(to_string = "override")]
+    Override,
     #[token("namespace")]
     #[strum(to_string = "namespace")]
     Namespace,
@@ -1612,15 +1615,13 @@ impl<'a> CompilerParserInstance<'a> {
                 }
             }, |x| x.to_string())?.map_data(|argument_list| { (function_name.clone(), return_value_type.clone(), argument_list) }))
         })?.flat_map_result(|mut parser, (function_name, return_value_type, argument_list)| {
-            let is_function_constant = if parser.ctx.peek()? == CompilerToken::Const {
-                parser.ctx.discard_next()?;
-                true
-            } else { false };
+            let is_function_constant = if parser.ctx.peek()? == CompilerToken::Const { parser.ctx.discard_next()?; true } else { false };
+            let is_function_override = if parser.ctx.peek()? == CompilerToken::Override { parser.ctx.discard_next()?; true } else { false };
 
             let statement_terminator_token = parser.ctx.next()?;
             parser.ctx.check_token(statement_terminator_token, CompilerToken::Terminator)?;
 
-            let result_declaration = MemberFunctionDeclaration {name: function_name, return_value_type, parameters: argument_list, source_context: source_context.clone(), constant: is_function_constant};
+            let result_declaration = MemberFunctionDeclaration {name: function_name, return_value_type, parameters: argument_list, source_context: source_context.clone(), constant: is_function_constant, is_override: is_function_override};
             Ok(AmbiguousParsingResult::unambiguous(parser, StructInnerDeclaration::FunctionDeclaration(Box::new(result_declaration))))
         })?.disambiguate()
     }
@@ -1638,11 +1639,12 @@ impl<'a> CompilerParserInstance<'a> {
         let argument_list_end_token = self.ctx.next()?;
         self.ctx.check_token(argument_list_end_token, CompilerToken::SubExpressionEnd)?;
 
+        let is_function_override = if self.ctx.peek()? == CompilerToken::Override { self.ctx.discard_next()?; true } else { false };
         let statement_terminator_token = self.ctx.next()?;
         self.ctx.check_token(statement_terminator_token, CompilerToken::Terminator)?;
 
         let return_value_type = PrimitiveTypeExpression{primitive_type: PrimitiveType::Void, source_context: source_context.clone()};
-        let result_declaration = MemberFunctionDeclaration {name: function_name, return_value_type: Expression::PrimitiveTypeExpression(Box::new(return_value_type)), parameters: Vec::new(), constant: false, source_context: source_context.clone()};
+        let result_declaration = MemberFunctionDeclaration {name: function_name, return_value_type: Expression::PrimitiveTypeExpression(Box::new(return_value_type)), parameters: Vec::new(), constant: false, is_override: is_function_override, source_context: source_context.clone()};
         Ok(ExactStructInnerDeclarationCase::create(self, StructInnerDeclaration::FunctionDeclaration(Box::new(result_declaration))))
     }
     fn parse_virtual_function_declaration(mut self) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
