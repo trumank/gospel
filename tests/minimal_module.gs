@@ -101,7 +101,7 @@ class TestClassWithVirtualFunctions {
 
     virtual void TestFunction1() const;
     virtual char TestFunction2();
-    virtual TestClassWithVirtualFunctions* Duplicate(void*const, int);
+    virtual TestClassWithVirtualFunctions* Duplicate(void*const, int Data);
 
     int TestMember;
 };

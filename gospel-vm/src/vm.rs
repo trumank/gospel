@@ -1042,6 +1042,15 @@ impl GospelVMExecutionState<'_> {
                     let function_name_index = state.immediate_value_checked(instruction, 0)? as i32;
                     let function_name = if function_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(function_name_index as usize)?) };
 
+                    // Parse argument names payload
+                    let number_of_argument_names = state.immediate_value_checked(instruction, 1)? as usize;
+                    let mut argument_names: Vec<Option<String>> = vec![None; number_of_argument_names];
+                    for index in 0..number_of_argument_names {
+                        let argument_name_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))?;
+                        let argument_name = if argument_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(argument_name_index as usize)?) };
+                        argument_names[number_of_argument_names - index - 1] = argument_name;
+                    }
+
                     let function_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
@@ -1065,6 +1074,10 @@ impl GospelVMExecutionState<'_> {
                         } else {
                             vm_bail!(Some(state), "Virtual function type must be a member function type");
                         }
+                        if function_type.argument_type_indices.len() != number_of_argument_names {
+                            vm_bail!(Some(state), "Argument count mismatch between instruction and function type: Expected {} arguments from function type, but {} argument names were given",
+                                function_type.argument_type_indices.len(), number_of_argument_names);
+                        }
                     }
 
                     if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
@@ -1074,7 +1087,7 @@ impl GospelVMExecutionState<'_> {
                         if function_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == function_name.as_deref()) {
                             vm_bail!(Some(state), "Type #{} already contains a definition for field named {}", type_index, function_name.as_ref().unwrap());
                         }
-                        let result_function = UserDefinedTypeVirtualFunction{name: function_name, function_type_index};
+                        let result_function = UserDefinedTypeVirtualFunction{name: function_name, function_type_index, argument_names};
                         user_defined_type.members.push(UserDefinedTypeMember::VirtualFunction(result_function))
                     }
                 }

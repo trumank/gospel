@@ -174,7 +174,7 @@ fn fork_type_graph_internal<'a, T : TypeGraphLike<'a>>(graph: &'a T, type_index:
                     UserDefinedTypeMember::Bitfield(bitfield) => UserDefinedTypeMember::Bitfield(bitfield.clone()),
                     UserDefinedTypeMember::VirtualFunction(virtual_function) => {
                         let function_type_index = fork_type_graph_internal(graph, virtual_function.function_type_index, result, type_lookup);
-                        UserDefinedTypeMember::VirtualFunction(UserDefinedTypeVirtualFunction{name: virtual_function.name.clone(), function_type_index})
+                        UserDefinedTypeMember::VirtualFunction(UserDefinedTypeVirtualFunction{name: virtual_function.name.clone(), function_type_index, argument_names: virtual_function.argument_names.clone()})
                     }
                 });
             }
@@ -328,6 +328,8 @@ pub struct UserDefinedTypeVirtualFunction {
     pub name: Option<String>,
     /// Index of the function signature type for this virtual function
     pub function_type_index: usize,
+    /// Optional names of function arguments for the function
+    pub argument_names: Vec<Option<String>>,
 }
 
 /// Represents type member in a user defined type

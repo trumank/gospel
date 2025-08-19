@@ -235,8 +235,8 @@ impl GospelSourceFunctionDefinition {
     }
     pub fn add_string_instruction(&mut self, opcode: GospelOpcode, string: &str, line_number: i32) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::TypeUDTAddField && opcode != GospelOpcode::TypeUDTAddFieldWithUserAlignment &&
-            opcode != GospelOpcode::TypeUDTAddBitfield && opcode != GospelOpcode::TypeUDTAddVirtualFunction &&
-            opcode != GospelOpcode::TypeUDTHasField && opcode != GospelOpcode::TypeUDTTypeofField && opcode != GospelOpcode::TypeUDTCalculateVirtualFunctionOffset &&
+            opcode != GospelOpcode::TypeUDTAddBitfield && opcode != GospelOpcode::TypeUDTHasField &&
+            opcode != GospelOpcode::TypeUDTTypeofField && opcode != GospelOpcode::TypeUDTCalculateVirtualFunctionOffset &&
             opcode != GospelOpcode::Abort && opcode != GospelOpcode::TypePrimitiveCreate {
             bail!("Invalid opcode for named instruction (TypeUDTAllocate, TypeLayoutDoesMemberExist, TypeLayoutGetMemberOffset, TypeLayoutGetMemberSize, TypeLayoutGetMemberTypeLayout and Abort are allowed)");
         }
@@ -278,6 +278,13 @@ impl GospelSourceFunctionDefinition {
             bail!("Invalid opcode for variadic instruction (only Call, BindClosure, PCall and TypeFunctionCreateMember/Global are allowed)");
         }
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[argument_count])?, line_number))
+    }
+    pub fn add_variadic_string_instruction(&mut self, opcode: GospelOpcode, string: &str, argument_count: u32, line_number: i32) -> anyhow::Result<u32> {
+        if opcode != GospelOpcode::TypeUDTAddVirtualFunction {
+            bail!("Invalid opcode for variadic instruction (only TypeUDTAddVirtualFunction is allowed)");
+        }
+        let string_index = self.add_string_reference_internal(string);
+        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[string_index, argument_count])?, line_number))
     }
 }
 

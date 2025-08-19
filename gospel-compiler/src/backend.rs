@@ -6,7 +6,7 @@ use std::rc::{Rc, Weak};
 use anyhow::anyhow;
 use itertools::Itertools;
 use strum::Display;
-use crate::ast::{CVQualifiedExpression, VirtualFunctionDeclaration};
+use crate::ast::{CVQualifiedExpression, FunctionParameterDeclaration, MemberFunctionDeclaration};
 use gospel_typelib::type_model::UserDefinedTypeKind;
 use gospel_vm::bytecode::GospelOpcode;
 use gospel_vm::module::GospelContainer;
@@ -1296,7 +1296,7 @@ struct CompilerStructVirtualFunctionFragment {
     scope: Rc<CompilerLexicalScope>,
     function_name: String,
     return_type_expression: Expression,
-    argument_types_expressions: Vec<Expression>,
+    parameters: Vec<FunctionParameterDeclaration>,
     constant: bool,
 }
 impl CompilerStructFragmentGenerator for CompilerStructVirtualFunctionFragment {
@@ -1308,15 +1308,25 @@ impl CompilerStructFragmentGenerator for CompilerStructVirtualFunctionFragment {
         let return_value_expression_type = builder.compile_expression(&self.scope, &self.return_type_expression)?;
         CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Typename, return_value_expression_type)?;
 
-        for argument_type_expression in &self.argument_types_expressions {
-            let argument_expression_type = builder.compile_expression(&self.scope, argument_type_expression)?;
+        for argument_index in 0..self.parameters.len() {
+            let argument_expression_type = builder.compile_expression(&self.scope, &self.parameters[argument_index].parameter_type)?;
             CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Typename, argument_expression_type)?;
         }
-        builder.function_definition.add_variadic_instruction(GospelOpcode::TypeFunctionCreateMember, self.argument_types_expressions.len() as u32, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+        builder.function_definition.add_variadic_instruction(GospelOpcode::TypeFunctionCreateMember, self.parameters.len() as u32, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         if self.constant {
             builder.function_definition.add_simple_instruction(GospelOpcode::TypeAddConstantQualifier, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         }
-        builder.function_definition.add_string_instruction(GospelOpcode::TypeUDTAddVirtualFunction, self.function_name.as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+
+        for argument_index in 0..self.parameters.len() {
+            if argument_index < self.parameters.len() && let Some(argument_name) = &self.parameters[argument_index].parameter_name {
+                let argument_name_index = builder.function_definition.add_string_reference_internal(argument_name.as_str());
+                builder.function_definition.add_int_constant_instruction(argument_name_index as i32, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            } else {
+                builder.function_definition.add_int_constant_instruction(-1, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            }
+        }
+        builder.function_definition.add_variadic_string_instruction(GospelOpcode::TypeUDTAddVirtualFunction,
+            self.function_name.as_str(), self.parameters.len() as u32, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         Ok({})
     }
 }
@@ -1636,7 +1646,7 @@ impl CompilerInstance {
                 }
                 Ok({})
             }
-            StructInnerDeclaration::VirtualFunctionDeclaration(_) => { Ok({}) }
+            StructInnerDeclaration::FunctionDeclaration(_) => { Ok({}) }
             StructInnerDeclaration::MemberDeclaration(_) => { Ok({}) }
             StructInnerDeclaration::EmptyDeclaration => { Ok({}) }
         }
@@ -1737,14 +1747,14 @@ impl CompilerInstance {
             bitfield_width_expression: declaration.bitfield_width_expression.clone(),
         }))
     }
-    fn pre_compile_type_layout_function_declaration(scope: &Rc<CompilerLexicalScope>, declaration: &VirtualFunctionDeclaration) -> CompilerResult<Box<dyn CompilerStructFragmentGenerator>> {
+    fn pre_compile_type_layout_function_declaration(scope: &Rc<CompilerLexicalScope>, declaration: &MemberFunctionDeclaration) -> CompilerResult<Box<dyn CompilerStructFragmentGenerator>> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: declaration.source_context.clone()};
         Ok(Box::new(CompilerStructVirtualFunctionFragment{
             source_context,
             scope: scope.clone(),
             function_name: declaration.name.clone(),
             return_type_expression: declaration.return_value_type.clone(),
-            argument_types_expressions: declaration.parameter_types.clone(),
+            parameters: declaration.parameters.clone(),
             constant: declaration.constant,
         }))
     }
@@ -1765,7 +1775,7 @@ impl CompilerInstance {
             StructInnerDeclaration::MemberDeclaration(member_declaration) => {
                 Self::pre_compile_type_layout_member_declaration(scope, &*member_declaration)
             }
-            StructInnerDeclaration::VirtualFunctionDeclaration(function_declaration) => {
+            StructInnerDeclaration::FunctionDeclaration(function_declaration) => {
                 Self::pre_compile_type_layout_function_declaration(scope, &*function_declaration)
             }
             StructInnerDeclaration::EmptyDeclaration => {

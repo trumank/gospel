@@ -1,4 +1,4 @@
-﻿use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, BuiltinIdentifier, BuiltinIdentifierExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression, VirtualFunctionDeclaration};
+﻿use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, BuiltinIdentifier, BuiltinIdentifierExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression, MemberFunctionDeclaration, FunctionParameterDeclaration};
 use crate::lex_util::get_line_number_and_offset_from_index;
 use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
@@ -606,13 +606,6 @@ impl<'a> CompilerParserInstance<'a> {
             let result_expression = IntegerConstantExpression{ constant_value: literal_value, source_context };
             Ok(AmbiguousExpression::unambiguous(self, Expression::IntegerConstantExpression(Box::new(result_expression))))
         } else { Err(self.ctx.fail(format!("Expected integer literal, got {}", integer_constant_token))) }
-    }
-    fn parse_ambiguous_expression_list_simple(self, terminator_token: CompilerToken) -> anyhow::Result<AmbiguousParsingResult<'a, Vec<Expression>>> {
-        self.parse_ambiguous_expression_list_extended(terminator_token, |parser| {
-            Ok(ExactParseCase::create(parser, ((), true)))
-        }, |parser_case| {
-            Ok(parser_case.map_data(|x| x.1.unwrap()))
-        }, |x| x.to_string())
     }
     fn parse_ambiguous_expression_list<T: Clone, S: Fn(&mut Self) -> anyhow::Result<(T, bool)>>(self, terminator_token: CompilerToken, prefix_parser: S) -> anyhow::Result<AmbiguousParsingResult<'a, Vec<(T, Option<Expression>)>>> {
         self.parse_ambiguous_expression_list_extended(terminator_token, |mut parser| {
@@ -1607,7 +1600,17 @@ impl<'a> CompilerParserInstance<'a> {
             let argument_list_start_token = parser.ctx.next()?;
             parser.ctx.check_token(argument_list_start_token, CompilerToken::SubExpressionStart)?;
 
-            Ok(parser.parse_ambiguous_expression_list_simple(CompilerToken::SubExpressionEnd)?.map_data(|argument_list| { (function_name.clone(), return_value_type.clone(), argument_list) }))
+            Ok(parser.parse_ambiguous_expression_list_extended(CompilerToken::SubExpressionEnd, |parser| {
+                let source_context = parser.ctx.source_context();
+                Ok(ExactParseCase::create(parser, (source_context, true)))
+            }, |mut parser_case| {
+                if let CompilerToken::Identifier(parameter_name) = parser_case.parser.ctx.peek()? {
+                    parser_case.parser.ctx.discard_next()?;
+                    Ok(parser_case.map_data(|x| FunctionParameterDeclaration{parameter_type: x.1.unwrap(), parameter_name: Some(parameter_name), source_context: x.0}))
+                } else {
+                    Ok(parser_case.map_data(|x| FunctionParameterDeclaration{parameter_type: x.1.unwrap(), parameter_name: None, source_context: x.0}))
+                }
+            }, |x| x.to_string())?.map_data(|argument_list| { (function_name.clone(), return_value_type.clone(), argument_list) }))
         })?.flat_map_result(|mut parser, (function_name, return_value_type, argument_list)| {
             let is_function_constant = if parser.ctx.peek()? == CompilerToken::Const {
                 parser.ctx.discard_next()?;
@@ -1617,8 +1620,8 @@ impl<'a> CompilerParserInstance<'a> {
             let statement_terminator_token = parser.ctx.next()?;
             parser.ctx.check_token(statement_terminator_token, CompilerToken::Terminator)?;
 
-            let result_declaration = VirtualFunctionDeclaration{name: function_name, return_value_type, parameter_types: argument_list, source_context: source_context.clone(), constant: is_function_constant};
-            Ok(AmbiguousParsingResult::unambiguous(parser, StructInnerDeclaration::VirtualFunctionDeclaration(Box::new(result_declaration))))
+            let result_declaration = MemberFunctionDeclaration {name: function_name, return_value_type, parameters: argument_list, source_context: source_context.clone(), constant: is_function_constant};
+            Ok(AmbiguousParsingResult::unambiguous(parser, StructInnerDeclaration::FunctionDeclaration(Box::new(result_declaration))))
         })?.disambiguate()
     }
     fn parse_destructor_virtual_function_declaration(mut self, source_context: &ASTSourceContext) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
@@ -1639,8 +1642,8 @@ impl<'a> CompilerParserInstance<'a> {
         self.ctx.check_token(statement_terminator_token, CompilerToken::Terminator)?;
 
         let return_value_type = PrimitiveTypeExpression{primitive_type: PrimitiveType::Void, source_context: source_context.clone()};
-        let result_declaration = VirtualFunctionDeclaration{name: function_name, return_value_type: Expression::PrimitiveTypeExpression(Box::new(return_value_type)), parameter_types: Vec::new(), constant: false, source_context: source_context.clone()};
-        Ok(ExactStructInnerDeclarationCase::create(self, StructInnerDeclaration::VirtualFunctionDeclaration(Box::new(result_declaration))))
+        let result_declaration = MemberFunctionDeclaration {name: function_name, return_value_type: Expression::PrimitiveTypeExpression(Box::new(return_value_type)), parameters: Vec::new(), constant: false, source_context: source_context.clone()};
+        Ok(ExactStructInnerDeclarationCase::create(self, StructInnerDeclaration::FunctionDeclaration(Box::new(result_declaration))))
     }
     fn parse_virtual_function_declaration(mut self) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
         let virtual_function_token = self.ctx.next()?;
@@ -2337,16 +2340,26 @@ impl<'a> CompilerParserInstance<'a> {
         result_builder.push(';');
         result_builder
     }
-    fn virtual_function_to_source_text(virtual_function: &VirtualFunctionDeclaration) -> String {
+    fn function_parameter_to_source_text(function_parameter: &FunctionParameterDeclaration) -> String {
+        let mut result_builder = String::with_capacity(50);
+        result_builder.push_str(Self::expression_to_source_text(&function_parameter.parameter_type).as_str());
+        if let Some(parameter_name) = &function_parameter.parameter_name {
+            result_builder.push_str(" ");
+            result_builder.push_str(parameter_name.as_str());
+        }
+        result_builder
+    }
+    fn function_declaration_to_source_text(function_declaration: &MemberFunctionDeclaration) -> String {
         let mut result_builder = String::with_capacity(50);
         result_builder.push_str("virtual ");
-        result_builder.push_str(Self::expression_to_source_text(&virtual_function.return_value_type).as_str());
+        result_builder.push_str(Self::expression_to_source_text(&function_declaration.return_value_type).as_str());
         result_builder.push_str(" ");
-        result_builder.push_str(virtual_function.name.as_str());
+        result_builder.push_str(function_declaration.name.as_str());
         result_builder.push_str("(");
-        result_builder.push_str(Self::delimited_expression_list_to_source_text(&virtual_function.parameter_types).as_str());
+        let parameters_source_text: Vec<String> = function_declaration.parameters.iter().map(|x| Self::function_parameter_to_source_text(x)).collect();
+        result_builder.push_str(parameters_source_text.join(", ").as_str());
         result_builder.push_str(")");
-        if virtual_function.constant {
+        if function_declaration.constant {
             result_builder.push_str(" const");
         }
         result_builder.push_str(";");
@@ -2359,7 +2372,7 @@ impl<'a> CompilerParserInstance<'a> {
             StructInnerDeclaration::MemberDeclaration(inner_declaration) => Self::member_declaration_to_source_text(&**inner_declaration),
             StructInnerDeclaration::DataDeclaration(inner_declaration) => Self::data_statement_to_source_text(&**inner_declaration),
             StructInnerDeclaration::NestedStructDeclaration(inner_declaration) => Self::struct_statement_to_source_text(&**inner_declaration),
-            StructInnerDeclaration::VirtualFunctionDeclaration(inner_declaration) => Self::virtual_function_to_source_text(&**inner_declaration),
+            StructInnerDeclaration::FunctionDeclaration(inner_declaration) => Self::function_declaration_to_source_text(&**inner_declaration),
             StructInnerDeclaration::EmptyDeclaration => ";".to_string(),
         }
     }
@@ -2524,6 +2537,11 @@ impl Display for Statement {
 impl Display for StructInnerDeclaration {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", CompilerParserInstance::struct_inner_declaration_to_source_text(self))
+    }
+}
+impl Display for FunctionParameterDeclaration {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", CompilerParserInstance::function_parameter_to_source_text(self))
     }
 }
 impl Display for DataStatement {
