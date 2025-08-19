@@ -978,24 +978,6 @@ impl GospelVMExecutionState<'_> {
                     let field_name_index = state.immediate_value_checked(instruction, 0)? as i32;
                     let field_name = if field_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(field_name_index as usize)?) };
 
-                    let field_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
-
-                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
-                    state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_udt_type_not_finalized(type_index, run_context)?;
-
-                    if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
-                        if field_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == field_name.as_deref()) {
-                            vm_bail!(Some(state), "Type #{} already contains a definition for field named {}", type_index, field_name.as_ref().unwrap());
-                        }
-                        let result_field = UserDefinedTypeField{name: field_name, user_alignment: None, member_type_index: field_type_index};
-                        user_defined_type.members.push(UserDefinedTypeMember::Field(result_field))
-                    }
-                }
-                GospelOpcode::TypeUDTAddFieldWithUserAlignment => {
-                    let field_name_index = state.immediate_value_checked(instruction, 0)? as i32;
-                    let field_name = if field_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(field_name_index as usize)?) };
-
                     let raw_user_alignment = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))?;
                     let user_alignment = if raw_user_alignment == -1 { None } else { Some(raw_user_alignment as usize) };
                     let field_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
@@ -1006,7 +988,7 @@ impl GospelVMExecutionState<'_> {
 
                     if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
                         if field_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == field_name.as_deref()) {
-                            vm_bail!(Some(state), "Type #{} already contains a definition for field named {}", type_index, field_name.as_ref().unwrap());
+                            vm_bail!(Some(state), "Type #{} already contains a member named {}", type_index, field_name.as_ref().unwrap());
                         }
                         let result_field = UserDefinedTypeField{name: field_name, user_alignment, member_type_index: field_type_index};
                         user_defined_type.members.push(UserDefinedTypeMember::Field(result_field))
@@ -1032,7 +1014,7 @@ impl GospelVMExecutionState<'_> {
 
                     if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
                         if field_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == field_name.as_deref()) {
-                            vm_bail!(Some(state), "Type #{} already contains a definition for field named {}", type_index, field_name.as_ref().unwrap());
+                            vm_bail!(Some(state), "Type #{} already contains a member named {}", type_index, field_name.as_ref().unwrap());
                         }
                         let result_bitfield = UserDefinedTypeBitfield{name: field_name, primitive_type: primitive_field_type, bitfield_width};
                         user_defined_type.members.push(UserDefinedTypeMember::Bitfield(result_bitfield))
@@ -1084,8 +1066,13 @@ impl GospelVMExecutionState<'_> {
                         if user_defined_type.kind == UserDefinedTypeKind::Union {
                             vm_bail!(Some(state), "Union types cannot have virtual functions");
                         }
-                        if function_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == function_name.as_deref()) {
-                            vm_bail!(Some(state), "Type #{} already contains a definition for field named {}", type_index, function_name.as_ref().unwrap());
+                        if function_name.is_some() && user_defined_type.members.iter().any(|x| !matches!(x, UserDefinedTypeMember::VirtualFunction(_)) && x.name() == function_name.as_deref()) {
+                            vm_bail!(Some(state), "Type #{} already contains a member named {}", type_index, function_name.as_ref().unwrap());
+                        }
+                        if function_name.is_some() && user_defined_type.members.iter().any(|x| {
+                            if let UserDefinedTypeMember::VirtualFunction(function) = x && x.name() == function_name.as_deref() && function.function_type_index == function_type_index { true } else { false }
+                        }) {
+                            vm_bail!(Some(state), "Type #{} already contains a function named {} with identical signature", type_index, function_name.as_ref().unwrap());
                         }
                         let result_function = UserDefinedTypeVirtualFunction{name: function_name, function_type_index, argument_names};
                         user_defined_type.members.push(UserDefinedTypeMember::VirtualFunction(result_function))

@@ -100,6 +100,7 @@ class TestClassWithVirtualFunctions {
     virtual ~TestClassWithVirtualFunctions();
 
     virtual void TestFunction1() const;
+    virtual void TestFunction1(int Bar) const;
     virtual char TestFunction2();
     virtual TestClassWithVirtualFunctions* Duplicate(void*const, int Data);
 

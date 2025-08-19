@@ -234,7 +234,7 @@ impl GospelSourceFunctionDefinition {
         self.code[fixup.instruction_index as usize].set_immediate_operand(fixup.operand_index as usize, target_instruction_index)
     }
     pub fn add_string_instruction(&mut self, opcode: GospelOpcode, string: &str, line_number: i32) -> anyhow::Result<u32> {
-        if opcode != GospelOpcode::TypeUDTAddField && opcode != GospelOpcode::TypeUDTAddFieldWithUserAlignment &&
+        if opcode != GospelOpcode::TypeUDTAddField && opcode != GospelOpcode::TypeUDTAddField &&
             opcode != GospelOpcode::TypeUDTAddBitfield && opcode != GospelOpcode::TypeUDTHasField &&
             opcode != GospelOpcode::TypeUDTTypeofField && opcode != GospelOpcode::TypeUDTCalculateVirtualFunctionOffset &&
             opcode != GospelOpcode::Abort && opcode != GospelOpcode::TypePrimitiveCreate {

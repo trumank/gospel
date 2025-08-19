@@ -1270,21 +1270,18 @@ impl CompilerStructFragmentGenerator for CompilerStructMemberFragment {
                 CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Int, array_size_expression_type)?;
                 builder.function_definition.add_simple_instruction(GospelOpcode::TypeArrayCreate, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
             }
-            
-            // If user-provided alignment expression is present, evaluate it and pass to the VM
+
+            // Generate alignment expression if we have one provided, otherwise pass -1 to indicate no user specified alignment
+            builder.function_definition.add_int_constant_instruction(-1, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
             if let Some(alignment_expression) = &self.alignment_expression {
-                builder.function_definition.add_int_constant_instruction(-1, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
                 builder.compile_condition_wrapped_expression(&self.scope, alignment_expression, |builder, expression, source_context| {
                     builder.function_definition.add_simple_instruction(GospelOpcode::Pop, CompilerFunctionBuilder::get_line_number(source_context)).with_source_context(source_context)?;
                     let alignment_expression_type = builder.compile_coerce_alignment_expression(&self.scope, expression, &self.source_context)?;
                     CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Int, alignment_expression_type)?;
                     Ok({})
                 })?;
-                builder.function_definition.add_string_instruction(GospelOpcode::TypeUDTAddFieldWithUserAlignment, self.member_name.as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
-            } else {
-                // Otherwise, this is a normal field without explicit alignment
-                builder.function_definition.add_string_instruction(GospelOpcode::TypeUDTAddField, self.member_name.as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
             }
+            builder.function_definition.add_string_instruction(GospelOpcode::TypeUDTAddField, self.member_name.as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         }
         Ok({})
     }

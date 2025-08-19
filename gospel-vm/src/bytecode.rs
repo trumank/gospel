@@ -124,10 +124,8 @@ pub enum GospelOpcode {
     TypeUDTSetUserAlignment = 0x78, // ; [pop stack] [pop stack] ->
     #[strum(props(stack_in_count = "2"))]
     TypeUDTAddBaseClass = 0x79, // ; [pop stack] [pop stack] ->
-    #[strum(props(immediate_count = "1", stack_in_count = "2"))]
-    TypeUDTAddField = 0x7A, // <imm>; [pop stack] [pop stack] ->
     #[strum(props(immediate_count = "1", stack_in_count = "3"))]
-    TypeUDTAddFieldWithUserAlignment = 0x7B, // <imm>; [pop stack] [pop stack] [pop stack] ->
+    TypeUDTAddField = 0x7B, // <imm>; [pop stack] [pop stack] [pop stack] ->
     #[strum(props(immediate_count = "1", stack_in_count = "3"))]
     TypeUDTAddBitfield = 0x7C, // <imm>; [pop stack] [pop stack] [pop stack] ->
     #[strum(props(immediate_count = "2", stack_in_count = "2", stack_out_count = "1", stack_variable_input_count_immediate = "1"))]
