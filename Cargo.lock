@@ -223,6 +223,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gospel-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gospel-compiler",
+ "gospel-typelib",
+ "gospel-vm",
+ "strum",
+]
+
+[[package]]
 name = "gospel-typelib"
 version = "0.1.0"
 dependencies = [
