@@ -17,7 +17,6 @@ function ClosureTest -> Integer max_slots 1 {
     LoadFunctionClosure function ClosureCallFunction;
     IntConstant 5;
     BindClosure 1;
-A:  Slot Closure;
     StoreSlot 0;
     IntConstant 7;
     LoadSlot 0;
