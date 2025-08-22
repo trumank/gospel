@@ -426,6 +426,14 @@ struct GospelGlobalStorage {
 }
 
 #[derive(Debug)]
+struct GospelExceptionHandler {
+    #[allow(dead_code)]
+    start_instruction_index: usize,
+    start_stack_snapshot: Vec<GospelVMValue>,
+    target_instruction_index: usize,
+}
+
+#[derive(Debug)]
 struct GospelVMExecutionState<'a> {
     owner_container: &'a Rc<GospelVMContainer>,
     function_definition: &'a GospelFunctionDefinition,
@@ -433,6 +441,7 @@ struct GospelVMExecutionState<'a> {
     referenced_strings: Vec<String>,
     referenced_structs: Vec<Rc<GospelVMStructTemplate>>,
     stack: Vec<GospelVMValue>,
+    exception_handler_stack: Vec<GospelExceptionHandler>,
     current_instruction_index: usize,
     current_loop_jump_count: usize,
     return_value_slot: Rc<RefCell<Option<GospelVMValue>>>,
@@ -442,6 +451,7 @@ struct GospelVMExecutionState<'a> {
     max_stack_size: usize,
     max_loop_jumps: usize,
     max_recursion_depth: usize,
+    max_exception_handler_depth: usize,
 }
 impl GospelVMExecutionState<'_> {
     fn push_stack_check_overflow(&mut self, value: GospelVMValue) -> GospelVMResult<()> {
@@ -608,10 +618,34 @@ impl GospelVMExecutionState<'_> {
         }
         result_call_stack
     }
+
     fn run(state: &mut GospelVMExecutionState, run_context: &mut GospelVMRunContext) -> GospelVMResult<()> {
-        // Main VM loop
+        // Reset counters for the current stack frame
         state.current_instruction_index = 0;
         state.current_loop_jump_count = 0;
+
+        loop {
+            // Enter the VM from the current position
+            let inner_run_result = Self::run_inner(state, run_context);
+
+            // If there was an exception, and we have an exception handler stack entry, attempt VM re-entry from the exception handler
+            if inner_run_result.is_err() && !state.exception_handler_stack.is_empty() {
+                let exception_handler = state.exception_handler_stack.pop().unwrap();
+
+                state.stack = exception_handler.start_stack_snapshot;
+                state.jump_control_flow_checked(exception_handler.target_instruction_index)?;
+                continue;
+            }
+            // There is no exception handler. Just return the result and check that the function has actually written return value
+            inner_run_result?;
+            if state.return_value_slot.borrow().is_none() {
+                vm_bail!(Some(&state), "Function did not return a value");
+            }
+            return Ok({});
+        }
+    }
+    fn run_inner(state: &mut GospelVMExecutionState, run_context: &mut GospelVMRunContext) -> GospelVMResult<()> {
+        // Main VM loop
         while state.current_instruction_index < state.function_definition.code.len() {
             let instruction = &state.function_definition.code[state.current_instruction_index];
             state.current_instruction_index += 1;
@@ -663,24 +697,6 @@ impl GospelVMExecutionState<'_> {
                     let return_value = closure.execute_internal(function_arguments, run_context, Some(&state))?;
                     state.push_stack_check_overflow(return_value)?;
                 }
-                GospelOpcode::PCall => {
-                    let number_of_arguments = state.immediate_value_checked(instruction, 0)? as usize;
-                    let mut function_arguments: Vec<GospelVMValue> = vec![GospelVMValue::Integer(0); number_of_arguments];
-                    for index in 0..number_of_arguments {
-                        let argument_value = state.pop_stack_check_underflow()?;
-                        function_arguments[number_of_arguments - index - 1] = argument_value;
-                    }
-                    let closure = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_closure_checked(x))?;
-                    if state.recursion_counter >= state.max_recursion_depth {
-                        vm_bail!(Some(&state), "Recursion limit reached");
-                    }
-                    let execution_result = closure.execute_internal(function_arguments, run_context, Some(&state)).ok();
-
-                    let success_code = if execution_result.is_some() { 1 } else { 0 };
-                    let return_value = execution_result.unwrap_or(GospelVMValue::Integer(0));
-                    state.push_stack_check_overflow(GospelVMValue::Integer(success_code))?;
-                    state.push_stack_check_overflow(return_value)?;
-                }
                 GospelOpcode::BindClosure => {
                     let number_of_arguments = state.immediate_value_checked(instruction, 0)? as usize;
                     let mut closure_arguments: Vec<GospelVMValue> = vec![GospelVMValue::Integer(0); number_of_arguments];
@@ -695,10 +711,10 @@ impl GospelVMExecutionState<'_> {
                     }
                     state.push_stack_check_overflow(GospelVMValue::Closure(closure))?;
                 }
-                GospelOpcode::Abort => {
+                GospelOpcode::RaiseException => {
                     let message_index = state.immediate_value_checked(instruction, 0)? as usize;
                     let message = state.copy_referenced_string_checked(message_index)?;
-                    vm_bail!(Some(&state), "Aborted: {}", message);
+                    vm_bail!(Some(&state), "User exception: {}", message);
                 }
                 GospelOpcode::Typeof => {
                     let stack_value = state.pop_stack_check_underflow()?;
@@ -708,6 +724,26 @@ impl GospelVMExecutionState<'_> {
                 GospelOpcode::Return => {
                     // Return unconditionally breaks from the instruction loop
                     break;
+                }
+                GospelOpcode::PushExceptionHandler => {
+                    let start_instruction_index = state.current_instruction_index;
+                    let target_instruction_index = state.immediate_value_checked(instruction, 0)? as usize;
+
+                    if state.exception_handler_stack.len() > state.max_exception_handler_depth {
+                        vm_bail!(Some(state), "Exception handler stack limit reached");
+                    }
+                    let start_stack_snapshot = state.stack.clone();
+                    state.exception_handler_stack.push(GospelExceptionHandler{
+                        start_instruction_index,
+                        start_stack_snapshot,
+                        target_instruction_index,
+                    });
+                }
+                GospelOpcode::PopExceptionHandler => {
+                    if state.exception_handler_stack.is_empty() {
+                        vm_bail!(Some(state), "Exception handler stack underflow");
+                    }
+                    state.exception_handler_stack.pop();
                 }
                 // Logical opcodes
                 GospelOpcode::And => { state.do_bitwise_op(|a, b| a & b)?; }
@@ -1534,10 +1570,6 @@ impl GospelVMExecutionState<'_> {
                 }
             };
         }
-        // Function should always return the value by the time it returns
-        if state.return_value_slot.borrow().is_none() {
-            vm_bail!(Some(&state), "Function failed to return a value");
-        }
         Ok({})
     }
 }
@@ -1710,6 +1742,7 @@ impl GospelVMContainer {
             referenced_strings: Vec::with_capacity(function_definition.referenced_strings.len()),
             referenced_structs: Vec::with_capacity(function_definition.referenced_structs.len()),
             stack: Vec::new(),
+            exception_handler_stack: Vec::new(),
             current_instruction_index: 0,
             current_loop_jump_count: 0,
             recursion_counter: previous_frame.map(|x| x.recursion_counter).unwrap_or(0),
@@ -1719,6 +1752,7 @@ impl GospelVMContainer {
             max_stack_size: 256, // TODO: Make limits configurable
             max_loop_jumps: 8192,
             max_recursion_depth: 128,
+            max_exception_handler_depth: 10,
         };
 
         // Populate slots with their initial values

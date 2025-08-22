@@ -7,7 +7,7 @@ use logos::{Lexer, Logos};
 use strum::Display;
 use gospel_vm::bytecode::{GospelInstruction, GospelOpcode};
 use gospel_vm::gospel::{GospelPlatformConfigProperty, GospelValueType};
-use gospel_vm::writer::{GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceObjectReference, GospelSourceSlotBinding, GospelSourceStaticValue, GospelSourceStructDefinition, GospelSourceStructField};
+use gospel_vm::writer::{GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceObjectReference, GospelSourceSlotBinding, GospelSourceStaticValue, GospelSourceStructDefinition, GospelSourceStructField};
 use std::str::FromStr;
 use crate::lex_util::get_line_number_and_offset_from_index;
 
@@ -182,6 +182,7 @@ struct FunctionCodeAssembler<'a> {
     local_variable_slots: HashMap<String, u32>,
     constant_slot_lookup: HashMap<ConstantSlotIdentifier, u32>,
     label_lookup: HashMap<String, u32>,
+    label_fixups: HashMap<String, Vec<GospelJumpLabelFixup>>,
 }
 impl FunctionCodeAssembler<'_> {
     fn find_or_add_constant_slot(&mut self, slot_type: GospelValueType, binding: GospelSourceSlotBinding) -> anyhow::Result<u32> {
@@ -229,7 +230,15 @@ impl FunctionCodeAssembler<'_> {
                             } else if self.local_struct_names.contains(local_identifier) {
                                 self.function_definition.add_struct_reference_internal(GospelSourceObjectReference{module_name: self.module_name.clone(), local_name: local_identifier.clone()})
                             } else {
-                                return Err(ctx.fail(format!("Identifier {} does not name a local variable, function argument, label or a global variable", local_identifier)));
+                                // Assume forward declared label reference
+                                if !self.label_fixups.contains_key(local_identifier) {
+                                    self.label_fixups.insert(local_identifier.clone(), Vec::new());
+                                }
+                                self.label_fixups.get_mut(local_identifier).unwrap().push(GospelJumpLabelFixup{
+                                    instruction_index: self.function_definition.current_instruction_count(),
+                                    operand_index: instruction_immediate_operands.len() as u32,
+                                });
+                                u32::MAX
                             }
                         }
                         AssemblerIdentifier::Qualified { container_name, local_name } => {
@@ -329,7 +338,14 @@ impl FunctionCodeAssembler<'_> {
             // This is a normal instruction otherwise, potentially with some synthetic arguments
             let result_instruction_index = self.parse_code_instruction(&instruction_name, current_token, ctx)?;
             if let Some(jump_label_name) = statement_label_name {
-                self.label_lookup.insert(jump_label_name, result_instruction_index);
+                self.label_lookup.insert(jump_label_name.clone(), result_instruction_index);
+
+                // Fixup instructions that might have been previously added that refer to this label
+                if let Some(labels_pending_fixup) = self.label_fixups.remove(&jump_label_name) {
+                    for label_fixup in labels_pending_fixup {
+                        self.function_definition.fixup_control_flow_instruction(label_fixup, result_instruction_index)?;
+                    }
+                }
             }
         }
         Ok({})
@@ -461,6 +477,7 @@ impl GospelAssembler {
             local_variable_slots: HashMap::new(),
             constant_slot_lookup: HashMap::new(),
             label_lookup: HashMap::new(),
+            label_fixups: HashMap::new(),
         };
 
         // Parse function definition statements now until we reach the closing bracket

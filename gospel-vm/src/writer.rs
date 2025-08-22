@@ -123,8 +123,8 @@ impl GospelSourceFunctionDeclaration {
 /// Represents a fixup that needs to be applied to the control flow instruction
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct GospelJumpLabelFixup {
-    instruction_index: u32,
-    operand_index: u32,
+    pub instruction_index: u32,
+    pub operand_index: u32,
 }
 
 /// Allows building definitions of functions to be added to the container writer later
@@ -221,7 +221,7 @@ impl GospelSourceFunctionDefinition {
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[target_instruction_index])?, line_number))
     }
     pub fn add_control_flow_instruction(&mut self, opcode: GospelOpcode, line_number: i32) -> anyhow::Result<(u32, GospelJumpLabelFixup)> {
-        if opcode != GospelOpcode::Branch && opcode != GospelOpcode::Branchz {
+        if opcode != GospelOpcode::Branch && opcode != GospelOpcode::Branchz && opcode != GospelOpcode::PushExceptionHandler {
             bail!("Invalid opcode for control flow instruction (Branch and BranchIfNot are allowed)");
         }
         let jump_instruction = self.add_instruction_internal(GospelInstruction::create(opcode, &[u32::MAX])?, line_number);
@@ -237,7 +237,7 @@ impl GospelSourceFunctionDefinition {
         if opcode != GospelOpcode::TypeUDTAddField && opcode != GospelOpcode::TypeUDTAddField &&
             opcode != GospelOpcode::TypeUDTAddBitfield && opcode != GospelOpcode::TypeUDTHasField &&
             opcode != GospelOpcode::TypeUDTTypeofField && opcode != GospelOpcode::TypeUDTCalculateVirtualFunctionOffset &&
-            opcode != GospelOpcode::Abort && opcode != GospelOpcode::TypePrimitiveCreate {
+            opcode != GospelOpcode::RaiseException && opcode != GospelOpcode::TypePrimitiveCreate {
             bail!("Invalid opcode for named instruction (TypeUDTAllocate, TypeLayoutDoesMemberExist, TypeLayoutGetMemberOffset, TypeLayoutGetMemberSize, TypeLayoutGetMemberTypeLayout and Abort are allowed)");
         }
         let string_index = self.add_string_reference_internal(string);
@@ -274,7 +274,7 @@ impl GospelSourceFunctionDefinition {
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[field_type_value, member_name_index])?, line_number))
     }
     pub fn add_variadic_instruction(&mut self, opcode: GospelOpcode, argument_count: u32, line_number: i32) -> anyhow::Result<u32> {
-        if opcode != GospelOpcode::Call && opcode != GospelOpcode::BindClosure && opcode != GospelOpcode::PCall && opcode != GospelOpcode::TypeFunctionCreateMember && opcode != GospelOpcode::TypeFunctionCreateGlobal {
+        if opcode != GospelOpcode::Call && opcode != GospelOpcode::BindClosure && opcode != GospelOpcode::TypeFunctionCreateMember && opcode != GospelOpcode::TypeFunctionCreateGlobal {
             bail!("Invalid opcode for variadic instruction (only Call, BindClosure, PCall and TypeFunctionCreateMember/Global are allowed)");
         }
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[argument_count])?, line_number))

@@ -270,7 +270,7 @@ impl CompilerFunctionBuilder {
         self.function_definition.add_simple_instruction(GospelOpcode::Sub, Self::get_line_number(source_context)).with_source_context(source_context)?;
 
         let (_, jump_to_end_fixup) = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz, Self::get_line_number(source_context)).with_source_context(source_context)?;
-        self.function_definition.add_string_instruction(GospelOpcode::Abort, format!("Runtime typecheck failed: Expected {}", expected_expression_type).as_str(), Self::get_line_number(source_context)).with_source_context(source_context)?;
+        self.function_definition.add_string_instruction(GospelOpcode::RaiseException, format!("Runtime typecheck failed: Expected {}", expected_expression_type).as_str(), Self::get_line_number(source_context)).with_source_context(source_context)?;
 
         let end_instruction_index = self.function_definition.current_instruction_count();
         self.function_definition.fixup_control_flow_instruction(jump_to_end_fixup, end_instruction_index).with_source_context(source_context)?;

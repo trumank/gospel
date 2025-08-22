@@ -24,12 +24,13 @@ pub enum GospelOpcode {
     #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1", stack_variable_input_count_immediate = "0"))]
     BindClosure = 0x07, // <imm>; [pop stack] [pop stack] x <imm> -> [push stack]
     #[strum(props(immediate_count = "1"))]
-    Abort = 0x08, // <imm>; ->
+    RaiseException = 0x08, // <imm>; ->
     #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
     Typeof = 0x09, // ; [pop stack] -> [push stack]
     Return = 0x0A, // ; ->
-    // #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "2", stack_variable_input_count_immediate = "0"))]
-    PCall = 0x0B, // <imm>; [pop stack] [pop stack] x <imm> -> [push stack], [push stack]
+    #[strum(props(immediate_count = "1"))]
+    PushExceptionHandler = 0xB, // <imm>; ->
+    PopExceptionHandler = 0xC, // ; ->
     // Logical opcodes
     #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
     And = 0x20, // ; [pop stack], [pop stack] -> [push stack]

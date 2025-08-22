@@ -3,117 +3,17 @@ extern global external_global;
 
 constant assembly_version = 1;
 
-hidden function __define_opaque_base_type base_layout: TypeLayout size_and_alignment: Integer -> TypeLayout {
-    LoadSlot base_layout;
-    LoadSlot size_and_alignment;
-    TypeLayoutAlign;
-    LoadSlot size_and_alignment;
-    TypeLayoutPad;
-    TypeLayoutFinalize;
-    ReturnValue;
-};
-
-function usize -> TypeLayout {
-    LoadSlot &function __define_opaque_base_type;
-    TypeLayoutAllocate "usize";
-    LoadSlot &platform AddressSize;
-    Call 2;
-    ReturnValue;
-};
-
-function u32 -> TypeLayout {
-    LoadSlot &function __define_opaque_base_type;
-    TypeLayoutAllocate "u32";
-    IntConstant 0x4;
-    Call 2;
-    ReturnValue;
-};
-
-function u8 -> TypeLayout {
-    LoadSlot &function __define_opaque_base_type;
-    TypeLayoutAllocate "u8";
-    IntConstant 0x1;
-    Call 2;
-    ReturnValue;
-};
-
-function BitfieldStructTest -> TypeLayout {
-    TypeLayoutAllocate "BitfieldStruct";
-    LoadSlot &function u8;
-    Call 0;
-    IntConstant 0x1;
-    TypeLayoutDefineBitfieldMember "bitfield_size_1";
-    LoadSlot &function u8;
-    Call 0;
-    IntConstant 0x4;
-    TypeLayoutDefineBitfieldMember "bitfield_size_4";
-    LoadSlot &function u8;
-    Call 0;
-    IntConstant 0x6;
-    TypeLayoutDefineBitfieldMember "bitfield_size_6";
-    LoadSlot &function usize;
-    Call 0;
-    TypeLayoutDefineMember "test_member_usize";
-    LoadSlot &function u8;
-    Call 0;
-    IntConstant 0x1;
-    TypeLayoutDefineBitfieldMember "bitfield_size_1_2";
-    TypeLayoutFinalize;
-    ReturnValue;
-};
-
-constant lazy_global = global test_global;
-
-function ForwarderType forward: TypeLayout -> TypeLayout {
-    LoadSlot forward;
-    ReturnValue;
-};
-
-function SimpleStruct -> TypeLayout {
-    TypeLayoutAllocate "SimpleStruct";
-    LoadSlot &function u32;
-    Call 0;
-    TypeLayoutDefineMember "test_member_u32";
-    LoadSlot &function usize;
-    Call 0;
-    TypeLayoutDefineMember "test_member_usize";
-    TypeLayoutFinalize;
-    ReturnValue;
-};
-
-function ChildStruct -> TypeLayout {
-    TypeLayoutAllocate "ChildStruct";
-    LoadSlot &function SimpleStruct;
-    Call 0;
-    TypeLayoutDefineBaseClass;
-    LoadSlot &function u32;
-    Call 0;
-    TypeLayoutDefineMember "child_member";
-    TypeLayoutFinalize;
-    ReturnValue;
-};
-
-function InvokerType invoke: Closure -> TypeLayout {
+function InvokerType invoke: Closure -> TypeReference {
     LoadSlot invoke;
     Call 0;
-    ReturnValue;
-};
-
-function StaticArrayType array_size: Integer -> TypeLayout {
-    TypeLayoutAllocate "StaticArrayType";
-    LoadSlot &function u32;
-    Call 0;
-    LoadSlot array_size;
-    TypeLayoutDefineArrayMember "data";
-    TypeLayoutFinalize;
-    ReturnValue;
+    SetReturnValue;
 };
 
 function ClosureCallFunction first: Integer second: Integer -> Integer {
     LoadSlot first;
     LoadSlot second;
     Add;
-    ReturnValue;
+    SetReturnValue;
 };
 
 function ClosureTest -> Integer {
@@ -125,7 +25,7 @@ A:  Slot Closure;
     IntConstant 7;
     LoadSlot A;
     Call 1;
-    ReturnValue;
+    SetReturnValue;
 };
 
 function ArrayTest -> Array {
@@ -146,11 +46,11 @@ function ArrayTest -> Array {
     IntConstant 1;
     Add;
     ArrayPushItem;
-    ReturnValue;
+    SetReturnValue;
 };
 
 function AbortTest -> Integer {
-    Abort "abort test";
+    RaiseException "abort test";
 };
 
 structure TestStruct {
@@ -178,31 +78,30 @@ A:  Slot Integer;
     LoadSlot A;
     Mul;
     StructSetLocalField TestStruct 2;
-    ReturnValue;
+    SetReturnValue;
 };
 
 function LocalStructTest -> Struct {
     StructAllocate structure LocalStruct;
     IntConstant 20;
     StructSetLocalField structure LocalStruct 0;
-    ReturnValue;
+    SetReturnValue;
 };
 
-function SimpleStructWithMetadata -> TypeLayout {
-    TypeLayoutAllocate "MetadataStruct";
-    LoadSlot &function u32;
-    Call 0;
-    TypeLayoutDefineMember "test_member";
-    LoadSlot &function StructTest;
-    Call 0;
-    TypeLayoutSetMetadata;
-    TypeLayoutFinalize;
-    ReturnValue;
-};
-
-function ReadTypeLayoutMetadata -> Struct {
-    LoadSlot &function SimpleStructWithMetadata;
-    Call 0;
-    TypeLayoutGetMetadata;
-    ReturnValue;
+function ExceptionHandlerTest value: Integer -> Integer {
+    IntConstant 5;
+    PushExceptionHandler A;
+    Pop;
+    IntConstant 2;
+    LoadSlot value;
+    IntConstant 1;
+    Sub;
+    Ez;
+    Branchz B;
+    RaiseException "Value of 1 is bad";
+B:  PopExceptionHandler;
+    Branch C;
+A:  IntConstant 1;
+    Sub;
+C:  SetReturnValue;
 };
