@@ -6,7 +6,6 @@ use std::hash::{Hash, Hasher};
 use std::rc::{Rc};
 use std::str::FromStr;
 use anyhow::{anyhow, bail};
-use itertools::Itertools;
 use strum::Display;
 use crate::bytecode::{GospelInstruction, GospelOpcode};
 use crate::module::GospelContainer;
@@ -14,7 +13,7 @@ use crate::gospel::{GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, 
 use crate::writer::{GospelSourceObjectReference, GospelSourceStaticValue};
 use serde::{Deserialize, Serialize, Serializer};
 use serde::ser::SerializeStruct;
-use gospel_typelib::type_model::{ArrayType, CVQualifiedType, FunctionType, PointerType, PrimitiveType, ResolvedUDTLayout, ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeBitfield, UserDefinedTypeField, UserDefinedTypeKind, UserDefinedTypeMember, FunctionDeclaration, FunctionParameterDeclaration};
+use gospel_typelib::type_model::{ArrayType, CVQualifiedType, FunctionType, PointerType, PrimitiveType, ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeBitfield, UserDefinedTypeField, UserDefinedTypeKind, UserDefinedTypeMember, FunctionDeclaration, FunctionParameterDeclaration, TypeLayoutCache};
 use crate::reflection::{GospelContainerReflector, GospelModuleReflector};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,18 +92,18 @@ struct GospelVMTypeWrapper {
 /// Run context allows caching results of function invocations and creating type graphs from individual types
 #[derive(Debug)]
 pub struct GospelVMRunContext {
-    target_triplet: TargetTriplet,
+    target_triplet: Option<TargetTriplet>,
     types: Vec<GospelVMTypeWrapper>,
     simple_type_lookup: HashMap<Type, usize>,
     call_result_lookup: HashMap<GospelVMClosure, Rc<RefCell<Option<GospelVMValue>>>>,
     stack_frame_counter: usize,
 }
 impl GospelVMRunContext {
-    pub fn create(target_triplet: &TargetTriplet) -> GospelVMRunContext {
+    pub fn create(target_triplet: Option<TargetTriplet>) -> GospelVMRunContext {
         GospelVMRunContext{target_triplet: target_triplet.clone(), types: Vec::new(), simple_type_lookup: HashMap::new(), call_result_lookup: HashMap::new(), stack_frame_counter: 1}
     }
-    pub fn target_triplet(&self) -> &TargetTriplet {
-        &self.target_triplet
+    pub fn target_triplet(&self) -> Option<&TargetTriplet> {
+        self.target_triplet.as_ref()
     }
     fn new_stack_frame_token(&mut self) -> usize {
         let result_stack_frame_token = self.stack_frame_counter;
@@ -183,8 +182,8 @@ impl GospelVMRunContext {
         Ok({})
     }
 }
-impl<'a> TypeGraphLike<'a> for GospelVMRunContext {
-    fn type_by_index(self: &'a Self, type_index: usize) -> &'a Type {
+impl TypeGraphLike for GospelVMRunContext {
+    fn type_by_index(&self, type_index: usize) -> &Type {
         &self.types[type_index].wrapped_type
     }
 }
@@ -547,6 +546,13 @@ impl GospelVMExecutionState<'_> {
             Err(vm_error!(Some(self), "Expected user-defined type at index #{}, got another type", type_index))
         }
     }
+    fn new_type_layout_cache(&self, run_context: &GospelVMRunContext) -> GospelVMResult<TypeLayoutCache> {
+        if let Some(target_triplet) = run_context.target_triplet() {
+            Ok(TypeLayoutCache::create(target_triplet.clone()))
+        } else {
+            vm_bail!(Some(self), "Cannot calculate type layouts with no target triplet");
+        }
+    }
     fn unwrap_value_as_type_index_checked(&self, value: GospelVMValue) -> GospelVMResult<usize> {
         if let GospelVMValue::TypeReference(type_index) = value {
            Ok(type_index)
@@ -559,73 +565,6 @@ impl GospelVMExecutionState<'_> {
         if let Type::CVQualified(cv_qualified_type) = run_context.type_by_index(type_index) {
             Ok(cv_qualified_type.base_type_index)
         } else { Ok(type_index) }
-    }
-    fn create_deep_base_class_iterator(&self, user_defined_type: &UserDefinedType, run_context: &GospelVMRunContext) -> impl Iterator<Item = usize> {
-        user_defined_type.base_class_indices.iter().cloned().chain(user_defined_type.base_class_indices.iter().flat_map(|base_class_type_index| {
-            if let Type::UDT(user_defined_base_class) = run_context.type_by_index(*base_class_type_index) {
-                self.create_deep_base_class_iterator(user_defined_base_class, run_context).collect::<Vec<usize>>()
-            } else { vec![] }
-        })).unique()
-    }
-    fn find_map_member_deep<T, S: Fn(&UserDefinedTypeMember) -> Option<T>>(&self, user_defined_type: &UserDefinedType, member_name: &str, map_function: &S, run_context: &GospelVMRunContext) -> Option<T> {
-        // Direct members are prioritized
-        for i in 0..user_defined_type.members.len() {
-            if user_defined_type.members[i].name() == Some(member_name) {
-                if let Some(existing_result) = map_function(&user_defined_type.members[i]) {
-                    return Some(existing_result)
-                }
-            }
-        }
-        // Base class members are used as a fallback
-        for i in 0..user_defined_type.base_class_indices.len() {
-            if let Type::UDT(user_defined_base_class) = run_context.type_by_index(user_defined_type.base_class_indices[i]) {
-                if let Some(base_class_result) = self.find_map_member_deep(user_defined_base_class, member_name, map_function, run_context) {
-                    return Some(base_class_result)
-                }
-            }
-        }
-        // Did not find member with the given name in this class or any base classes
-        None
-    }
-    fn find_base_class_offset_deep(&self, user_defined_type: &UserDefinedType, base_class_type_index: usize, base_offset: usize, run_context: &GospelVMRunContext) -> Option<usize> {
-        let computed_layout = user_defined_type.layout(run_context, &run_context.target_triplet);
-        // Direct base classes are prioritized
-        for i in 0..user_defined_type.base_class_indices.len() {
-            if user_defined_type.base_class_indices[i] == base_class_type_index {
-                return Some(base_offset + computed_layout.base_class_offsets[i])
-            }
-        }
-        // Indirect base classes are used as fallback
-        for i in 0..user_defined_type.base_class_indices.len() {
-            if let Type::UDT(user_defined_base_class) = run_context.type_by_index(user_defined_type.base_class_indices[i]) {
-                if let Some(base_class_result) = self.find_base_class_offset_deep(user_defined_base_class, base_class_type_index, base_offset + computed_layout.base_class_offsets[i], run_context) {
-                    return Some(base_class_result)
-                }
-            }
-        }
-        // Did not find the given base class as a direct or indirect base
-        None
-    }
-    fn find_map_member_layout_deep<T, S: Fn(usize, &ResolvedUDTLayout, &ResolvedUDTMemberLayout) -> Option<T>>(&self, user_defined_type: &UserDefinedType, member_name: &str, map_function: &S, base_offset: usize, run_context: &GospelVMRunContext) -> Option<T> {
-        let computed_layout = user_defined_type.layout(run_context, &run_context.target_triplet);
-        // Direct members are prioritized
-        for i in 0..user_defined_type.members.len() {
-            if user_defined_type.members[i].name() == Some(member_name) {
-                if let Some(existing_result) = map_function(base_offset, &computed_layout, &computed_layout.member_layouts[i]) {
-                    return Some(existing_result)
-                }
-            }
-        }
-        // Base class members are used as a fallback
-        for i in 0..user_defined_type.base_class_indices.len() {
-            if let Type::UDT(user_defined_base_class) = run_context.type_by_index(user_defined_type.base_class_indices[i]) {
-                if let Some(base_class_result) = self.find_map_member_layout_deep(user_defined_base_class, member_name, map_function, base_offset + computed_layout.base_class_offsets[i], run_context) {
-                    return Some(base_class_result)
-                }
-            }
-        }
-        // Did not find member with the given name in this class or any base classes
-        None
     }
     fn validate_struct_instance_template(&self, instance: &GospelVMStruct, template: &Rc<GospelVMStructTemplate>) -> GospelVMResult<()> {
         if !Rc::ptr_eq(&instance.template, template) {
@@ -1167,7 +1106,7 @@ impl GospelVMExecutionState<'_> {
                     run_context.validate_type_size_known(type_index, Some(state))?;
 
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        if state.create_deep_base_class_iterator(user_defined_type, run_context).contains(&base_type_index) { 1 } else { 0 }
+                        if base_type_index == type_index || user_defined_type.is_child_of(base_type_index, run_context) { 1 } else { 0 }
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
                     };
@@ -1182,8 +1121,8 @@ impl GospelVMExecutionState<'_> {
                     run_context.validate_type_size_known(type_index, Some(state))?;
 
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        let has_field = state.find_map_member_deep(user_defined_type, &field_name, &|x| if matches!(x, UserDefinedTypeMember::Field(_)) { Some({}) } else { None }, run_context);
-                        if has_field.is_some() { 1 } else { 0 }
+                        let found_field = user_defined_type.find_map_member_by_name(&field_name, &|x| if matches!(x, UserDefinedTypeMember::Field(_)) { Some(x.clone()) } else { None }, run_context);
+                        if found_field.is_some() { 1 } else { 0 }
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
                     };
@@ -1198,7 +1137,7 @@ impl GospelVMExecutionState<'_> {
                     run_context.validate_type_size_known(type_index, Some(state))?;
 
                     let result_type_index = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        state.find_map_member_deep(user_defined_type, &field_name, &|x| if let UserDefinedTypeMember::Field(field) = x { Some(field.member_type_index) } else { None }, run_context)
+                        user_defined_type.find_map_member_by_name(&field_name, &|x| if let UserDefinedTypeMember::Field(field) = x { Some(field.member_type_index) } else { None }, run_context)
                             .ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have a field named {}", type_index, field_name))?
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
@@ -1276,14 +1215,18 @@ impl GospelVMExecutionState<'_> {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     run_context.validate_type_size_known(type_index, Some(state))?;
 
-                    let result = run_context.type_by_index(type_index).size(run_context, &run_context.target_triplet) as i32;
+                    let mut new_type_cache = state.new_type_layout_cache(run_context)?;
+                    let result = run_context.type_by_index(type_index).size_and_alignment(run_context, &mut new_type_cache)
+                        .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?.0 as i32;
                     state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
                 }
                 GospelOpcode::TypeCalculateAlignment => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     run_context.validate_type_size_known(type_index, Some(state))?;
 
-                    let result = run_context.type_by_index(type_index).alignment(run_context, &run_context.target_triplet) as i32;
+                    let mut new_type_cache = state.new_type_layout_cache(run_context)?;
+                    let result = run_context.type_by_index(type_index).size_and_alignment(run_context, &mut new_type_cache)
+                        .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?.1 as i32;
                     state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
                 }
                 GospelOpcode::TypeUDTCalculateUnalignedSize => {
@@ -1291,8 +1234,10 @@ impl GospelVMExecutionState<'_> {
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
                     run_context.validate_type_size_known(type_index, Some(state))?;
 
+                    let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        user_defined_type.layout(run_context, &run_context.target_triplet).unaligned_size as i32
+                        user_defined_type.layout(run_context, &mut new_type_cache)
+                            .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?.unaligned_size as i32
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
                     };
@@ -1303,8 +1248,10 @@ impl GospelVMExecutionState<'_> {
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
                     run_context.validate_type_size_known(type_index, Some(state))?;
 
+                    let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        if user_defined_type.layout(run_context, &run_context.target_triplet).vtable.is_some() { 1 } else { 0 }
+                        if user_defined_type.layout(run_context, &mut new_type_cache)
+                            .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?.vtable.is_some() { 1 } else { 0 }
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
                     };
@@ -1315,9 +1262,11 @@ impl GospelVMExecutionState<'_> {
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
                     run_context.validate_type_size_known(type_index, Some(state))?;
 
+                    let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let vtable = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        user_defined_type.layout(run_context, &run_context.target_triplet).vtable
-                            .ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have a virtual function table", type_index))?
+                        user_defined_type.layout(run_context, &mut new_type_cache)
+                            .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?
+                            .vtable.clone().ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have a virtual function table", type_index))?
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
                     };
@@ -1333,8 +1282,10 @@ impl GospelVMExecutionState<'_> {
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
                     run_context.validate_type_size_known(type_index, Some(state))?;
 
+                    let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        state.find_base_class_offset_deep(user_defined_type, base_class_index, 0, run_context)
+                        user_defined_type.find_base_class_offset(base_class_index, run_context, &mut new_type_cache)
+                            .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?
                             .ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have Type #{} as a Base Class", type_index, base_class_index))? as i32
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
@@ -1349,10 +1300,14 @@ impl GospelVMExecutionState<'_> {
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
                     run_context.validate_type_size_known(type_index, Some(state))?;
 
+                    let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let (vtable_offset, function_offset) = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        state.find_map_member_layout_deep(user_defined_type, &function_name, &|offset, layout, member| {
-                            if let ResolvedUDTMemberLayout::VirtualFunction(x) = &member { Some((offset + layout.vtable.as_ref().unwrap().offset, x.offset)) } else { None }
-                        }, 0, run_context)
+                        user_defined_type.find_map_member_layout(&function_name, &|ctx| {
+                            if let ResolvedUDTMemberLayout::VirtualFunction(virtual_function) = &ctx.owner_layout.member_layouts[ctx.member_index] {
+                                Some((ctx.owner_offset + virtual_function.vtable_offset, virtual_function.offset))
+                            } else { None }
+                        }, run_context, &mut new_type_cache)
+                        .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?
                         .ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have a virtual function with name {}", type_index, function_name))?
                     } else {
                         vm_bail!(Some(&state), "Type #{} is not a user defined type", type_index);
@@ -1368,10 +1323,14 @@ impl GospelVMExecutionState<'_> {
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
                     run_context.validate_type_size_known(type_index, Some(state))?;
 
+                    let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let field_offset = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        state.find_map_member_layout_deep(user_defined_type, &field_name, &|offset, _, member| {
-                            if let ResolvedUDTMemberLayout::Field(x) = &member { Some(offset + x.offset) } else { None }
-                        }, 0, run_context)
+                        user_defined_type.find_map_member_layout(&field_name, &|ctx| {
+                            if let ResolvedUDTMemberLayout::Field(field_layout) = &ctx.owner_layout.member_layouts[ctx.member_index] {
+                                Some(ctx.owner_offset + field_layout.offset)
+                            } else { None }
+                        }, run_context, &mut new_type_cache)
+                        .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?
                         .ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have a field with name {}", type_index, field_name))?
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
@@ -1386,11 +1345,15 @@ impl GospelVMExecutionState<'_> {
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
                     run_context.validate_type_size_known(type_index, Some(state))?;
 
+                    let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let (field_offset, field_bit_offset, field_bit_width) = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        state.find_map_member_layout_deep(user_defined_type, &field_name, &|offset, _, member| {
-                            if let ResolvedUDTMemberLayout::Bitfield(x) = &member { Some((offset + x.offset, x.bitfield_offset, x.bitfield_width)) } else { None }
-                        }, 0, run_context)
-                            .ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have a field with name {}", type_index, field_name))?
+                        user_defined_type.find_map_member_layout(&field_name, &|ctx| {
+                            if let ResolvedUDTMemberLayout::Bitfield(bitfield) = &ctx.owner_layout.member_layouts[ctx.member_index] {
+                                Some((ctx.owner_offset + bitfield.offset, bitfield.bitfield_offset, bitfield.bitfield_width))
+                            } else { None }
+                        }, run_context, &mut new_type_cache)
+                            .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?
+                        .ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have a field with name {}", type_index, field_name))?
                     } else {
                         vm_bail!(Some(&state), "Type #{} is not a user defined type", type_index);
                     };
@@ -1650,7 +1613,8 @@ impl GospelVMContainer {
                 Ok(GospelVMValue::Integer(current_value))
             }
             GospelStaticValue::PlatformConfigProperty(config_property) => {
-                let resolved_value = config_property.resolve(&run_context.target_triplet);
+                let resolved_value = run_context.target_triplet().map(|x| config_property.resolve(x))
+                    .ok_or_else(|| anyhow!("Cannot bind platform config properties with no target triplet"))?;
                 Ok(GospelVMValue::Integer(resolved_value))
             }
         }

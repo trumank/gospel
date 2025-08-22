@@ -1,12 +1,13 @@
 use std::cell::RefCell;
 use std::fs::{read, read_to_string, write};
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::process::exit;
 use std::rc::Rc;
 use std::str::FromStr;
 use anyhow::{anyhow, bail};
 use clap::{Parser, ValueEnum};
-use gospel_typelib::type_model::{ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, TypeTree};
+use gospel_typelib::type_model::{ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, TypeLayoutCache, TypeTree};
 use gospel_vm::module::{GospelContainer};
 use gospel_vm::reflection::{GospelContainerReflector, GospelModuleReflector};
 use gospel_vm::vm::{GospelVMContainer, GospelVMRunContext, GospelVMState, GospelVMValue};
@@ -147,7 +148,7 @@ struct GlobalVariable {
     value: i32,
 }
 
-impl std::str::FromStr for GlobalVariable {
+impl FromStr for GlobalVariable {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -186,31 +187,43 @@ fn do_action_assemble(action: ActionAssembleModule) -> anyhow::Result<()> {
     Ok({})
 }
 
-fn print_full_type_tree(type_tree: &TypeTree, target_triplet: &TargetTriplet) -> anyhow::Result<()> {
+fn print_full_type_tree(type_tree: &TypeTree, target_triplet: Option<TargetTriplet>) -> anyhow::Result<()> {
+    let mut optional_type_layout_cache = target_triplet.map(|x| TypeLayoutCache::create(x));
     for type_index in 0..type_tree.types.len() {
-        let alignment = type_tree.type_by_index(type_index).alignment(type_tree, target_triplet);
-        let size = type_tree.type_by_index(type_index).size(type_tree, target_triplet);
         if type_index == type_tree.root_type_index {
             print!("[TREE ROOT] ");
         }
-        println!("Type #{} (alignment: 0x{:x}; size: 0x{:x}): ", type_index, alignment, size);
+        if let Some(type_layout_cache) = optional_type_layout_cache.as_mut() {
+            let type_data = type_tree.type_by_index(type_index);
+            if !type_data.is_sizeless(type_tree) {
+                let (size, alignment) = type_data.size_and_alignment(type_tree, type_layout_cache)?;
+                println!("Type #{} (alignment: 0x{:x}; size: 0x{:x}): ", type_index, alignment, size);
+            } else {
+                println!("Type #{} (sizeless): ", type_index);
+            }
+        } else {
+            println!("Type #{}: ", type_index);
+        }
         serde_json::to_string_pretty(type_tree.type_by_index(type_index))?.lines().for_each(|x| {
             println!(" | {}", x);
         });
-        if let Type::UDT(user_defined_type) = &type_tree.type_by_index(type_index) {
-            println!(" # UDT Layout:");
-            serde_json::to_string_pretty(&user_defined_type.layout(type_tree, target_triplet))?.lines().for_each(|x| {
-                println!(" # {}", x);
-            });
+        if let Some(type_layout_cache) = optional_type_layout_cache.as_mut() {
+            if let Type::UDT(user_defined_type) = &type_tree.type_by_index(type_index) {
+                println!(" # UDT Layout:");
+                serde_json::to_string_pretty(&user_defined_type.layout(type_tree, type_layout_cache)?.deref())?.lines().for_each(|x| {
+                    println!(" # {}", x);
+                });
+            }
         }
     }
     Ok({})
 }
 
-fn print_simplified_type_tree(type_tree: &TypeTree, target_triplet: &TargetTriplet) -> anyhow::Result<()> {
+fn print_simplified_type_tree(type_tree: &TypeTree, target_triplet: Option<TargetTriplet>) -> anyhow::Result<()> {
+    let mut type_layout_cache = TypeLayoutCache::create(target_triplet.ok_or_else(|| anyhow!("Simplified type tree format requires target triplet"))?);
     for type_in_tree in &type_tree.types {
         if let Type::UDT(user_defined_type) = type_in_tree {
-            let layout = user_defined_type.layout(type_tree, &target_triplet);
+            let layout = user_defined_type.layout(type_tree, &mut type_layout_cache)?;
             println!("{}.layout {{ // 0x{:x}", user_defined_type.name.as_deref().unwrap_or("<unknown>"), layout.size);
             for (member, member_layout) in user_defined_type.members.iter().zip(&layout.member_layouts) {
                 match member_layout {
@@ -231,7 +244,7 @@ fn print_simplified_type_tree(type_tree: &TypeTree, target_triplet: &TargetTripl
     Ok({})
 }
 
-fn print_type_tree(type_tree: &TypeTree, target_triplet: &TargetTriplet, print_format: TypeTreeOutputFormat) -> anyhow::Result<()> {
+fn print_type_tree(type_tree: &TypeTree, target_triplet: Option<TargetTriplet>, print_format: TypeTreeOutputFormat) -> anyhow::Result<()> {
     if print_format == TypeTreeOutputFormat::Simple {
         print_simplified_type_tree(type_tree, target_triplet)
     } else {
@@ -286,14 +299,14 @@ fn do_action_call(action: ActionCallFunction) -> anyhow::Result<()> {
     }
 
     // Evaluate the function
-    let mut execution_context = GospelVMRunContext::create(&target_triplet);
+    let mut execution_context = GospelVMRunContext::create(Some(target_triplet.clone()));
     let function_result = result_function_pointer.execute(function_arguments, &mut execution_context)
         .map_err(|x| anyhow!("Failed to execute function: {}", x.to_string()))?;
 
     // Print the result now
     if let GospelVMValue::TypeReference(type_index) = function_result {
         let type_tree = execution_context.type_tree(type_index);
-        print_type_tree(&type_tree, execution_context.target_triplet(), output_format)?;
+        print_type_tree(&type_tree, execution_context.target_triplet().cloned(), output_format)?;
     } else {
         println!("Value: {}", serde_json::to_string_pretty(&function_result)?);
     };
@@ -427,7 +440,7 @@ fn do_action_eval(action: ActionEvalExpression) -> anyhow::Result<()> {
     let compiled_expression = mounted_container.find_named_function(function_reference.local_name.as_str()).ok_or_else(|| anyhow!("Failed to find compiled expression function"))?;
 
     // Evaluate the function
-    let mut execution_context = GospelVMRunContext::create(&target_triplet);
+    let mut execution_context = GospelVMRunContext::create(Some(target_triplet.clone()));
 
     for global in action.global {
         vm_state.set_global_value(&global.name, global.value)?;
@@ -439,7 +452,7 @@ fn do_action_eval(action: ActionEvalExpression) -> anyhow::Result<()> {
     // Print the result now
     if let GospelVMValue::TypeReference(type_index) = function_result {
         let type_tree = execution_context.type_tree(type_index);
-        print_type_tree(&type_tree, execution_context.target_triplet(), output_format)?;
+        print_type_tree(&type_tree, execution_context.target_triplet().cloned(), output_format)?;
     } else {
         println!("Value: {}", serde_json::to_string_pretty(&function_result)?);
     };

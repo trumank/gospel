@@ -9,7 +9,10 @@ edition.workspace = true
 
 [dependencies]
 gospel-typelib = { version = "0.1.0", path = "../gospel-typelib" }
-gospel-vm = { version = "0.1.0", path = "../gospel-vm" }
-gospel-compiler = { version = "0.1.0", path = "../gospel-compiler" }
 anyhow = "1.0.93"
-strum = { version = "0.27.2", features = ["derive"] }
+minidump = { version = "0.26.0", optional = true }
+process-memory = { version = "0.5.0", optional = true }
+
+[features]
+minidump = ["dep:minidump"]
+process = ["dep:process-memory"]
