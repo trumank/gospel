@@ -13,44 +13,23 @@ pub enum GospelValueType {
     Struct,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, EnumString, Serialize, Deserialize)]
-pub enum GospelPlatformConfigProperty {
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, EnumString, Display, Serialize, Deserialize)]
+pub enum GospelTargetProperty {
     TargetArch, // target architecture (GospelTargetArch)
     TargetOS, // target operating system (GospelTargetOS)
     TargetEnv, // target environment (GospelTargetEnv)
     AddressSize, // size of the address (a pointer) on the platform, in bytes (8 bytes for 64-bit platforms, 4 bytes for 32-bit platforms)
 }
-impl GospelPlatformConfigProperty {
+impl GospelTargetProperty {
     /// Resolves a value of the platform config property
     pub fn resolve(self, target: &TargetTriplet) -> i32 {
         match self {
-            GospelPlatformConfigProperty::TargetArch => { target.arch as i32 }
-            GospelPlatformConfigProperty::TargetOS => { target.sys as i32 }
-            GospelPlatformConfigProperty::TargetEnv => { target.env as i32 }
-            GospelPlatformConfigProperty::AddressSize => { target.address_size() as i32 }
+            GospelTargetProperty::TargetArch => { target.arch as i32 }
+            GospelTargetProperty::TargetOS => { target.sys as i32 }
+            GospelTargetProperty::TargetEnv => { target.env as i32 }
+            GospelTargetProperty::AddressSize => { target.address_size() as i32 }
         }
     }
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, Serialize, Deserialize)]
-pub(crate) enum GospelStaticValue {
-    Integer(i32),
-    FunctionIndex(GospelObjectIndex), // value is a closure with no arguments captured, data is an ID of the function to create a closure from
-    PlatformConfigProperty(GospelPlatformConfigProperty), // platform config property value, interpret data as GospelPlatformConfigProperty
-    GlobalVariableValue(u32), // global variable value by name, interpret data as name index
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
-pub(crate) enum GospelSlotBinding {
-    Uninitialized,
-    StaticValue(GospelStaticValue),
-    ArgumentValue(u32),
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub(crate) struct GospelSlotDefinition {
-    pub(crate) value_type: GospelValueType,
-    pub(crate) binding: GospelSlotBinding,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -70,10 +49,11 @@ pub(crate) struct GospelFunctionDefinition {
     pub(crate) exported: bool, // true if function is visible by name outside its container
     pub(crate) arguments: Vec<GospelFunctionArgument>, // arguments for this function
     pub(crate) return_value_type: GospelValueType, // type of the function return value
-    pub(crate) slots: Vec<GospelSlotDefinition>, // slots to bind to the code
+    pub(crate) num_slots: u32, // number of slots used by the function code
     pub(crate) code: Vec<GospelInstruction>, // bytecode for the VM
     pub(crate) referenced_strings: Vec<u32>, // indices of strings referenced by the bytecode
     pub(crate) referenced_structs: Vec<GospelObjectIndex>, // indices of structures referenced by the bytecode
+    pub(crate) referenced_functions: Vec<GospelObjectIndex>, // indices of functions referenced by the bytecode
     pub(crate) debug_data: Option<GospelFunctionDebugData>, // optional debug data for the function
 }
 

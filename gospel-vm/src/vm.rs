@@ -9,8 +9,8 @@ use anyhow::{anyhow, bail};
 use strum::Display;
 use crate::bytecode::{GospelInstruction, GospelOpcode};
 use crate::module::GospelContainer;
-use crate::gospel::{GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelFunctionDefinition, GospelObjectIndex, GospelValueType};
-use crate::writer::{GospelSourceObjectReference, GospelSourceStaticValue};
+use crate::gospel::{GospelFunctionDefinition, GospelObjectIndex, GospelValueType, GospelTargetProperty};
+use crate::writer::{GospelSourceObjectReference};
 use serde::{Deserialize, Serialize, Serializer};
 use serde::ser::SerializeStruct;
 use gospel_typelib::type_model::{ArrayType, CVQualifiedType, FunctionType, PointerType, PrimitiveType, ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeBitfield, UserDefinedTypeField, UserDefinedTypeKind, UserDefinedTypeMember, FunctionDeclaration, FunctionParameterDeclaration, TypeLayoutCache};
@@ -80,6 +80,33 @@ macro_rules! vm_bail {
     };
 }
 
+/// Options for Gospel VM code evaluation
+#[derive(Debug, Clone)]
+pub struct GospelVMOptions {
+    target_triplet: Option<TargetTriplet>,
+    no_default_globals: bool,
+    globals: HashMap<String, i32>,
+}
+impl Default for GospelVMOptions {
+    fn default() -> Self {
+        Self{target_triplet: None, no_default_globals: false, globals: HashMap::new()}
+    }
+}
+impl GospelVMOptions {
+    /// Sets the target triplet for the VM. Target triplet is required to evaluate type sizes and layouts
+    pub fn target_triplet(mut self, target_triplet: TargetTriplet) -> Self {
+        self.target_triplet = Some(target_triplet); self
+    }
+    /// Disable default values assigned by the modules to the global variables. All variable values have to be set on the context explicitly. Accessing an unset global results in an exception
+    pub fn no_default_globals(mut self) -> Self {
+        self.no_default_globals = true; self
+    }
+    /// Sets the given global variable to the value provided. Overrides the default value for the given global if one exists
+    pub fn with_global(mut self, name: &str, value: i32) -> Self {
+        self.globals.insert(name.to_string(), value); self
+    }
+}
+
 /// Wrapper for Types that also contains metadata maintained by the VM
 #[derive(Debug)]
 struct GospelVMTypeWrapper {
@@ -92,18 +119,25 @@ struct GospelVMTypeWrapper {
 /// Run context allows caching results of function invocations and creating type graphs from individual types
 #[derive(Debug)]
 pub struct GospelVMRunContext {
-    target_triplet: Option<TargetTriplet>,
+    options: GospelVMOptions,
     types: Vec<GospelVMTypeWrapper>,
     simple_type_lookup: HashMap<Type, usize>,
     call_result_lookup: HashMap<GospelVMClosure, Rc<RefCell<Option<GospelVMValue>>>>,
     stack_frame_counter: usize,
 }
 impl GospelVMRunContext {
-    pub fn create(target_triplet: Option<TargetTriplet>) -> GospelVMRunContext {
-        GospelVMRunContext{target_triplet: target_triplet.clone(), types: Vec::new(), simple_type_lookup: HashMap::new(), call_result_lookup: HashMap::new(), stack_frame_counter: 1}
+    pub fn create(options: GospelVMOptions) -> GospelVMRunContext {
+        GospelVMRunContext{options, types: Vec::new(), simple_type_lookup: HashMap::new(), call_result_lookup: HashMap::new(), stack_frame_counter: 1}
     }
     pub fn target_triplet(&self) -> Option<&TargetTriplet> {
-        self.target_triplet.as_ref()
+        self.options.target_triplet.as_ref()
+    }
+    fn read_global_value(&self, global_name: &str, default_value: Option<i32>) -> Option<i32> {
+        if let Some(global_value_override) = self.options.globals.get(global_name) {
+            Some(*global_value_override)
+        } else if let Some(default_global_value) = default_value && !self.options.no_default_globals {
+            Some(default_global_value)
+        } else { None }
     }
     fn new_stack_frame_token(&mut self) -> usize {
         let result_stack_frame_token = self.stack_frame_counter;
@@ -418,11 +452,25 @@ impl GospelVMValue {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct GospelGlobalStorage {
-    name: String,
-    initial_value: RefCell<Option<i32>>,
-    current_value: RefCell<Option<i32>>,
+    global_defaults: RefCell<HashMap<String, i32>>,
+}
+impl GospelGlobalStorage {
+    fn set_global_default_value(&self, name: &str, default_value: i32) -> anyhow::Result<()> {
+        if let Some(existing_value) = self.global_defaults.borrow().get(name) {
+            if *existing_value != default_value {
+                bail!("Incompatible default values for global variable {}: current default value is {}, but new default value is {}",name, *existing_value, default_value);
+            }
+            Ok({})
+        } else {
+            self.global_defaults.borrow_mut().insert(name.to_string(), default_value);
+            Ok({})
+        }
+    }
+    fn find_default_global_value(&self, name: &str) -> Option<i32> {
+        self.global_defaults.borrow().get(name).cloned()
+    }
 }
 
 #[derive(Debug)]
@@ -437,9 +485,11 @@ struct GospelExceptionHandler {
 struct GospelVMExecutionState<'a> {
     owner_container: &'a Rc<GospelVMContainer>,
     function_definition: &'a GospelFunctionDefinition,
+    argument_values: &'a Vec<GospelVMValue>,
     slots: Vec<Option<GospelVMValue>>,
-    referenced_strings: Vec<String>,
+    referenced_strings: Vec<&'a str>,
     referenced_structs: Vec<Rc<GospelVMStructTemplate>>,
+    referenced_functions: Vec<GospelVMClosure>,
     stack: Vec<GospelVMValue>,
     exception_handler_stack: Vec<GospelExceptionHandler>,
     current_instruction_index: usize,
@@ -453,7 +503,7 @@ struct GospelVMExecutionState<'a> {
     max_recursion_depth: usize,
     max_exception_handler_depth: usize,
 }
-impl GospelVMExecutionState<'_> {
+impl<'a> GospelVMExecutionState<'a> {
     fn push_stack_check_overflow(&mut self, value: GospelVMValue) -> GospelVMResult<()> {
         if self.stack.len() > self.max_stack_size {
             vm_bail!(Some(self), "Stack overflow");
@@ -481,6 +531,12 @@ impl GospelVMExecutionState<'_> {
         self.current_instruction_index = target_index;
         Ok({})
     }
+    fn copy_argument_value_checked(&mut self, index: usize) -> GospelVMResult<GospelVMValue> {
+        if index >= self.argument_values.len() {
+            vm_bail!(Some(self), "Missing value for argument #{} (number of arguments: {})", index, self.argument_values.len());
+        }
+        Ok(self.argument_values[index].clone())
+    }
     fn read_slot_value_checked(&mut self, index: usize) -> GospelVMResult<GospelVMValue> {
         if index >= self.slots.len() {
             vm_bail!(Some(self), "Invalid slot index #{} out of bounds (number of slots: {})", index, self.slots.len());
@@ -497,26 +553,29 @@ impl GospelVMExecutionState<'_> {
         if index >= self.slots.len() {
             vm_bail!(Some(self), "Invalid slot index #{} out of bounds (number of slots: {})", index, self.slots.len());
         }
-        if self.function_definition.slots[index].value_type != value.value_type() {
-            vm_bail!(Some(self), "Invalid write of incompatible value type to slot at index #{}", index);
-        }
         self.slots[index] = Some(value);
         Ok({})
     }
     fn immediate_value_checked(&self, inst: &GospelInstruction, index: usize) -> GospelVMResult<u32> {
         inst.immediate_operand_at(index).ok_or_else(|| vm_error!(Some(self), "Invalid instruction encoding: Missing immediate operand #{}", index))
     }
-    fn copy_referenced_string_checked(&self, index: usize) -> GospelVMResult<String> {
+    fn get_referenced_string_checked(&self, index: usize) -> GospelVMResult<&'a str> {
         if index >= self.referenced_strings.len() {
             vm_bail!(Some(self), "Invalid referenced string index #{} out of bounds (number of referenced strings: {})", index, self.referenced_strings.len());
         }
-        Ok(self.referenced_strings[index].clone())
+        Ok(self.referenced_strings[index])
     }
     fn get_referenced_struct_checked(&self, index: usize) -> GospelVMResult<Rc<GospelVMStructTemplate>> {
         if index >= self.referenced_structs.len() {
             vm_bail!(Some(self), "Invalid referenced struct index #{} out of bounds (number of referenced structs: {})", index, self.referenced_structs.len());
         }
         Ok(self.referenced_structs[index].clone())
+    }
+    fn get_referenced_function_checked(&self, index: usize) -> GospelVMResult<GospelVMClosure> {
+        if index >= self.referenced_functions.len() {
+            vm_bail!(Some(self), "Invalid referenced function index #{} out of bounds (number of referenced functions: {})", index, self.referenced_functions.len());
+        }
+        Ok(self.referenced_functions[index].clone())
     }
     fn unwrap_value_as_int_checked(&self, value: GospelVMValue) -> GospelVMResult<i32> {
         match value {
@@ -560,7 +619,7 @@ impl GospelVMExecutionState<'_> {
         if let Some(target_triplet) = run_context.target_triplet() {
             Ok(TypeLayoutCache::create(target_triplet.clone()))
         } else {
-            vm_bail!(Some(self), "Cannot calculate type layouts with no target triplet");
+            vm_bail!(Some(self), "Target triplet not set for type layout calculation");
         }
     }
     fn unwrap_value_as_type_index_checked(&self, value: GospelVMValue) -> GospelVMResult<usize> {
@@ -713,7 +772,7 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::RaiseException => {
                     let message_index = state.immediate_value_checked(instruction, 0)? as usize;
-                    let message = state.copy_referenced_string_checked(message_index)?;
+                    let message = state.get_referenced_string_checked(message_index)?;
                     vm_bail!(Some(&state), "User exception: {}", message);
                 }
                 GospelOpcode::Typeof => {
@@ -803,6 +862,11 @@ impl GospelVMExecutionState<'_> {
                     }
                 }
                 // Data storage opcodes
+                GospelOpcode::LoadArgumentValue => {
+                    let argument_index = state.immediate_value_checked(instruction, 0)? as usize;
+                    let argument_value = state.copy_argument_value_checked(argument_index)?;
+                    state.push_stack_check_overflow(argument_value)?;
+                }
                 GospelOpcode::LoadSlot => {
                     let slot_index = state.immediate_value_checked(instruction, 0)? as usize;
                     let current_slot_value = state.read_slot_value_checked(slot_index)?;
@@ -817,6 +881,31 @@ impl GospelVMExecutionState<'_> {
                     let slot_index = state.immediate_value_checked(instruction, 0)? as usize;
                     let old_slot_value = state.borrow_slot_value_checked(slot_index)?;
                     state.push_stack_check_overflow(old_slot_value)?;
+                }
+                GospelOpcode::LoadTargetProperty => {
+                    let target_property_name_index = state.immediate_value_checked(instruction, 0)? as usize;
+                    let target_property_name = state.get_referenced_string_checked(target_property_name_index)?;
+
+                    let target_property = GospelTargetProperty::from_str(target_property_name)
+                        .map_err(|x| vm_error!(Some(&state), "Unknown target property {}: {}", target_property_name, x))?;
+                    let result_value = if let Some(target_triplet) = run_context.target_triplet() {
+                        target_property.resolve(target_triplet)
+                    } else { vm_bail!(Some(&state), "Target triplet not set to read target property {}", target_property_name); };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result_value))?;
+                }
+                GospelOpcode::LoadGlobalVariable => {
+                    let global_name_index = state.immediate_value_checked(instruction, 0)? as usize;
+                    let global_name = state.get_referenced_string_checked(global_name_index)?;
+
+                    let default_global_value = state.owner_container.global_storage.find_default_global_value(global_name);
+                    let result_value = run_context.read_global_value(global_name, default_global_value)
+                        .ok_or_else(|| vm_error!(Some(&state), "Global variable {} is not defined and does not have a default value", global_name))?;
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result_value))?;
+                }
+                GospelOpcode::LoadFunctionClosure => {
+                    let function_index = state.immediate_value_checked(instruction, 0)? as usize;
+                    let result_value = state.get_referenced_function_checked(function_index)?;
+                    state.push_stack_check_overflow(GospelVMValue::Closure(result_value))?;
                 }
                 // Type creation opcodes
                 GospelOpcode::TypeAddConstantQualifier => {
@@ -841,7 +930,7 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::TypePrimitiveCreate => {
                     let primitive_type_name_index = state.immediate_value_checked(instruction, 0)? as usize;
-                    let primitive_type_name = state.copy_referenced_string_checked(primitive_type_name_index)?;
+                    let primitive_type_name = state.get_referenced_string_checked(primitive_type_name_index)?;
 
                     let primitive_type = PrimitiveType::from_str(&primitive_type_name)
                         .map_err(|x| vm_error!(Some(&state), "Unknown primitive type name: {} ({})", primitive_type_name, x))?;
@@ -898,10 +987,10 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::TypeUDTAllocate => {
                     let type_name_index = state.immediate_value_checked(instruction, 0)? as i32;
-                    let type_name = if type_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(type_name_index as usize)?) };
+                    let type_name = if type_name_index == -1 { None } else { Some(state.get_referenced_string_checked(type_name_index as usize)?.to_string()) };
 
                     let type_kind_index = state.immediate_value_checked(instruction, 1)? as usize;
-                    let type_kind = UserDefinedTypeKind::from_str(state.copy_referenced_string_checked(type_kind_index)?.as_str())
+                    let type_kind = UserDefinedTypeKind::from_str(state.get_referenced_string_checked(type_kind_index)?)
                         .map_err(|x| vm_error!(Some(&state), "Unknown UDT kind name: {}", x.to_string()))?;
 
                     let user_defined_type = UserDefinedType{kind: type_kind, name: type_name, ..UserDefinedType::default()};
@@ -951,7 +1040,7 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::TypeUDTAddField => {
                     let field_name_index = state.immediate_value_checked(instruction, 0)? as i32;
-                    let field_name = if field_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(field_name_index as usize)?) };
+                    let field_name = if field_name_index == -1 { None } else { Some(state.get_referenced_string_checked(field_name_index as usize)?.to_string()) };
 
                     let raw_user_alignment = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))?;
                     let user_alignment = if raw_user_alignment == -1 { None } else { Some(raw_user_alignment as usize) };
@@ -971,7 +1060,7 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::TypeUDTAddBitfield => {
                     let field_name_index = state.immediate_value_checked(instruction, 0)? as i32;
-                    let field_name = if field_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(field_name_index as usize)?) };
+                    let field_name = if field_name_index == -1 { None } else { Some(state.get_referenced_string_checked(field_name_index as usize)?.to_string()) };
 
                     let bitfield_width = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
 
@@ -997,7 +1086,7 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::TypeUDTAddVirtualFunction => {
                     let function_name_index = state.immediate_value_checked(instruction, 0)? as i32;
-                    let function_name = state.copy_referenced_string_checked(function_name_index as usize)?;
+                    let function_name = state.get_referenced_string_checked(function_name_index as usize)?;
 
                     let number_of_parameter_stack_values = state.immediate_value_checked(instruction, 1)? as usize;
                     if number_of_parameter_stack_values % 2 != 0 {
@@ -1008,7 +1097,7 @@ impl GospelVMExecutionState<'_> {
                     let mut parameters: Vec<FunctionParameterDeclaration> = vec![FunctionParameterDeclaration::default(); number_of_parameters];
                     for index in 0..number_of_parameters {
                         let parameter_name_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))?;
-                        let parameter_name = if parameter_name_index == -1 { None } else { Some(state.copy_referenced_string_checked(parameter_name_index as usize)?) };
+                        let parameter_name = if parameter_name_index == -1 { None } else { Some(state.get_referenced_string_checked(parameter_name_index as usize)?.to_string()) };
                         let parameter_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                         parameters[number_of_parameters - index - 1] = FunctionParameterDeclaration{parameter_type_index, parameter_name};
                     }
@@ -1018,7 +1107,7 @@ impl GospelVMExecutionState<'_> {
                     let is_function_override = if function_flags & (1 << 1) != 0 { true } else { false };
 
                     let return_value_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
-                    let new_function_declaration = FunctionDeclaration{name: function_name.clone(), return_value_type_index, parameters, is_const_member_function, is_virtual_function_override: is_function_override};
+                    let new_function_declaration = FunctionDeclaration{name: function_name.to_string(), return_value_type_index, parameters, is_const_member_function, is_virtual_function_override: is_function_override};
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
@@ -1028,11 +1117,11 @@ impl GospelVMExecutionState<'_> {
                         if user_defined_type.kind == UserDefinedTypeKind::Union {
                             vm_bail!(Some(state), "Union types cannot have virtual functions");
                         }
-                        if user_defined_type.members.iter().any(|x| !matches!(x, UserDefinedTypeMember::VirtualFunction(_)) && x.name() == Some(function_name.as_str())) {
+                        if user_defined_type.members.iter().any(|x| !matches!(x, UserDefinedTypeMember::VirtualFunction(_)) && x.name() == Some(function_name)) {
                             vm_bail!(Some(state), "Type #{} already contains a member named {}", type_index, function_name);
                         }
                         if user_defined_type.members.iter().any(|x| {
-                            if let UserDefinedTypeMember::VirtualFunction(function) = x && x.name() == Some(function_name.as_str()) &&
+                            if let UserDefinedTypeMember::VirtualFunction(function) = x && x.name() == Some(function_name) &&
                                 function.function_signature() == new_function_declaration.function_signature() { true } else { false }
                         }) {
                             vm_bail!(Some(state), "Type #{} already contains a function named {} with identical signature", type_index, function_name);
@@ -1150,7 +1239,7 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::TypeUDTHasField => {
                     let field_name_index = state.immediate_value_checked(instruction, 0)? as usize;
-                    let field_name = state.copy_referenced_string_checked(field_name_index)?;
+                    let field_name = state.get_referenced_string_checked(field_name_index)?;
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
@@ -1166,7 +1255,7 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::TypeUDTTypeofField => {
                     let field_name_index = state.immediate_value_checked(instruction, 0)? as usize;
-                    let field_name = state.copy_referenced_string_checked(field_name_index)?;
+                    let field_name = state.get_referenced_string_checked(field_name_index)?;
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
@@ -1330,7 +1419,7 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::TypeUDTCalculateVirtualFunctionOffset => {
                     let function_name_index = state.immediate_value_checked(instruction, 0)? as usize;
-                    let function_name = state.copy_referenced_string_checked(function_name_index)?;
+                    let function_name = state.get_referenced_string_checked(function_name_index)?;
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
@@ -1353,7 +1442,7 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::TypeUDTCalculateFieldOffset => {
                     let field_name_index = state.immediate_value_checked(instruction, 0)? as usize;
-                    let field_name = state.copy_referenced_string_checked(field_name_index)?;
+                    let field_name = state.get_referenced_string_checked(field_name_index)?;
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
@@ -1375,7 +1464,7 @@ impl GospelVMExecutionState<'_> {
                 }
                 GospelOpcode::TypeUDTCalculateBitfieldOffsetBitOffsetAndBitWidth => {
                     let field_name_index = state.immediate_value_checked(instruction, 0)? as usize;
-                    let field_name = state.copy_referenced_string_checked(field_name_index)?;
+                    let field_name = state.get_referenced_string_checked(field_name_index)?;
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
@@ -1499,9 +1588,9 @@ impl GospelVMExecutionState<'_> {
                     state.validate_struct_instance_template(&struct_value, &struct_template)?;
 
                     let struct_field_name_index = state.immediate_value_checked(instruction, 1)? as usize;
-                    let struct_field_name = state.copy_referenced_string_checked(struct_field_name_index)?;
+                    let struct_field_name = state.get_referenced_string_checked(struct_field_name_index)?;
 
-                    let field_value = struct_value.take_named_property(struct_field_name.as_str()).with_frame_context(Some(&state))?
+                    let field_value = struct_value.take_named_property(struct_field_name).with_frame_context(Some(&state))?
                         .ok_or_else(|| anyhow!("Field {} is not set on struct instance", struct_field_name)).with_frame_context(Some(&state))?;
                     state.push_stack_check_overflow(field_value)?;
                 }
@@ -1514,9 +1603,9 @@ impl GospelVMExecutionState<'_> {
                     state.validate_struct_instance_template(&struct_value, &struct_template)?;
 
                     let struct_field_name_index = state.immediate_value_checked(instruction, 1)? as usize;
-                    let struct_field_name = state.copy_referenced_string_checked(struct_field_name_index)?;
+                    let struct_field_name = state.get_referenced_string_checked(struct_field_name_index)?;
 
-                    struct_value.set_named_property(struct_field_name.as_str(), Some(field_value)).with_frame_context(Some(&state))?;
+                    struct_value.set_named_property(struct_field_name, Some(field_value)).with_frame_context(Some(&state))?;
                     state.push_stack_check_overflow(GospelVMValue::Struct(struct_value))?;
                 }
                 GospelOpcode::StructIsStructOfType => {
@@ -1535,7 +1624,7 @@ impl GospelVMExecutionState<'_> {
                     let struct_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_struct_checked(x))?;
 
                     let struct_field_name_index = state.immediate_value_checked(instruction, 1)? as usize;
-                    let struct_field_name = state.copy_referenced_string_checked(struct_field_name_index)?;
+                    let struct_field_name = state.get_referenced_string_checked(struct_field_name_index)?;
 
                     let struct_field_index = struct_value.template.find_named_property_index(&struct_field_name)
                         .ok_or_else(|| vm_error!(Some(&state), "Struct does not have a property with name '{}'", struct_field_name))?;
@@ -1556,7 +1645,7 @@ impl GospelVMExecutionState<'_> {
                     let mut struct_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_struct_checked(x))?;
 
                     let struct_field_name_index = state.immediate_value_checked(instruction, 1)? as usize;
-                    let struct_field_name = state.copy_referenced_string_checked(struct_field_name_index)?;
+                    let struct_field_name = state.get_referenced_string_checked(struct_field_name_index)?;
 
                     let struct_field_index = struct_value.template.find_named_property_index(&struct_field_name)
                         .ok_or_else(|| vm_error!(Some(&state), "Struct does not have a property with name '{}'", struct_field_name))?;
@@ -1578,7 +1667,7 @@ impl GospelVMExecutionState<'_> {
 pub struct GospelVMContainer {
     container: Rc<GospelContainer>,
     external_references: Vec<Rc<GospelVMContainer>>,
-    global_lookup_by_id: HashMap<usize, Rc<GospelGlobalStorage>>,
+    global_storage: Rc<GospelGlobalStorage>,
     function_lookup_by_name: HashMap<String, u32>,
     struct_lookup_by_name: HashMap<String, u32>,
     struct_templates: Vec<Rc<GospelVMStructTemplate>>,
@@ -1624,61 +1713,6 @@ impl GospelVMContainer {
             }
             GospelObjectIndex::Local(local_index) => {
                 Ok(GospelVMClosure { container: self.clone(), function_index: local_index, arguments: Vec::new() })
-            }
-        }
-    }
-    fn resolve_static_value(self: &Rc<Self>, run_context: &mut GospelVMRunContext, value: &GospelStaticValue) -> anyhow::Result<GospelVMValue> {
-        match value {
-            GospelStaticValue::Integer(integer_value) => {
-                Ok(GospelVMValue::Integer(*integer_value))
-            }
-            GospelStaticValue::FunctionIndex(function_index) => {
-                let reference = self.resolve_function_index(*function_index)?;
-                Ok(GospelVMValue::Closure(reference))
-            }
-            GospelStaticValue::GlobalVariableValue(global_variable_index) => {
-                let global_variable = self.global_lookup_by_id.get(&(*global_variable_index as usize))
-                    .ok_or_else(|| anyhow!("Failed to find global with index specified"))?;
-                // Make sure the global variable has been initialized
-                let current_value = global_variable.current_value.borrow().clone()
-                    .ok_or_else(|| anyhow!("Attempt to read uninitialized global variable {}", global_variable.name))?;
-                Ok(GospelVMValue::Integer(current_value))
-            }
-            GospelStaticValue::PlatformConfigProperty(config_property) => {
-                let resolved_value = run_context.target_triplet().map(|x| config_property.resolve(x))
-                    .ok_or_else(|| anyhow!("Cannot bind platform config properties with no target triplet"))?;
-                Ok(GospelVMValue::Integer(resolved_value))
-            }
-        }
-    }
-    fn resolve_slot_binding(self: &Rc<Self>, run_context: &mut GospelVMRunContext, type_definition: &GospelFunctionDefinition, slot: &GospelSlotDefinition, args: &Vec<GospelVMValue>) -> anyhow::Result<Option<GospelVMValue>> {
-        match slot.binding {
-            GospelSlotBinding::Uninitialized => {
-                Ok(None)
-            }
-            GospelSlotBinding::StaticValue(static_value) => {
-                let resolved_value = self.resolve_static_value(run_context, &static_value)?;
-                if slot.value_type != resolved_value.value_type() {
-                    bail!("Slot value type is not compatible with static value type specified")
-                }
-                Ok(Some(resolved_value))
-            }
-            GospelSlotBinding::ArgumentValue(argument_index) => {
-                if argument_index as usize >= type_definition.arguments.len() {
-                    bail!("Invalid template argument index #{} (number of template arguments: {})", argument_index, type_definition.arguments.len());
-                }
-                if type_definition.arguments[argument_index as usize].argument_type != slot.value_type {
-                    bail!("Incompatible value type for slot and argument at index #{}", argument_index);
-                }
-                let resolved_value = if argument_index as usize >= args.len() {
-                    bail!("Missing value for argument #{}", argument_index);
-                } else {
-                    args[argument_index as usize].clone()
-                };
-                if resolved_value.value_type() != type_definition.arguments[argument_index as usize].argument_type {
-                    bail!("Incompatible value type for argument type and provided value");
-                }
-                Ok(Some(resolved_value))
             }
         }
     }
@@ -1738,9 +1772,11 @@ impl GospelVMContainer {
         let mut vm_state = GospelVMExecutionState{
             owner_container: self,
             function_definition: &function_definition,
-            slots: Vec::with_capacity(function_definition.slots.len()),
+            argument_values: args,
+            slots: vec![None; function_definition.num_slots as usize],
             referenced_strings: Vec::with_capacity(function_definition.referenced_strings.len()),
             referenced_structs: Vec::with_capacity(function_definition.referenced_structs.len()),
+            referenced_functions: Vec::with_capacity(function_definition.referenced_functions.len()),
             stack: Vec::new(),
             exception_handler_stack: Vec::new(),
             current_instruction_index: 0,
@@ -1755,20 +1791,17 @@ impl GospelVMContainer {
             max_exception_handler_depth: 10,
         };
 
-        // Populate slots with their initial values
-        for slot_index in 0..function_definition.slots.len() {
-            let slot_value = self.resolve_slot_binding(run_context, function_definition, &function_definition.slots[slot_index], args)
-                .map_err(|x| vm_error!(previous_frame, "Failed to bind slot #{} value: {}", slot_index, x.to_string()))?;
-            vm_state.slots.push(slot_value)
-        }
-
         // Populate referenced strings
         for string_index in &function_definition.referenced_strings {
-            vm_state.referenced_strings.push(self.container.strings.get(*string_index).with_frame_context(previous_frame)?.to_string());
+            vm_state.referenced_strings.push(self.container.strings.get(*string_index).with_frame_context(previous_frame)?);
         }
         // Populate referenced structs
         for struct_index in &function_definition.referenced_structs {
             vm_state.referenced_structs.push(self.resolve_struct_template(struct_index).with_frame_context(previous_frame)?);
+        }
+        // Populate referenced functions
+        for function_index in &function_definition.referenced_functions {
+            vm_state.referenced_functions.push(self.resolve_function_index(*function_index).with_frame_context(previous_frame)?);
         }
         // Run the VM now to calculate the result of the function
         GospelVMExecutionState::run(&mut vm_state, run_context)
@@ -1787,14 +1820,14 @@ impl GospelVMContainer {
 pub struct GospelVMState {
     containers: Vec<Rc<GospelVMContainer>>,
     containers_by_name: HashMap<String, Rc<GospelVMContainer>>,
-    globals_by_name: HashMap<String, Rc<GospelGlobalStorage>>,
+    global_storage: Rc<GospelGlobalStorage>,
 }
 impl GospelVMState {
 
     /// Creates a new, blank VM state with the provided platform config
     /// Type contains must be mounted to the VM by calling mount_container
     pub fn create() -> Self {
-        Self{containers: Vec::new(), containers_by_name: HashMap::new(), globals_by_name: HashMap::new()}
+        Self{containers: Vec::new(), containers_by_name: HashMap::new(), global_storage: Rc::new(GospelGlobalStorage::default())}
     }
 
     /// Adds a new gospel container to the VM. Returns the created container
@@ -1817,7 +1850,7 @@ impl GospelVMState {
         let mut vm_container = GospelVMContainer{
             container: wrapped_container.clone(),
             external_references,
-            global_lookup_by_id: HashMap::new(),
+            global_storage: self.global_storage.clone(),
             function_lookup_by_name: HashMap::new(),
             struct_templates: Vec::new(),
             struct_lookup_by_name: HashMap::new(),
@@ -1831,9 +1864,7 @@ impl GospelVMState {
         for global_index in 0..wrapped_container.globals.len() {
             let global_name = wrapped_container.strings.get(wrapped_container.globals[global_index].name)?;
             let initial_value = wrapped_container.globals[global_index].default_value;
-
-            let global_value = self.find_or_create_global(global_name, initial_value)?;
-            vm_container.global_lookup_by_id.insert(global_index, global_value);
+            self.global_storage.set_global_default_value(global_name, initial_value)?;
         }
         
         // Build struct templates for structs defined in the container
@@ -1866,89 +1897,13 @@ impl GospelVMState {
     pub fn enumerate_modules(&self) -> Vec<Rc<GospelVMContainer>> {
         self.containers.clone()
     }
-
-    /// Reads the current value of a global variable by name, returns None if variable does not exist or is not currently assigned
-    pub fn read_global_value(&self, name: &str) -> Option<i32> {
-        self.globals_by_name.get(name).and_then(|x| *x.current_value.borrow())
-    }
-
-    /// Assigns the value to the global variable by name. Defines a new global variable if it has not been defined yet
-    pub fn set_global_value(&mut self, name: &str, new_value: i32) -> anyhow::Result<()> {
-        let global_storage = self.find_or_create_global(name, None)?;
-        global_storage.current_value.replace(Some(new_value));
-        Ok({})
-    }
-
     /// Returns a container by name
     pub fn find_named_container(&self, name: &str) -> Option<Rc<GospelVMContainer>> {
         self.containers_by_name.get(name).map(|x| x.clone())
     }
-
-    /// Returns a value of the global variable by name if it is defined and has a value, or None otherwise
-    pub fn get_global_variable_value(&self, name: &str) -> Option<i32> {
-        self.globals_by_name.get(name).and_then(|global_storage| global_storage.current_value.borrow().clone())
-    }
-
     /// Attempts to find a function definition by its fully qualified name (container name combined with function name)
     /// Providing the container context allows resolving local function references as well
     pub fn find_function_by_reference(&self, reference: &GospelSourceObjectReference) -> Option<GospelVMClosure> {
         self.find_named_container(reference.module_name.as_str()).and_then(|container| container.find_named_function(reference.local_name.as_str()))
-    }
-
-    /// Allows evaluating a source value without building a container first (REPL-like API)
-    pub fn eval_source_value(&self, target_triplet: &TargetTriplet, value: &GospelSourceStaticValue) -> anyhow::Result<GospelVMValue> {
-        match value {
-            GospelSourceStaticValue::FunctionId(function_reference) => {
-                self.find_function_by_reference(&function_reference)
-                    .map(|function_pointer| GospelVMValue::Closure(function_pointer))
-                    .ok_or_else(|| anyhow!("Failed to find function by function reference {}", function_reference))
-            }
-            GospelSourceStaticValue::GlobalVariableValue(global_variable_name) => {
-                self.get_global_variable_value(global_variable_name.as_str())
-                    .map(|integer_value| GospelVMValue::Integer(integer_value))
-                    .ok_or_else(|| anyhow!("Global variable named {} is not defined or does not have a value assigned", global_variable_name))
-            }
-            GospelSourceStaticValue::Integer(integer_value) => {
-                Ok(GospelVMValue::Integer(*integer_value))
-            }
-            GospelSourceStaticValue::PlatformConfigProperty(config_property) => {
-                Ok(GospelVMValue::Integer(config_property.resolve(target_triplet)))
-            }
-        }
-    }
-
-    fn find_or_create_global(&mut self, name: &str, initial_value: Option<i32>) -> anyhow::Result<Rc<GospelGlobalStorage>> {
-        if let Some(existing_global) = self.globals_by_name.get(name) {
-            if let Some(unwrapped_initial_value) = initial_value {
-                let mut current_initial_value = existing_global.initial_value.borrow_mut();
-
-                // Validate that the initial value is the same as the provided one
-                if let Some(unwrapped_current_initial_value) = *current_initial_value {
-                    if unwrapped_current_initial_value != unwrapped_initial_value {
-                        bail!("Incompatible default values for global variable {}: current default value is {}, but new default value is {}",
-                            name.to_string(), unwrapped_current_initial_value, unwrapped_initial_value);
-                    }
-                } else {
-                    // Current initial value becomes the new initial value for this variable
-                    *current_initial_value = Some(unwrapped_initial_value);
-
-                    // If current value is not set, the new initial value takes over
-                    let mut current_value = existing_global.current_value.borrow_mut();
-                    if current_value.is_none() {
-                        *current_value = Some(unwrapped_initial_value);
-                    }
-                }
-            }
-            return Ok(existing_global.clone())
-        }
-
-        // Create a new global storage with initial value as the current value
-        let new_global = Rc::new(GospelGlobalStorage{
-            name: name.to_string(),
-            initial_value: RefCell::new(initial_value),
-            current_value: RefCell::new(initial_value),
-        });
-        self.globals_by_name.insert(name.to_string(), new_global.clone());
-        Ok(new_global)
     }
 }

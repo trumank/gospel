@@ -10,7 +10,7 @@ use clap::{Parser, ValueEnum};
 use gospel_typelib::type_model::{ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, TypeLayoutCache, TypeTree};
 use gospel_vm::module::{GospelContainer};
 use gospel_vm::reflection::{GospelContainerReflector, GospelModuleReflector};
-use gospel_vm::vm::{GospelVMContainer, GospelVMRunContext, GospelVMState, GospelVMValue};
+use gospel_vm::vm::{GospelVMContainer, GospelVMOptions, GospelVMRunContext, GospelVMState, GospelVMValue};
 use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter};
 use crate::assembler::GospelAssembler;
 use crate::ast::ExpressionValueType;
@@ -53,6 +53,9 @@ struct ActionCallFunction {
     /// Optional arguments to provide to the function
     #[arg(index = 2)]
     function_args: Vec<String>,
+    /// Global variable to set (must be int) e.g. VERSION=12 or SIZE=0x10
+    #[arg(long, short)]
+    global: Vec<GlobalVariable>,
     /// Output format for the type tree (if result is a type tree)
     #[arg(long, short = 'f')]
     output_format: Option<TypeTreeOutputFormat>,
@@ -291,15 +294,17 @@ fn do_action_call(action: ActionCallFunction) -> anyhow::Result<()> {
     // Assemble and evaluate function arguments
     let mut function_arguments: Vec<GospelVMValue> = Vec::new();
     for argument_string in &action.function_args {
-        let assembled_value = GospelAssembler::assemble_static_value("<repl>", argument_string.as_str(), None)
-            .map_err(|x| anyhow!("Failed to assemble argument value \"{}\": {}", argument_string.clone(), x.to_string()))?;
-        let evaluated_value = vm_state.eval_source_value(&target_triplet, &assembled_value)
-            .map_err(|x| anyhow!("Failed to eval argument value \"{}\": {}", argument_string.clone(), x.to_string()))?;
-        function_arguments.push(evaluated_value);
+        let parsed_value = i32::from_str(argument_string)
+            .map_err(|x| anyhow!("Failed to parse argument value as integer \"{}\": {}", argument_string.clone(), x.to_string()))?;
+        function_arguments.push(GospelVMValue::Integer(parsed_value));
     }
 
     // Evaluate the function
-    let mut execution_context = GospelVMRunContext::create(Some(target_triplet.clone()));
+    let mut vm_options = GospelVMOptions::default().target_triplet(target_triplet);
+    for global in action.global {
+        vm_options = vm_options.with_global(&global.name, global.value);
+    }
+    let mut execution_context = GospelVMRunContext::create(vm_options);
     let function_result = result_function_pointer.execute(function_arguments, &mut execution_context)
         .map_err(|x| anyhow!("Failed to execute function: {}", x.to_string()))?;
 
@@ -440,11 +445,11 @@ fn do_action_eval(action: ActionEvalExpression) -> anyhow::Result<()> {
     let compiled_expression = mounted_container.find_named_function(function_reference.local_name.as_str()).ok_or_else(|| anyhow!("Failed to find compiled expression function"))?;
 
     // Evaluate the function
-    let mut execution_context = GospelVMRunContext::create(Some(target_triplet.clone()));
-
+    let mut vm_options = GospelVMOptions::default().target_triplet(target_triplet);
     for global in action.global {
-        vm_state.set_global_value(&global.name, global.value)?;
+        vm_options = vm_options.with_global(&global.name, global.value);
     }
+    let mut execution_context = GospelVMRunContext::create(vm_options);
 
     let function_result = compiled_expression.execute(Vec::new(), &mut execution_context)
         .map_err(|x| anyhow!("Failed to eval expression: {}", x.to_string()))?;

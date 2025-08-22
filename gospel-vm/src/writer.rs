@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
 use crate::bytecode::{GospelInstruction, GospelOpcode};
 use crate::module::{GospelContainer, GospelContainerImport, GospelContainerVersion, GospelGlobalDefinition};
-use crate::gospel::{GospelExternalObjectReference, GospelPlatformConfigProperty, GospelSlotBinding, GospelSlotDefinition, GospelStaticValue, GospelFunctionArgument, GospelFunctionDefinition, GospelObjectIndex, GospelValueType, GospelStructDefinition, GospelFunctionDebugData, GospelStructFieldDefinition};
+use crate::gospel::{GospelExternalObjectReference, GospelFunctionArgument, GospelFunctionDefinition, GospelObjectIndex, GospelValueType, GospelStructDefinition, GospelFunctionDebugData, GospelStructFieldDefinition};
 
 /// Represents a reference to a function
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -15,29 +15,6 @@ pub struct GospelSourceObjectReference {
 impl Display for GospelSourceObjectReference {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.module_name, self.local_name)
-    }
-}
-
-/// Represents a static value
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum GospelSourceStaticValue {
-    /// signed integer literal
-    Integer(i32),
-    /// pointer to the function with the provided name
-    FunctionId(GospelSourceObjectReference),
-    /// value of the provided platform config property
-    PlatformConfigProperty(GospelPlatformConfigProperty),
-    /// value of a global variable with the specified name
-    GlobalVariableValue(String),
-}
-impl GospelSourceStaticValue {
-    pub fn value_type(&self) -> GospelValueType {
-        match self {
-            GospelSourceStaticValue::Integer(_) => GospelValueType::Integer,
-            GospelSourceStaticValue::FunctionId(_) => GospelValueType::Closure,
-            GospelSourceStaticValue::PlatformConfigProperty(_) => GospelValueType::Integer,
-            GospelSourceStaticValue::GlobalVariableValue(_) => GospelValueType::Integer,
-        }
     }
 }
 
@@ -56,23 +33,6 @@ pub struct GospelSourceStructDefinition {
     pub fields: Vec<GospelSourceStructField>,
 }
 
-/// Represents a value with which a slot is populated before type layout calculation occurs
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum GospelSourceSlotBinding {
-    /// slot is not initialized with a value, and must be written to before value can be read from it
-    #[default]
-    Uninitialized,
-    /// slot is initialized with the provided value
-    StaticValue(GospelSourceStaticValue),
-    /// slot is initialized with the value of the function argument at the given index
-    ArgumentValue(u32),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct GospelSourceSlotDefinition {
-    slot_type: GospelValueType,
-    slot_biding: GospelSourceSlotBinding,
-}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GospelSourceFunctionArgument {
     pub argument_type: GospelValueType,
@@ -131,12 +91,14 @@ pub struct GospelJumpLabelFixup {
 #[derive(Debug, Clone, Default)]
 pub struct GospelSourceFunctionDefinition {
     pub declaration: GospelSourceFunctionDeclaration,
-    slots: Vec<GospelSourceSlotDefinition>,
+    pub num_slots: u32,
     code: Vec<GospelInstruction>,
     referenced_strings: Vec<String>,
     referenced_structs: Vec<GospelSourceObjectReference>,
+    referenced_functions: Vec<GospelSourceObjectReference>,
     referenced_string_lookup: HashMap<String, u32>,
     referenced_structs_lookup: HashMap<GospelSourceObjectReference, u32>,
+    referenced_functions_lookup: HashMap<GospelSourceObjectReference, u32>,
     debug_instruction_line_numbers: Vec<i32>,
 }
 impl GospelSourceFunctionDefinition {
@@ -147,25 +109,9 @@ impl GospelSourceFunctionDefinition {
             ..GospelSourceFunctionDefinition::default()
         }
     }
-    pub fn add_slot(&mut self, value_type: GospelValueType, binding: GospelSourceSlotBinding) -> anyhow::Result<u32> {
-        if let GospelSourceSlotBinding::StaticValue(static_value) = &binding {
-            if static_value.value_type() != value_type {
-                bail!("Incompatible static value binding type for slot definition");
-            }
-        }
-        if let GospelSourceSlotBinding::ArgumentValue(argument_index) = &binding {
-            if *argument_index as usize >= self.declaration.arguments.len() {
-                bail!("Invalid argument index #{} out of bounds (number of function arguments: {})", argument_index, self.declaration.arguments.len());
-            }
-            if self.declaration.arguments[*argument_index as usize].argument_type != value_type {
-                bail!("Incompatible argument type at index #{} for slot definition", argument_index);
-            }
-        }
-        let new_slot_index = self.slots.len() as u32;
-        self.slots.push(GospelSourceSlotDefinition{
-            slot_type: value_type,
-            slot_biding: binding,
-        });
+    pub fn add_slot(&mut self) -> anyhow::Result<u32> {
+        let new_slot_index = self.num_slots;
+        self.num_slots += 1;
         Ok(new_slot_index)
     }
     /// Note that this function should generally not be used directly, but is public to make extensions easier
@@ -188,6 +134,16 @@ impl GospelSourceFunctionDefinition {
         self.referenced_structs_lookup.insert(struct_reference, new_struct_index);
         new_struct_index
     }
+    /// Note that this function should generally not be used directly, but is public to make extensions easier
+    pub fn add_function_reference_internal(&mut self, function_reference: GospelSourceObjectReference) -> u32 {
+        if let Some(existing_index) = self.referenced_functions_lookup.get(&function_reference) {
+            return *existing_index
+        }
+        let new_function_index = self.referenced_functions.len() as u32;
+        self.referenced_functions.push(function_reference.clone());
+        self.referenced_functions_lookup.insert(function_reference, new_function_index);
+        new_function_index
+    }
     /// Returns the number of instructions currently in the function body
     pub fn current_instruction_count(&self) -> u32 {
         self.code.len() as u32
@@ -203,13 +159,16 @@ impl GospelSourceFunctionDefinition {
         Ok(self.add_instruction_internal(GospelInstruction::create(instruction, &[])?, line_number))
     }
     pub fn add_slot_instruction(&mut self, opcode: GospelOpcode, slot_index: u32, line_number: i32) -> anyhow::Result<u32> {
-        if slot_index as usize >= self.slots.len() {
-            bail!("Invalid slot index #{} out of bounds (number of slots: {})", slot_index, self.slots.len());
+        if slot_index as usize >= self.num_slots as usize {
+            bail!("Invalid slot index #{} out of bounds (number of slots: {})", slot_index, self.num_slots);
         }
         if opcode != GospelOpcode::LoadSlot && opcode != GospelOpcode::StoreSlot && opcode != GospelOpcode::TakeSlot {
             bail!("Invalid opcode for slot instruction (LoadSlot, StoreSlot and TakeSlot are allowed)");
         }
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[slot_index])?, line_number))
+    }
+    pub fn add_load_argument_value_instruction(&mut self, argument_index: u32, line_number: i32) -> anyhow::Result<u32> {
+        Ok(self.add_instruction_internal(GospelInstruction::create(GospelOpcode::LoadArgumentValue, &[argument_index])?, line_number))
     }
     pub fn add_int_constant_instruction(&mut self, value: i32, line_number: i32) -> anyhow::Result<u32> {
         Ok(self.add_instruction_internal(GospelInstruction::create(GospelOpcode::IntConstant, &[value as u32])?, line_number))
@@ -237,8 +196,9 @@ impl GospelSourceFunctionDefinition {
         if opcode != GospelOpcode::TypeUDTAddField && opcode != GospelOpcode::TypeUDTAddField &&
             opcode != GospelOpcode::TypeUDTAddBitfield && opcode != GospelOpcode::TypeUDTHasField &&
             opcode != GospelOpcode::TypeUDTTypeofField && opcode != GospelOpcode::TypeUDTCalculateVirtualFunctionOffset &&
-            opcode != GospelOpcode::RaiseException && opcode != GospelOpcode::TypePrimitiveCreate {
-            bail!("Invalid opcode for named instruction (TypeUDTAllocate, TypeLayoutDoesMemberExist, TypeLayoutGetMemberOffset, TypeLayoutGetMemberSize, TypeLayoutGetMemberTypeLayout and Abort are allowed)");
+            opcode != GospelOpcode::RaiseException && opcode != GospelOpcode::TypePrimitiveCreate &&
+            opcode != GospelOpcode::LoadTargetProperty && opcode != GospelOpcode::LoadGlobalVariable {
+            bail!("Invalid opcode for named instruction (TypeUDTAllocate, TypeLayoutDoesMemberExist, TypeLayoutGetMemberOffset, TypeLayoutGetMemberSize, TypeLayoutGetMemberTypeLayout, RaiseException, LoadTargetProperty, LoadGlobalVariable are allowed)");
         }
         let string_index = self.add_string_reference_internal(string);
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[string_index])?, line_number))
@@ -273,6 +233,13 @@ impl GospelSourceFunctionDefinition {
         let member_name_index = self.add_string_reference_internal(field_name);
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[field_type_value, member_name_index])?, line_number))
     }
+    pub fn add_function_instruction(&mut self, opcode: GospelOpcode, function_reference: GospelSourceObjectReference, line_number: i32) -> anyhow::Result<u32> {
+        if opcode != GospelOpcode::LoadFunctionClosure {
+            bail!("Invalid opcode for typed member access instruction (only LoadFunctionClosure is allowed)");
+        }
+        let function_index = self.add_function_reference_internal(function_reference);
+        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[function_index])?, line_number))
+    }
     pub fn add_variadic_instruction(&mut self, opcode: GospelOpcode, argument_count: u32, line_number: i32) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::Call && opcode != GospelOpcode::BindClosure && opcode != GospelOpcode::TypeFunctionCreateMember && opcode != GospelOpcode::TypeFunctionCreateGlobal {
             bail!("Invalid opcode for variadic instruction (only Call, BindClosure, PCall and TypeFunctionCreateMember/Global are allowed)");
@@ -291,7 +258,7 @@ impl GospelSourceFunctionDefinition {
 /// Generic sink for building gospel modules (into containers or reference containers)
 pub trait GospelModuleVisitor : Debug {
     fn module_name(&self) -> Option<String>;
-    fn define_global(&mut self, name: &str, default_value: Option<i32>) -> anyhow::Result<()>;
+    fn define_global(&mut self, name: &str, default_value: i32) -> anyhow::Result<()>;
     fn declare_function(&mut self, source: GospelSourceFunctionDeclaration) -> anyhow::Result<()>;
     fn define_function(&mut self, source: GospelSourceFunctionDefinition) -> anyhow::Result<()>;
     fn define_struct(&mut self, source: GospelSourceStructDefinition) -> anyhow::Result<()>;
@@ -333,43 +300,6 @@ impl GospelContainerWriter {
         let new_index = self.container.strings.store(string.to_string());
         self.string_lookup.insert(string.to_string(), new_index);
         new_index
-    }
-    fn convert_slot_binding(&mut self, value_type: GospelValueType, source: &GospelSourceSlotBinding) -> anyhow::Result<GospelSlotDefinition> {
-        match source {
-            GospelSourceSlotBinding::Uninitialized => {
-                Ok(GospelSlotDefinition{
-                    value_type, binding: GospelSlotBinding::Uninitialized,
-                })
-            },
-            GospelSourceSlotBinding::StaticValue(source_value) => {
-                let static_value = self.convert_static_value(source_value)?;
-                Ok(GospelSlotDefinition{
-                    value_type, binding: GospelSlotBinding::StaticValue(static_value),
-                })
-            },
-            GospelSourceSlotBinding::ArgumentValue(argument_index) => {
-                Ok(GospelSlotDefinition{
-                    value_type, binding: GospelSlotBinding::ArgumentValue(*argument_index),
-                })
-            }
-        }
-    }
-    fn find_or_define_global(&mut self, name: &str, default_value: Option<i32>) -> anyhow::Result<u32> {
-        if let Some(existing_global_index) = self.globals_lookup.get(name) {
-            let existing_global = &mut self.container.globals[*existing_global_index as usize];
-            if existing_global.default_value.is_none() {
-                existing_global.default_value = default_value
-            } else if default_value.is_some() && existing_global.default_value != default_value {
-                bail!("Multiple global definition for global {} using different default value (previously set to {}, now defined as {})",
-                    name.to_string(), existing_global.default_value.unwrap(), default_value.unwrap());
-            }
-            return Ok(*existing_global_index)
-        }
-        let new_global_index = self.container.globals.len() as u32;
-        let name_index = self.store_string(name);
-        self.container.globals.push(GospelGlobalDefinition{ name: name_index, default_value });
-        self.globals_lookup.insert(name.to_string(), new_global_index);
-        Ok(new_global_index)
     }
     fn find_or_define_container_import(&mut self, container_name: &str) -> u32 {
         if let Some(existing_container_index) = self.container_lookup.get(container_name) {
@@ -414,23 +344,6 @@ impl GospelContainerWriter {
             Ok(GospelObjectIndex::External(self.find_or_define_external_function(source.module_name.as_str(), source.local_name.as_str())))
         }
     }
-    fn convert_static_value(&mut self, source: &GospelSourceStaticValue) -> anyhow::Result<GospelStaticValue> {
-        match source {
-            GospelSourceStaticValue::Integer(integer_value) => {
-                Ok(GospelStaticValue::Integer(*integer_value))
-            }
-            GospelSourceStaticValue::FunctionId(type_reference) => {
-                Ok(GospelStaticValue::FunctionIndex(self.convert_function_reference(type_reference)?))
-            }
-            GospelSourceStaticValue::PlatformConfigProperty(property) => {
-                Ok(GospelStaticValue::PlatformConfigProperty(*property))
-            },
-            GospelSourceStaticValue::GlobalVariableValue(global_variable_name) => {
-                let global_variable_index = self.find_or_define_global(global_variable_name.as_str(), None)?;
-                Ok(GospelStaticValue::GlobalVariableValue(global_variable_index))
-            }
-        }
-    }
     fn find_locally_defined_struct_index(&self, struct_name: &str) -> anyhow::Result<GospelObjectIndex> {
         self.struct_lookup.get(struct_name).map(|struct_index| {
             GospelObjectIndex::Local(*struct_index)
@@ -464,8 +377,21 @@ impl GospelModuleVisitor for GospelContainerWriter {
     fn module_name(&self) -> Option<String> {
         Some(self.container_name.clone())
     }
-    fn define_global(&mut self, name: &str, value: Option<i32>) -> anyhow::Result<()> {
-        self.find_or_define_global(name, value).map(|_| {})
+    fn define_global(&mut self, name: &str, value: i32) -> anyhow::Result<()> {
+        if let Some(existing_global_index) = self.globals_lookup.get(name) {
+            let existing_global = &mut self.container.globals[*existing_global_index as usize];
+            if existing_global.default_value != value {
+                bail!("Multiple global definition for global {} using different default value (previously set to {}, now defined as {})",
+                    name.to_string(), existing_global.default_value, value);
+            }
+            Ok({})
+        } else {
+            let new_global_index = self.container.globals.len() as u32;
+            let name_index = self.store_string(name);
+            self.container.globals.push(GospelGlobalDefinition{ name: name_index, default_value: value });
+            self.globals_lookup.insert(name.to_string(), new_global_index);
+            Ok({})
+        }
     }
     fn declare_function(&mut self, source: GospelSourceFunctionDeclaration) -> anyhow::Result<()> {
         if source.function_name.module_name != self.container_name {
@@ -491,13 +417,15 @@ impl GospelModuleVisitor for GospelContainerWriter {
             }
             let function_name = self.store_string(source.function_name.local_name.as_str());
 
-            let placeholder_function_definition = GospelFunctionDefinition {
-                name: function_name, arguments, slots: Vec::new(),
+            let placeholder_function_definition = GospelFunctionDefinition{
+                name: function_name, arguments,
+                num_slots: 0,
                 exported: source.exported,
                 return_value_type: source.return_value_type.unwrap(),
                 code: Vec::new(),
                 referenced_strings: Vec::new(),
                 referenced_structs: Vec::new(),
+                referenced_functions: Vec::new(),
                 debug_data: None,
             };
             let function_index = self.container.functions.len() as u32;
@@ -524,16 +452,14 @@ impl GospelModuleVisitor for GospelContainerWriter {
             })
         }
 
-        let mut slots: Vec<GospelSlotDefinition> = Vec::with_capacity(source.slots.len());
-        for slot in &source.slots {
-            let slot_definition = self.convert_slot_binding(slot.slot_type, &slot.slot_biding)?;
-            slots.push(slot_definition);
-        }
         let referenced_strings: Vec<u32> = source.referenced_strings.iter().map(|x| {
             self.store_string(x.as_str())
         }).collect();
         let referenced_structs = source.referenced_structs.iter()
             .map(|x| self.convert_struct_reference(x))
+            .collect::<anyhow::Result<Vec<GospelObjectIndex>>>()?;
+        let referenced_functions = source.referenced_functions.iter()
+            .map(|x| self.convert_function_reference(x))
             .collect::<anyhow::Result<Vec<GospelObjectIndex>>>()?;
 
         let function_name = self.store_string(source.declaration.function_name.local_name.as_str());
@@ -543,12 +469,14 @@ impl GospelModuleVisitor for GospelContainerWriter {
         };
 
         let result_function_definition = GospelFunctionDefinition {
-            name: function_name, arguments, slots,
+            name: function_name, arguments,
             exported: source.declaration.exported,
             return_value_type: source.declaration.return_value_type.unwrap(),
+            num_slots: source.num_slots,
             code: source.code,
             referenced_strings,
             referenced_structs,
+            referenced_functions,
             debug_data: Some(debug_data),
         };
 

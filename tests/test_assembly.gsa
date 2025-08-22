@@ -1,34 +1,31 @@
 global test_global = 5;
-extern global external_global;
 
-constant assembly_version = 1;
-
-function InvokerType invoke: Closure -> TypeReference {
-    LoadSlot invoke;
+function InvokerType invoke: Closure -> TypeReference max_slots 0 {
+    LoadArgumentValue invoke;
     Call 0;
     SetReturnValue;
 };
 
-function ClosureCallFunction first: Integer second: Integer -> Integer {
-    LoadSlot first;
-    LoadSlot second;
+function ClosureCallFunction first: Integer second: Integer -> Integer max_slots 0 {
+    LoadArgumentValue first;
+    LoadArgumentValue second;
     Add;
     SetReturnValue;
 };
 
-function ClosureTest -> Integer {
-    LoadSlot &function ClosureCallFunction;
+function ClosureTest -> Integer max_slots 1 {
+    LoadFunctionClosure function ClosureCallFunction;
     IntConstant 5;
     BindClosure 1;
 A:  Slot Closure;
-    StoreSlot A;
+    StoreSlot 0;
     IntConstant 7;
-    LoadSlot A;
+    LoadSlot 0;
     Call 1;
     SetReturnValue;
 };
 
-function ArrayTest -> Array {
+function ArrayTest -> Array max_slots 0 {
     ArrayAllocate;
     IntConstant 3;
     ArrayReserve;
@@ -49,7 +46,7 @@ function ArrayTest -> Array {
     SetReturnValue;
 };
 
-function AbortTest -> Integer {
+function AbortTest -> Integer max_slots 0 {
     RaiseException "abort test";
 };
 
@@ -59,11 +56,11 @@ structure TestStruct {
     Integer;
 };
 
-hidden structure LocalStruct {
+structure LocalStruct {
     Integer;
 };
 
-function StructTest -> Struct {
+function StructTest -> Struct max_slots 1 {
     StructAllocate TestStruct;
     IntConstant 15;
     StructSetLocalField TestStruct 0;
@@ -72,28 +69,27 @@ function StructTest -> Struct {
     Dup;
     Dup;
     StructGetLocalField TestStruct 1;
-A:  Slot Integer;
-    StoreSlot A;
+    StoreSlot 0;
     StructGetNamedField TestStruct "named_field";
-    LoadSlot A;
+    LoadSlot 0;
     Mul;
     StructSetLocalField TestStruct 2;
     SetReturnValue;
 };
 
-function LocalStructTest -> Struct {
+function LocalStructTest -> Struct max_slots 0 {
     StructAllocate structure LocalStruct;
     IntConstant 20;
     StructSetLocalField structure LocalStruct 0;
     SetReturnValue;
 };
 
-function ExceptionHandlerTest value: Integer -> Integer {
+function ExceptionHandlerTest value: Integer -> Integer max_slots 0 {
     IntConstant 5;
     PushExceptionHandler A;
     Pop;
     IntConstant 2;
-    LoadSlot value;
+    LoadArgumentValue value;
     IntConstant 1;
     Sub;
     Ez;

@@ -261,7 +261,6 @@ name = "gospel-compiler"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bitflags",
  "clap",
  "fancy-regex",
  "gospel-typelib",
@@ -299,7 +298,6 @@ dependencies = [
  "anyhow",
  "bitcode",
  "gospel-typelib",
- "itertools",
  "serde",
  "strum",
 ]

@@ -70,11 +70,19 @@ pub enum GospelOpcode {
     Branchz = 0x41, // <imm>; [pop stack] ->
     // Data storage opcodes
     #[strum(props(immediate_count = "1", stack_out_count = "1"))]
+    LoadArgumentValue = 0x50, // <imm>; -> [push stack]
+    #[strum(props(immediate_count = "1", stack_out_count = "1"))]
     LoadSlot = 0x51, // <imm>; -> [push stack]
     #[strum(props(immediate_count = "1", stack_in_count = "1"))]
     StoreSlot = 0x52, // <imm>; [pop stack] ->
     #[strum(props(immediate_count = "1", stack_out_count = "1"))]
     TakeSlot = 0x53, // <imm>; -> [push stack]
+    #[strum(props(immediate_count = "1", stack_out_count = "1"))]
+    LoadTargetProperty = 0x54, // <imm>; -> [push stack]
+    #[strum(props(immediate_count = "1", stack_out_count = "1"))]
+    LoadGlobalVariable = 0x55, // <imm>; -> [push stack]
+    #[strum(props(immediate_count = "1", stack_out_count = "1"))]
+    LoadFunctionClosure = 0x56, // <imm>; -> [push stack]
     // Type access opcodes
     #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
     TypeIsSameType = 0x60, // ; [pop stack] [pop stack] -> [push stack]

@@ -10,8 +10,8 @@ use crate::ast::{CVQualifiedExpression, FunctionParameterDeclaration, MemberFunc
 use gospel_typelib::type_model::UserDefinedTypeKind;
 use gospel_vm::bytecode::GospelOpcode;
 use gospel_vm::module::GospelContainer;
-use gospel_vm::gospel::{GospelPlatformConfigProperty, GospelValueType};
-use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter, GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceObjectReference, GospelSourceSlotBinding, GospelSourceStaticValue, GospelSourceStructDefinition, GospelSourceStructField};
+use gospel_vm::gospel::{GospelTargetProperty, GospelValueType};
+use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter, GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceObjectReference, GospelSourceStructDefinition, GospelSourceStructField};
 use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayTypeExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, BuiltinIdentifierExpression, BuiltinIdentifier, DeclarationAccessSpecifier, PrimitiveTypeExpression, ExpressionWithCondition};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -152,7 +152,6 @@ struct CompilerFunctionBuilder {
     function_signature: CompilerFunctionSignature,
     function_definition: GospelSourceFunctionDefinition,
     argument_source_declarations: Vec<Rc<CompilerLexicalDeclaration>>,
-    constant_slot_lookup: HashMap<(GospelValueType, GospelSourceSlotBinding), u32>,
     inline_struct_counter: usize,
 }
 impl CompilerFunctionBuilder {
@@ -206,7 +205,6 @@ impl CompilerFunctionBuilder {
             function_signature: function_signature.clone(),
             function_definition: GospelSourceFunctionDefinition::create(function_declaration),
             argument_source_declarations,
-            constant_slot_lookup: HashMap::new(),
             inline_struct_counter: 0,
         })
     }
@@ -228,13 +226,12 @@ impl CompilerFunctionBuilder {
     }
     fn compile_builtin_identifier_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &BuiltinIdentifierExpression) -> CompilerResult<ExpressionValueType> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
-        let static_value = match expression.identifier {
-            BuiltinIdentifier::AddressSize => GospelSourceStaticValue::PlatformConfigProperty(GospelPlatformConfigProperty::AddressSize),
-            BuiltinIdentifier::TargetPlatform => GospelSourceStaticValue::PlatformConfigProperty(GospelPlatformConfigProperty::TargetOS),
-            BuiltinIdentifier::TargetArch => GospelSourceStaticValue::PlatformConfigProperty(GospelPlatformConfigProperty::TargetArch),
+        let target_property = match expression.identifier {
+            BuiltinIdentifier::AddressSize => GospelTargetProperty::AddressSize,
+            BuiltinIdentifier::TargetPlatform => GospelTargetProperty::TargetOS,
+            BuiltinIdentifier::TargetArch => GospelTargetProperty::TargetArch,
         };
-        let constant_slot_index = self.find_or_define_constant_slot(GospelValueType::Integer, GospelSourceSlotBinding::StaticValue(static_value), &source_context)?;
-        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, constant_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        self.function_definition.add_string_instruction(GospelOpcode::LoadTargetProperty, target_property.to_string().as_str(), Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         Ok(ExpressionValueType::Int)
     }
     fn compile_primitive_type_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &PrimitiveTypeExpression) -> CompilerResult<ExpressionValueType> {
@@ -580,14 +577,6 @@ impl CompilerFunctionBuilder {
             }
         }
     }
-    fn find_or_define_constant_slot(&mut self, slot_type: GospelValueType, binding: GospelSourceSlotBinding, source_context: &CompilerSourceContext) -> CompilerResult<u32> {
-        if let Some(existing_slot_index) = self.constant_slot_lookup.get(&(slot_type, binding.clone())) {
-            return Ok(*existing_slot_index);
-        }
-        let new_slot_index = self.function_definition.add_slot(slot_type, binding.clone()).with_source_context(source_context)?;
-        self.constant_slot_lookup.insert((slot_type, binding.clone()), new_slot_index);
-        Ok(new_slot_index)
-    }
     fn compile_argument_value(&mut self, source_context: &CompilerSourceContext, argument_declaration: &Rc<CompilerLexicalDeclaration>, argument_type: ExpressionValueType) -> CompilerResult<ExpressionValueType> {
         let argument_index = self.argument_source_declarations.iter()
             .enumerate()
@@ -595,10 +584,7 @@ impl CompilerFunctionBuilder {
             .map(|(parameter_index, _)| parameter_index)
             .ok_or_else(|| compiler_error!(source_context, "Could not find function argument for parameter {}", argument_declaration.name))?;
 
-        let slot_binding = GospelSourceSlotBinding::ArgumentValue(argument_index as u32);
-        let slot_index = self.find_or_define_constant_slot(CompilerInstance::convert_value_type(argument_type), slot_binding, source_context)?;
-
-        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, slot_index, Self::get_line_number(source_context)).with_source_context(source_context)?;
+        self.function_definition.add_load_argument_value_instruction(argument_index as u32, Self::get_line_number(source_context)).with_source_context(source_context)?;
         Ok(argument_type)
     }
     fn compile_lexical_declaration_access(&mut self, source_context: &CompilerSourceContext, declaration: &Rc<CompilerLexicalDeclaration>) -> CompilerResult<ExpressionValueType> {
@@ -617,20 +603,15 @@ impl CompilerFunctionBuilder {
                 self.compile_argument_value(source_context, &declaration, parameter_type.clone())
             }
             CompilerLexicalDeclarationClass::GlobalData((global_variable_expression_type, global_variable_name)) => {
-                let slot_binding = GospelSourceSlotBinding::StaticValue(GospelSourceStaticValue::GlobalVariableValue(global_variable_name.clone()));
-                let slot_index = self.find_or_define_constant_slot(CompilerInstance::convert_value_type(*global_variable_expression_type), slot_binding, source_context)?;
-
-                self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, slot_index, Self::get_line_number(source_context)).with_source_context(source_context)?;
+                self.function_definition.add_string_instruction(GospelOpcode::LoadGlobalVariable, &global_variable_name, Self::get_line_number(source_context)).with_source_context(source_context)?;
                 Ok(*global_variable_expression_type)
             }
             _ => Err(compiler_error!(source_context, "Declaration {} does not name a local or global variable or template parameter", declaration.name))
         }
     }
     fn load_function_and_implicit_arguments(&mut self, scope: &Rc<CompilerLexicalScope>, function: &CompilerFunctionReference, source_context: &CompilerSourceContext) -> CompilerResult<usize> {
-        // Load the function object from the constant slot
-        let function_slot_binding = GospelSourceSlotBinding::StaticValue(GospelSourceStaticValue::FunctionId(function.function.clone()));
-        let function_slot_index = self.find_or_define_constant_slot(GospelValueType::Closure, function_slot_binding, source_context)?;
-        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, function_slot_index, Self::get_line_number(source_context)).with_source_context(source_context)?;
+        // Load the function closure for the function in question
+        self.function_definition.add_function_instruction(GospelOpcode::LoadFunctionClosure, function.function.clone(), Self::get_line_number(source_context)).with_source_context(source_context)?;
 
         // Implicit parameters precede any explicit parameters
         for weak_implicit_parameter in &function.signature.implicit_parameters {
@@ -783,7 +764,7 @@ impl CompilerFunctionBuilder {
     fn compile_declaration_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &DeclarationStatement) -> CompilerResult<()> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
 
-        let slot_index = self.function_definition.add_slot(CompilerInstance::convert_value_type(statement.value_type), GospelSourceSlotBinding::Uninitialized).with_source_context(&source_context)?;
+        let slot_index = self.function_definition.add_slot().with_source_context(&source_context)?;
         let local_variable = CompilerLocalVariableDeclaration {value_slot: slot_index, variable_type: statement.value_type};
         scope.declare(statement.name.as_str(), CompilerLexicalDeclarationClass::LocalVariable(local_variable), DeclarationVisibility::Private, &statement.source_context)?;
 
@@ -899,7 +880,7 @@ impl CompilerFunctionBuilder {
     }
     fn compile_type_layout_initialization(&mut self, type_name: &str, type_kind: UserDefinedTypeKind) -> CompilerResult<u32> {
         let source_context = self.function_scope.source_context.clone();
-        let slot_index = self.function_definition.add_slot(GospelValueType::TypeReference, GospelSourceSlotBinding::Uninitialized).with_source_context(&source_context)?;
+        let slot_index = self.function_definition.add_slot().with_source_context(&source_context)?;
 
         self.function_definition.add_double_string_instruction(GospelOpcode::TypeUDTAllocate, type_name, type_kind.to_string().as_str(), Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
@@ -910,7 +891,7 @@ impl CompilerFunctionBuilder {
     }
     fn compile_type_layout_metadata_struct_initialization(&mut self, struct_meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<u32> {
         let source_context = self.function_scope.source_context.clone();
-        let slot_index = self.function_definition.add_slot(GospelValueType::Struct, GospelSourceSlotBinding::Uninitialized).with_source_context(&source_context)?;
+        let slot_index = self.function_definition.add_slot().with_source_context(&source_context)?;
 
         self.function_definition.add_struct_instruction(GospelOpcode::StructAllocate, struct_meta_layout.reference.clone(), Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
@@ -1522,13 +1503,13 @@ impl CompilerInstance {
             compiler_bail!(&source_context, "Global data can only be of Int type, attempting to declare global data {} as {}", name.as_str(), statement.value_type);
         }
         scope.declare(&name, CompilerLexicalDeclarationClass::GlobalData((statement.value_type, name.clone())), DeclarationVisibility::Public, &source_context.line_context)?;
-        let default_value = if let Some(default_value_expression) = &statement.default_value {
+        let maybe_default_value = if let Some(default_value_expression) = &statement.default_value {
             if let Expression::IntegerConstantExpression(int_constant_expr) = default_value_expression {
                 Some(int_constant_expr.constant_value)
             } else { compiler_bail!(&source_context, "Global data can only be initialized with an integer constant expression (for time being)"); }
         } else { None };
-        if let Some(module_codegen_data) = scope.module_codegen() {
-            module_codegen_data.visitor.borrow_mut().define_global(name.as_str(), default_value).with_source_context(&source_context)?;
+        if let Some(module_codegen_data) = scope.module_codegen() && let Some(global_value) = maybe_default_value {
+            module_codegen_data.visitor.borrow_mut().define_global(name.as_str(), global_value).with_source_context(&source_context)?;
         }
         Ok({})
     }
