@@ -114,6 +114,7 @@ struct GospelVMTypeWrapper {
     vm_metadata: Option<GospelVMStruct>,
     owner_stack_frame_token: usize,
     size_has_been_validated: bool,
+    partial_type: bool,
 }
 
 /// Run context allows caching results of function invocations and creating type graphs from individual types
@@ -150,23 +151,26 @@ impl GospelVMRunContext {
         } else {
             let new_type_index = self.types.len();
             // Simple types cannot have VM metadata assigned to them
-            self.types.push(GospelVMTypeWrapper{wrapped_type: type_data.clone(), vm_metadata: None, owner_stack_frame_token: 0, size_has_been_validated: false});
+            self.types.push(GospelVMTypeWrapper{wrapped_type: type_data.clone(), vm_metadata: None, owner_stack_frame_token: 0, size_has_been_validated: false, partial_type: false});
             self.simple_type_lookup.insert(type_data, new_type_index);
             new_type_index
         }
     }
     fn store_user_defined_type(&mut self, type_data: UserDefinedType, stack_frame_token: usize) -> usize {
         let new_type_index = self.types.len();
-        self.types.push(GospelVMTypeWrapper{wrapped_type: Type::UDT(type_data), vm_metadata: None, owner_stack_frame_token: stack_frame_token, size_has_been_validated: false});
+        self.types.push(GospelVMTypeWrapper{wrapped_type: Type::UDT(type_data), vm_metadata: None, owner_stack_frame_token: stack_frame_token, size_has_been_validated: false, partial_type: false});
         new_type_index
     }
-    fn validate_type_size_known(&mut self, type_index: usize, source_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<()> {
+    fn validate_type_not_partial(&mut self, type_index: usize, source_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<()> {
         let mut type_size_calculation_stack: Vec<usize> = Vec::new();
-        self.validate_type_size_known_internal(type_index, source_frame, &mut type_size_calculation_stack)
+        if self.validate_type_internal(type_index, source_frame, &mut type_size_calculation_stack)? {
+            return Err(vm_error!(source_frame, "Type at index #{} is a partial type", type_index));
+        }
+        Ok({})
     }
-    fn validate_type_size_known_internal(&mut self, type_index: usize, source_frame: Option<&GospelVMExecutionState>, type_size_calculation_stack: &mut Vec<usize>) -> GospelVMResult<()> {
+    fn validate_type_internal(&mut self, type_index: usize, source_frame: Option<&GospelVMExecutionState>, type_size_calculation_stack: &mut Vec<usize>) -> GospelVMResult<bool> {
         if self.types[type_index].size_has_been_validated {
-            return Ok({})
+            return Ok(self.types[type_index].partial_type)
         }
         if self.types[type_index].owner_stack_frame_token != 0 {
             return Err(vm_error!(source_frame, "Type at index #{} has been declared but has not been defined yet", type_index))
@@ -176,41 +180,47 @@ impl GospelVMRunContext {
         }
         type_size_calculation_stack.push(type_index);
 
+        let mut is_partial_type = self.types[type_index].partial_type;
         let cloned_type = self.types[type_index].wrapped_type.clone();
         match cloned_type {
-            Type::Primitive(primitive_type) => {
-                if primitive_type == PrimitiveType::Void {
-                    // size of primitive types is always known, except for void, which is sizeless
-                    vm_bail!(source_frame, "void type does not have a size (did you mean to wrap it in a pointer type?)");
-                }
+            Type::Array(array_type) => {
+                is_partial_type |= self.validate_type_internal(array_type.element_type_index, source_frame, type_size_calculation_stack)?; 
             }
-            Type::Pointer(_) => {} // pointee type does not influence the size of the pointer
-            Type::Function(_) => { vm_bail!(source_frame, "Function Type does not have a size (did you mean to wrap it in a pointer type?)"); }, // functions do not have a size
-            Type::Array(array_type) => { self.validate_type_size_known_internal(array_type.element_type_index, source_frame, type_size_calculation_stack)?; }
-            Type::CVQualified(cv_qualified_type) => { self.validate_type_size_known_internal(cv_qualified_type.base_type_index, source_frame, type_size_calculation_stack)?; }
+            Type::CVQualified(cv_qualified_type) => {
+                is_partial_type |= self.validate_type_internal(cv_qualified_type.base_type_index, source_frame, type_size_calculation_stack)?; 
+            }
             Type::UDT(user_defined_type) => {
-                // size of user defined type is known if sizes of its base classes are known and sizes of its field types are known
                 for base_class_index in &user_defined_type.base_class_indices {
-                    self.validate_type_size_known_internal(*base_class_index, source_frame, type_size_calculation_stack)?;
+                    is_partial_type |= self.validate_type_internal(*base_class_index, source_frame, type_size_calculation_stack)?;
                 }
                 for member in &user_defined_type.members {
-                    match member {
-                        UserDefinedTypeMember::Field(field) => { self.validate_type_size_known_internal(field.member_type_index, source_frame, type_size_calculation_stack)?; }
-                        UserDefinedTypeMember::Bitfield(_) => {} // bitfields have a known size because they consist of primitive types
-                        UserDefinedTypeMember::VirtualFunction(_) => {} // virtual functions have no size, so there is no need to check their type
-                    };
+                    if let UserDefinedTypeMember::Field(field) = member {
+                        is_partial_type |= self.validate_type_internal(field.member_type_index, source_frame, type_size_calculation_stack)?;
+                    }
                 }
             }
+            _ => {}
         };
         type_size_calculation_stack.pop();
         self.types[type_index].size_has_been_validated = true;
-        Ok({})
+        self.types[type_index].partial_type = is_partial_type;
+
+        // If this is a partial UDT type, add member of void type to prevent layout of this type from being ever calculated, even by external code
+        if is_partial_type {
+            let void_type_index = self.store_type(Type::Primitive(PrimitiveType::Void));
+            if let Type::UDT(user_defined_type) = &mut self.types[type_index].wrapped_type {
+                user_defined_type.members.push(UserDefinedTypeMember::Field(UserDefinedTypeField{
+                    name: Some(String::from("@__gospel_partial_type_marker")), user_alignment: None, member_type_index: void_type_index,
+                }));
+            }
+        }
+        Ok(is_partial_type)
     }
-    fn validate_sizes_for_all_types(&mut self) -> GospelVMResult<()> {
+    fn check_all_types_validated(&mut self) -> GospelVMResult<()> {
         for type_index in 0..self.types.len() {
-            // Only UDTs need to be validated, other types are automatically considered valid
-            if !self.types[type_index].size_has_been_validated && matches!(self.types[type_index].wrapped_type, Type::UDT(_)) {
-                self.validate_type_size_known(type_index, None)?;
+            if !self.types[type_index].size_has_been_validated {
+                let mut type_size_calculation_stack: Vec<usize> = Vec::new();
+                self.validate_type_internal(type_index, None, &mut type_size_calculation_stack)?;
             }
         }
         Ok({})
@@ -279,7 +289,7 @@ impl GospelVMClosure {
     /// Attempts to execute this closure and returns the result
     pub fn execute(&self, args: Vec<GospelVMValue>, run_context: &mut GospelVMRunContext) -> GospelVMResult<GospelVMValue> {
         let execution_result = self.execute_internal(args, run_context, None)?;
-        run_context.validate_sizes_for_all_types()?; // user code outside the VM should never see types with invalid sizes
+        run_context.check_all_types_validated()?; // user code outside the VM should never see types with invalid sizes
         Ok(execution_result)
     }
     fn execute_internal(&self, args: Vec<GospelVMValue>, run_context: &mut GospelVMRunContext, previous_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<GospelVMValue> {
@@ -1138,6 +1148,13 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     run_context.types[type_index].vm_metadata = Some(metadata_struct);
                 }
+                GospelOpcode::TypeUDTMarkPartial => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_udt_type_not_finalized(type_index, run_context)?;
+
+                    run_context.types[type_index].partial_type = true;
+                }
                 GospelOpcode::TypeUDTFinalize => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
@@ -1228,7 +1245,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    run_context.validate_type_size_known(type_index, Some(state))?;
+                    run_context.validate_type_not_partial(type_index, Some(state))?;
 
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
                         if base_type_index == type_index || user_defined_type.is_child_of(base_type_index, run_context) { 1 } else { 0 }
@@ -1243,7 +1260,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    run_context.validate_type_size_known(type_index, Some(state))?;
+                    run_context.validate_type_not_partial(type_index, Some(state))?;
 
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
                         let found_field = user_defined_type.find_map_member_by_name(&field_name, &|x| if matches!(x, UserDefinedTypeMember::Field(_)) { Some(x.clone()) } else { None }, run_context);
@@ -1259,7 +1276,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    run_context.validate_type_size_known(type_index, Some(state))?;
+                    run_context.validate_type_not_partial(type_index, Some(state))?;
 
                     let result_type_index = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
                         user_defined_type.find_map_member_by_name(&field_name, &|x| if let UserDefinedTypeMember::Field(field) = x { Some(field.member_type_index) } else { None }, run_context)
@@ -1272,7 +1289,7 @@ impl<'a> GospelVMExecutionState<'a> {
                 GospelOpcode::TypeUDTGetMetadata => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    run_context.validate_type_size_known(type_index, Some(state))?;
+                    run_context.validate_type_not_partial(type_index, Some(state))?;
 
                     let metadata_struct = run_context.types[type_index].vm_metadata.clone()
                         .ok_or_else(|| vm_error!(Some(&state), "Type layout metadata not set on type layout"))?;
@@ -1338,7 +1355,7 @@ impl<'a> GospelVMExecutionState<'a> {
                 // Type layout calculation opcodes
                 GospelOpcode::TypeCalculateSize => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
-                    run_context.validate_type_size_known(type_index, Some(state))?;
+                    run_context.validate_type_not_partial(type_index, Some(state))?;
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let result = run_context.type_by_index(type_index).size_and_alignment(run_context, &mut new_type_cache)
@@ -1347,7 +1364,7 @@ impl<'a> GospelVMExecutionState<'a> {
                 }
                 GospelOpcode::TypeCalculateAlignment => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
-                    run_context.validate_type_size_known(type_index, Some(state))?;
+                    run_context.validate_type_not_partial(type_index, Some(state))?;
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let result = run_context.type_by_index(type_index).size_and_alignment(run_context, &mut new_type_cache)
@@ -1357,7 +1374,7 @@ impl<'a> GospelVMExecutionState<'a> {
                 GospelOpcode::TypeUDTCalculateUnalignedSize => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    run_context.validate_type_size_known(type_index, Some(state))?;
+                    run_context.validate_type_not_partial(type_index, Some(state))?;
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
@@ -1371,7 +1388,7 @@ impl<'a> GospelVMExecutionState<'a> {
                 GospelOpcode::TypeUDTHasVTable => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    run_context.validate_type_size_known(type_index, Some(state))?;
+                    run_context.validate_type_not_partial(type_index, Some(state))?;
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
@@ -1385,7 +1402,7 @@ impl<'a> GospelVMExecutionState<'a> {
                 GospelOpcode::TypeUDTCalculateVTableSizeAndOffset => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    run_context.validate_type_size_known(type_index, Some(state))?;
+                    run_context.validate_type_not_partial(type_index, Some(state))?;
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let vtable = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
@@ -1405,7 +1422,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    run_context.validate_type_size_known(type_index, Some(state))?;
+                    run_context.validate_type_not_partial(type_index, Some(state))?;
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
@@ -1423,7 +1440,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    run_context.validate_type_size_known(type_index, Some(state))?;
+                    run_context.validate_type_not_partial(type_index, Some(state))?;
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let (vtable_offset, function_offset) = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
@@ -1446,7 +1463,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    run_context.validate_type_size_known(type_index, Some(state))?;
+                    run_context.validate_type_not_partial(type_index, Some(state))?;
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let field_offset = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
@@ -1468,7 +1485,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    run_context.validate_type_size_known(type_index, Some(state))?;
+                    run_context.validate_type_not_partial(type_index, Some(state))?;
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let (field_offset, field_bit_offset, field_bit_width) = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {

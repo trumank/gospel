@@ -199,8 +199,14 @@ fn print_full_type_tree(type_tree: &TypeTree, target_triplet: Option<TargetTripl
         if let Some(type_layout_cache) = optional_type_layout_cache.as_mut() {
             let type_data = type_tree.type_by_index(type_index);
             if !type_data.is_sizeless(type_tree) {
-                let (size, alignment) = type_data.size_and_alignment(type_tree, type_layout_cache)?;
-                println!("Type #{} (alignment: 0x{:x}; size: 0x{:x}): ", type_index, alignment, size);
+                match type_data.size_and_alignment(type_tree, type_layout_cache) {
+                    Ok((size, alignment)) => {
+                        println!("Type #{} (alignment: 0x{:x}; size: 0x{:x}): ", type_index, alignment, size);       
+                    }
+                    Err(layout_error) => {
+                        println!("Type #{} (size calculation error: {}): ", type_index, layout_error);
+                    }
+                }
             } else {
                 println!("Type #{} (sizeless): ", type_index);
             }
@@ -213,9 +219,16 @@ fn print_full_type_tree(type_tree: &TypeTree, target_triplet: Option<TargetTripl
         if let Some(type_layout_cache) = optional_type_layout_cache.as_mut() {
             if let Type::UDT(user_defined_type) = &type_tree.type_by_index(type_index) {
                 println!(" # UDT Layout:");
-                serde_json::to_string_pretty(&user_defined_type.layout(type_tree, type_layout_cache)?.deref())?.lines().for_each(|x| {
-                    println!(" # {}", x);
-                });
+                match user_defined_type.layout(type_tree, type_layout_cache) {
+                    Ok(type_layout) => {
+                        serde_json::to_string_pretty(&type_layout.deref())?.lines().for_each(|x| {
+                            println!(" # {}", x);
+                        });
+                    }
+                    Err(layout_error) => {
+                        println!(" # <layout calculation error: {}>", layout_error);
+                    }
+                }
             }
         }
     }

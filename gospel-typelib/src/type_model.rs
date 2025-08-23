@@ -613,7 +613,10 @@ impl UserDefinedType {
         let base_class_layouts: Vec<Arc<ResolvedUDTLayout>> = self.base_class_indices.iter()
             .map(|x| type_graph.type_by_index(*x))
             .filter_map(|x| if let Type::UDT(base_class) = x { Some(base_class) } else { None })
-            .map(|x| x.layout(type_graph, layout_cache))
+            .map(|base_class_type| base_class_type.layout(type_graph, layout_cache).map_err(|error| {
+                let base_class_name = base_class_type.name.as_ref().map(|x| x.as_str()).unwrap_or("<unnamed type>");
+                anyhow!("Failed to calculate layout of base class {}: {}", base_class_name, error)
+            }))
             .collect::<anyhow::Result<Vec<Arc<ResolvedUDTLayout>>>>()?;
 
         if self.kind != UserDefinedTypeKind::Union {
@@ -697,7 +700,11 @@ impl UserDefinedType {
                 }
             } else if let UserDefinedTypeMember::Field(field) = member {
                 let member_type = field.member_type(type_graph);
-                let (member_size, member_type_alignment) = member_type.size_and_alignment(type_graph, layout_cache)?;
+                let (member_size, member_type_alignment) = member_type.size_and_alignment(type_graph, layout_cache)
+                    .map_err(|error| {
+                        let member_name = member.name().unwrap_or("<unnamed member>");
+                        anyhow!("Failed to calculate member {} size: {}", member_name, error)
+                    })?;
                 let member_alignment = max(1, max(member_type_alignment, field.user_alignment.unwrap_or(0)));
 
                 let member_offset = calculate_member_offset(member_size, member_alignment);

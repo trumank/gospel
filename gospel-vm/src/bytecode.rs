@@ -211,6 +211,8 @@ pub enum GospelOpcode {
     TypePointerCreateReference = 0xB6, // ; [pop stack] -> [push stack]
     #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
     TypePointerIsReference = 0xB7, // ; [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "1"))]
+    TypeUDTMarkPartial = 0x7A, // [pop stack] -> 
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
