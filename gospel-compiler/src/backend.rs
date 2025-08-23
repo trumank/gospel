@@ -7,7 +7,7 @@ use anyhow::anyhow;
 use itertools::Itertools;
 use strum::Display;
 use crate::ast::{CVQualifiedExpression, FunctionParameterDeclaration, MemberFunctionDeclaration};
-use gospel_typelib::type_model::UserDefinedTypeKind;
+use gospel_typelib::type_model::{PrimitiveType, UserDefinedTypeKind};
 use gospel_vm::bytecode::GospelOpcode;
 use gospel_vm::module::GospelContainer;
 use gospel_vm::gospel::{GospelTargetProperty, GospelValueType};
@@ -141,8 +141,31 @@ struct CompilerFunctionReference {
     signature: CompilerFunctionSignature,
 }
 
+/// Compiler options that affect the compilation of the source files and modules
+#[derive(Debug, Clone)]
+pub struct CompilerOptions {
+    allow_partial_types: bool,
+    generate_prototype_layouts: bool,
+}
+impl Default for CompilerOptions {
+    fn default() -> Self {
+        Self{allow_partial_types: false, generate_prototype_layouts: false}
+    }
+}
+impl CompilerOptions {
+    /// Allows generation of partial UDT type definitions when members of the structs cannot be resolved
+    pub fn allow_partial_types(mut self) -> Self {
+        self.allow_partial_types = true; self
+    }
+    /// Generates additional metadata about the prototype layout of UDT types that can be useful to some users
+    pub fn generate_prototype_layouts(mut self) -> Self {
+        self.generate_prototype_layouts = true; self
+    }
+}
+
 #[derive(Debug)]
 pub struct CompilerInstance {
+    compiler_options: CompilerOptions,
     module_scopes: RefCell<HashMap<String, Rc<CompilerLexicalScope>>>,
 }
 
@@ -882,7 +905,7 @@ impl CompilerFunctionBuilder {
         let source_context = self.function_scope.source_context.clone();
         let slot_index = self.function_definition.add_slot().with_source_context(&source_context)?;
 
-        self.function_definition.add_double_string_instruction(GospelOpcode::TypeUDTAllocate, type_name, type_kind.to_string().as_str(), Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        self.function_definition.add_udt_allocate_instruction(type_name, type_kind.to_string().as_str(), Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
 
         self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
@@ -910,7 +933,7 @@ impl CompilerFunctionBuilder {
             Ok(ExpressionValueType::Int)
         }
     }
-    fn compile_condition_wrapped_expression<S: Fn(&mut Self, &Expression, &CompilerSourceContext) -> CompilerResult<()>>(&mut self, scope: &Rc<CompilerLexicalScope>, conditional_declaration: &ExpressionWithCondition, code_generator: S) -> CompilerResult<()> {
+    fn compile_condition_wrapped_expression<S: FnOnce(&mut Self, &Expression, &CompilerSourceContext) -> CompilerResult<()>>(&mut self, scope: &Rc<CompilerLexicalScope>, conditional_declaration: &ExpressionWithCondition, code_generator: S) -> CompilerResult<()> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: conditional_declaration.source_context.clone()};
         let possibly_jump_to_end_fixup = if let Some(condition_expression) = &conditional_declaration.condition_expression {
             let condition_expression_type = self.compile_expression(scope, condition_expression)?;
@@ -924,6 +947,22 @@ impl CompilerFunctionBuilder {
             let end_instruction_index = self.function_definition.current_instruction_count();
             self.function_definition.fixup_control_flow_instruction(jump_to_end_fixup, end_instruction_index).with_source_context(&source_context)?;
         }
+        Ok({})
+    }
+    fn compile_try_catch_wrapped_statement<S: FnOnce(&mut Self, &CompilerSourceContext) -> CompilerResult<()>, R: FnOnce(&mut Self, &CompilerSourceContext) -> CompilerResult<()>>(&mut self, source_context: &CompilerSourceContext, inner_code_generator: S, catch_code_generator: R)  -> CompilerResult<()> {
+        let jump_to_exception_handler_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::PushExceptionHandler, Self::get_line_number(source_context)).with_source_context(source_context)?.1;
+        inner_code_generator(self, source_context)?;
+        let jump_to_end_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch, Self::get_line_number(source_context)).with_source_context(source_context)?.1;
+        let exception_handler_start_instruction_index = self.function_definition.current_instruction_count();
+        self.function_definition.fixup_control_flow_instruction(jump_to_exception_handler_fixup, exception_handler_start_instruction_index).with_source_context(source_context)?;
+        catch_code_generator(self, source_context)?;
+        let end_instruction_index = self.function_definition.current_instruction_count();
+        self.function_definition.fixup_control_flow_instruction(jump_to_end_fixup, end_instruction_index).with_source_context(source_context)?;
+        Ok({})
+    }
+    fn compile_type_layout_mark_partial_statement(&mut self, type_layout_slot_index: u32, source_context: &CompilerSourceContext) -> CompilerResult<()> {
+        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(source_context)).with_source_context(source_context)?;
+        self.function_definition.add_simple_instruction(GospelOpcode::TypeUDTMarkTypePartial, Self::get_line_number(source_context)).with_source_context(source_context)?;
         Ok({})
     }
     fn compile_type_layout_alignment_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, alignment_expression: &ExpressionWithCondition) -> CompilerResult<()> {
@@ -944,14 +983,30 @@ impl CompilerFunctionBuilder {
             Ok({})
         })
     }
-    fn compile_type_layout_base_class_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, base_class_expression: &ExpressionWithCondition) -> CompilerResult<()> {
+    fn compile_type_layout_base_class_statement_inner(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, base_class_expression: &ExpressionWithCondition, is_prototype_pass: bool) -> CompilerResult<()> {
         self.compile_condition_wrapped_expression(scope, base_class_expression, |builder, expression, source_context| {
             builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             let expression_type = builder.compile_expression(scope, expression)?;
             Self::check_expression_type(&source_context, ExpressionValueType::Typename, expression_type)?;
-            builder.function_definition.add_simple_instruction(GospelOpcode::TypeUDTAddBaseClass, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+            let base_class_flags = if is_prototype_pass { 1 << 2 } else { 0 };
+            builder.function_definition.add_udt_base_class_instruction(base_class_flags, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             Ok({})
         })
+    }
+    fn compile_type_layout_base_class_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, base_class_expression: &ExpressionWithCondition, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
+        if is_prototype_pass || allow_partial_types {
+            let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: base_class_expression.source_context.clone()};
+            self.compile_try_catch_wrapped_statement(&source_context, |inner_builder, _| {
+                inner_builder.compile_type_layout_base_class_statement_inner(scope, type_layout_slot_index, base_class_expression, is_prototype_pass)
+            }, |inner_builder, source_context| {
+                if !is_prototype_pass {
+                    inner_builder.compile_type_layout_mark_partial_statement(type_layout_slot_index, source_context)?;
+                }
+                Ok({})
+            })
+        } else {
+            self.compile_type_layout_base_class_statement_inner(scope, type_layout_slot_index, base_class_expression, is_prototype_pass)
+        }
     }
     fn compile_type_layout_finalization(&mut self, type_layout_slot_index: u32, type_layout_metadata_slot_index: u32, source_context: &CompilerSourceContext) -> CompilerResult<()> {
         self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
@@ -1127,7 +1182,7 @@ impl CompilerFunctionCodeGenerator for CompilerSimpleExpressionFunctionGenerator
 }
 
 trait CompilerStructFragmentGenerator : Debug {
-    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<()>;
+    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()>;
 }
 
 #[derive(Debug)]
@@ -1136,10 +1191,10 @@ struct CompilerStructBlockFragment {
     fragments: Vec<Box<dyn CompilerStructFragmentGenerator>>
 }
 impl CompilerStructFragmentGenerator for CompilerStructBlockFragment {
-    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<()> {
+    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
         let block_instruction_index = builder.function_definition.current_instruction_count();
         for inner_declaration in &self.fragments {
-            inner_declaration.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, meta_layout)?;
+            inner_declaration.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, meta_layout, is_prototype_pass, allow_partial_types)?;
         }
         self.block_declaration.borrow_mut().block_range = CompilerInstructionRange{
             start_instruction_index: block_instruction_index,
@@ -1158,14 +1213,28 @@ struct CompilerStructConditionalFragment {
     then_fragment: Box<dyn CompilerStructFragmentGenerator>,
     else_branch: Option<(Rc<RefCell<CompilerBlockDeclaration>>, Box<dyn CompilerStructFragmentGenerator>)>,
 }
-impl CompilerStructFragmentGenerator for CompilerStructConditionalFragment {
-    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<()> {
-        let condition_value_type = builder.compile_expression(&self.scope, &self.condition_expression)?;
-        CompilerFunctionBuilder::check_expression_type(&self.source_context, condition_value_type, ExpressionValueType::Int)?;
+impl CompilerStructConditionalFragment {
+    fn compile_full_pass_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference, allow_partial_types: bool) -> CompilerResult<()> {
+        let mut partial_type_jump_to_end_fixup: Option<GospelJumpLabelFixup> = None;
+        if allow_partial_types {
+            builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, source_context| {
+                let condition_value_type = inner_builder.compile_expression(&self.scope, &self.condition_expression)?;
+                CompilerFunctionBuilder::check_expression_type(&source_context, condition_value_type, ExpressionValueType::Int)?;
+                Ok({})
+            }, |inner_builder, source_context| {
+                // If we failed to evaluate the condition, we do not run either branches, and just jump to the end of this fragment. Type layout in this case becomes partial
+                inner_builder.compile_type_layout_mark_partial_statement(type_layout_slot, source_context)?;
+                partial_type_jump_to_end_fixup = Some(inner_builder.function_definition.add_control_flow_instruction(GospelOpcode::Branch, CompilerFunctionBuilder::get_line_number(source_context)).with_source_context(source_context)?.1);
+                Ok({})
+            })?;
+        } else {
+            let condition_value_type = builder.compile_expression(&self.scope, &self.condition_expression)?;
+            CompilerFunctionBuilder::check_expression_type(&self.source_context, condition_value_type, ExpressionValueType::Int)?;
+        }
         let (_, condition_fixup) = builder.function_definition.add_control_flow_instruction(GospelOpcode::Branchz, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
 
         let then_branch_instruction_index = builder.function_definition.current_instruction_count();
-        self.then_fragment.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, meta_layout)?;
+        self.then_fragment.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, meta_layout, false, allow_partial_types)?;
 
         if let Some((else_block_declaration, else_fragment)) = &self.else_branch {
             // We have an else statement, so we need to jump to the end of the conditional statement after then branch is done
@@ -1175,7 +1244,7 @@ impl CompilerStructFragmentGenerator for CompilerStructConditionalFragment {
                 start_instruction_index: then_branch_instruction_index,
                 end_instruction_index: else_branch_instruction_index,
             };
-            else_fragment.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, meta_layout)?;
+            else_fragment.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, meta_layout, false, allow_partial_types)?;
             else_block_declaration.borrow_mut().block_range = CompilerInstructionRange{
                 start_instruction_index: else_branch_instruction_index,
                 end_instruction_index: builder.function_definition.current_instruction_count(),
@@ -1193,7 +1262,28 @@ impl CompilerStructFragmentGenerator for CompilerStructConditionalFragment {
             };
             builder.function_definition.fixup_control_flow_instruction(condition_fixup, condition_end_instruction_index).with_source_context(&self.source_context)?;
         }
+        if let Some(jump_to_end_fixup) = partial_type_jump_to_end_fixup {
+            let end_instruction_index = builder.function_definition.current_instruction_count();
+            builder.function_definition.fixup_control_flow_instruction(jump_to_end_fixup, end_instruction_index).with_source_context(&self.source_context)?;
+        }
         Ok({})
+    }
+    fn compile_prototype_pass_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference, allow_partial_types: bool) -> CompilerResult<()> {
+        // Prototype pass does not need to evaluate conditions, both branches contribute to the struct prototype
+        self.then_fragment.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, meta_layout, true, allow_partial_types)?;
+        if let Some((_, else_fragment)) = &self.else_branch {
+            else_fragment.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, meta_layout, true, allow_partial_types)?;
+        }
+        Ok({})
+    }
+}
+impl CompilerStructFragmentGenerator for CompilerStructConditionalFragment {
+    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
+       if is_prototype_pass {
+           self.compile_prototype_pass_fragment(builder, type_layout_slot, type_layout_metadata_slot, meta_layout, allow_partial_types)
+       } else {
+           self.compile_full_pass_fragment(builder, type_layout_slot, type_layout_metadata_slot, meta_layout, allow_partial_types)
+       }
     }
 }
 
@@ -1204,8 +1294,8 @@ struct CompilerStructMetadataFragment {
     metadata_function_reference: CompilerFunctionReference,
     metadata_name: String,
 }
-impl CompilerStructFragmentGenerator for CompilerStructMetadataFragment {
-    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, _type_layout_slot: u32, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<()> {
+impl CompilerStructMetadataFragment {
+    fn compile_full_pass_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<()> {
         // Take metadata struct from the slot
         builder.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_metadata_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
 
@@ -1214,9 +1304,28 @@ impl CompilerStructFragmentGenerator for CompilerStructMetadataFragment {
         let metadata_field_index = meta_layout.signature.find_member_index_checked(&self.metadata_name, metadata_field_value_type, &self.source_context)?;
 
         // Set the meta struct field value and store the struct back to the slot
-        builder.function_definition.add_struct_local_member_access_instruction(GospelOpcode::StructSetLocalField, meta_layout.reference.clone(), metadata_field_index as u32,
-            CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+        builder.function_definition.add_struct_local_member_access_instruction(GospelOpcode::StructSetLocalField, meta_layout.reference.clone(), metadata_field_index as u32, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         builder.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, type_layout_metadata_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+        Ok({})
+    }
+}
+impl CompilerStructFragmentGenerator for CompilerStructMetadataFragment {
+    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
+        // Prototype pass does not require metadata generation
+        if !is_prototype_pass {
+            if allow_partial_types {
+                builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, _| {
+                    self.compile_full_pass_fragment(inner_builder, type_layout_metadata_slot, meta_layout)?;
+                    Ok({})
+                }, |inner_builder, source_context| {
+                    // Type without complete metadata is also considered incomplete
+                    inner_builder.compile_type_layout_mark_partial_statement(type_layout_slot, source_context)?;
+                    Ok({})
+                })?;
+            } else {
+                self.compile_full_pass_fragment(builder, type_layout_metadata_slot, meta_layout)?;
+            }
+        }
         Ok({})
     }
 }
@@ -1231,19 +1340,20 @@ struct CompilerStructMemberFragment {
     array_size_expression: Option<Expression>,
     bitfield_width_expression: Option<Expression>,
 }
-impl CompilerStructFragmentGenerator for CompilerStructMemberFragment {
-    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, _type_layout_metadata_slot: u32, _meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<()> {
+impl CompilerStructMemberFragment {
+    fn compile_full_member_declaration(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, is_prototype_pass: bool) -> CompilerResult<()> {
         builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
 
         // Compile member type expression
         let member_type_expression_type = builder.compile_expression(&self.scope, &self.member_type_expression)?;
+        let member_flags = if is_prototype_pass { 1 << 2 } else { 0 } as u32;
         CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Typename, member_type_expression_type)?;
-        
+
         if let Some(bitfield_width_expression) = &self.bitfield_width_expression {
             // If there is a bitfield width expression, this is a bitfield member
             let bitfield_width_expression_type = builder.compile_expression(&self.scope, bitfield_width_expression)?;
             CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Int, bitfield_width_expression_type)?;
-            builder.function_definition.add_string_instruction(GospelOpcode::TypeUDTAddBitfield, self.member_name.as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            builder.function_definition.add_udt_member_instruction(GospelOpcode::TypeUDTAddBitfield, self.member_name.as_str(), member_flags, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         } else {
             // If array size expression is present, we need to convert the given member type to an array implicitly
             if let Some(array_size_expression) = &self.array_size_expression {
@@ -1262,9 +1372,42 @@ impl CompilerStructFragmentGenerator for CompilerStructMemberFragment {
                     Ok({})
                 })?;
             }
-            builder.function_definition.add_string_instruction(GospelOpcode::TypeUDTAddField, self.member_name.as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            builder.function_definition.add_udt_member_instruction(GospelOpcode::TypeUDTAddField, self.member_name.as_str(), member_flags, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         }
         Ok({})
+    }
+    fn compile_simplified_member_declaration(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32) -> CompilerResult<()> {
+        builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+
+        // Simplified type of the expression is void, and simplified declarations are only allowed as prototypes
+        builder.function_definition.add_string_instruction(GospelOpcode::TypePrimitiveCreate, PrimitiveType::Void.to_string().as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+        let member_flags = (1 << 2) as u32;
+        if self.bitfield_width_expression.is_some() {
+            builder.function_definition.add_udt_member_instruction(GospelOpcode::TypeUDTAddBitfield, self.member_name.as_str(), member_flags,
+                   CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+        } else {
+            builder.function_definition.add_int_constant_instruction(-1, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            builder.function_definition.add_udt_member_instruction(GospelOpcode::TypeUDTAddField, self.member_name.as_str(), member_flags,
+                   CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+        }
+        Ok({})
+    }
+}
+impl CompilerStructFragmentGenerator for CompilerStructMemberFragment {
+    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, _type_layout_metadata_slot: u32, _meta_layout: &CompilerStructMetaLayoutReference, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
+        if is_prototype_pass || allow_partial_types {
+            builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, _| {
+                self.compile_full_member_declaration(inner_builder, type_layout_slot, is_prototype_pass)
+            }, |inner_builder, source_context| {
+                if is_prototype_pass {
+                    self.compile_simplified_member_declaration(inner_builder, type_layout_slot)
+                } else {
+                    inner_builder.compile_type_layout_mark_partial_statement(type_layout_slot, source_context)
+                }
+            })
+        } else {
+            self.compile_full_member_declaration(builder, type_layout_slot, false)
+        }
     }
 }
 
@@ -1278,15 +1421,13 @@ struct CompilerStructVirtualFunctionFragment {
     constant: bool,
     is_override: bool,
 }
-impl CompilerStructFragmentGenerator for CompilerStructVirtualFunctionFragment {
-    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, _type_layout_metadata_slot: u32, _meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<()> {
+impl CompilerStructVirtualFunctionFragment {
+    fn compile_full_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, is_prototype_pass: bool) -> CompilerResult<()> {
         builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
 
         let return_value_expression_type = builder.compile_expression(&self.scope, &self.return_type_expression)?;
         CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Typename, return_value_expression_type)?;
-
-        let function_flags = (if self.constant { 1 << 0 } else { 0 }) | (if self.is_override { 1 << 1 } else { 0 });
-        builder.function_definition.add_int_constant_instruction(function_flags, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+        let function_flags = (if self.constant { 1 << 0 } else { 0 }) | (if self.is_override { 1 << 1 } else { 0 }) | (if is_prototype_pass { 1 << 2 } else { 0 });
 
         for argument_index in 0..self.parameters.len() {
             let argument_expression_type = builder.compile_expression(&self.scope, &self.parameters[argument_index].parameter_type)?;
@@ -1299,16 +1440,33 @@ impl CompilerStructFragmentGenerator for CompilerStructVirtualFunctionFragment {
                 builder.function_definition.add_int_constant_instruction(-1, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
             }
         }
-        builder.function_definition.add_variadic_string_instruction(GospelOpcode::TypeUDTAddVirtualFunction,
-            self.function_name.as_str(), (self.parameters.len() * 2) as u32, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+        builder.function_definition.add_udt_virtual_function_instruction(self.function_name.as_str(), function_flags, (self.parameters.len() * 2) as u32, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         Ok({})
+    }
+}
+impl CompilerStructFragmentGenerator for CompilerStructVirtualFunctionFragment {
+    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, _type_layout_metadata_slot: u32, _meta_layout: &CompilerStructMetaLayoutReference, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
+        if is_prototype_pass || allow_partial_types {
+            builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, _| {
+                self.compile_full_fragment(inner_builder, type_layout_slot, is_prototype_pass)
+            }, |inner_builder, source_context| {
+                if !is_prototype_pass {
+                    inner_builder.compile_type_layout_mark_partial_statement(type_layout_slot, source_context)?;
+                }
+                // Simplified virtual function declarations are not feasible due to the fact that virtual functions can be overloaded and name alone is not enough to identify them,
+                // as well as the fact that virtual functions require precise type information to generate callable thunks for them
+                Ok({})
+            })
+        } else {
+            self.compile_full_fragment(builder, type_layout_slot, false)
+        }
     }
 }
 
 #[derive(Debug)]
 struct BlankStructFragmentGenerator {}
 impl CompilerStructFragmentGenerator for BlankStructFragmentGenerator {
-    fn compile_fragment(&self, _builder: &mut CompilerFunctionBuilder, _type_layout_slot: u32, _type_layout_metadata_slot: u32, _meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<()> {
+    fn compile_fragment(&self, _builder: &mut CompilerFunctionBuilder, _type_layout_slot: u32, _type_layout_metadata_slot: u32, _meta_layout: &CompilerStructMetaLayoutReference, _is_prototype_pass: bool, _allow_partial_types: bool) -> CompilerResult<()> {
         Ok({})
     }
 }
@@ -1321,6 +1479,8 @@ struct CompilerStructFunctionGenerator {
     alignment_expression: Option<ExpressionWithCondition>,
     member_pack_alignment_expression: Option<ExpressionWithCondition>,
     base_class_expressions: Vec<ExpressionWithCondition>,
+    allow_partial_types: bool,
+    generate_prototype_layout: bool,
     source_context: CompilerSourceContext,
     fragments: Vec<Box<dyn CompilerStructFragmentGenerator>>,
 }
@@ -1337,20 +1497,30 @@ impl CompilerFunctionCodeGenerator for CompilerStructFunctionGenerator {
             function_builder.compile_type_layout_member_pack_alignment_expression(&function_builder.function_scope.clone(), type_layout_slot_index, member_pack_alignment_expression)?;
         }
         for base_class_expression in &self.base_class_expressions {
-            function_builder.compile_type_layout_base_class_expression(&function_builder.function_scope.clone(), type_layout_slot_index, base_class_expression)?;
+            function_builder.compile_type_layout_base_class_expression(&function_builder.function_scope.clone(), type_layout_slot_index, base_class_expression, false, self.allow_partial_types)?;
         }
+        // Main pass with UDT layout generation
         self.fragments.iter().map(|struct_fragment| {
-            struct_fragment.compile_fragment(&mut function_builder, type_layout_slot_index, type_layout_metadata_slot_index, &self.struct_meta_layout)
-        }).chain_compiler_result(|| compiler_error!(&self.source_context, "Failed to compile struct definition"))?;
+            struct_fragment.compile_fragment(&mut function_builder, type_layout_slot_index, type_layout_metadata_slot_index, &self.struct_meta_layout, false, self.allow_partial_types)
+        }).chain_compiler_result(|| compiler_error!(&self.source_context, "Failed to compile struct definition (main pass)"))?;
 
+        // Optional secondary pass that generates layout prototype information useful to some users
+        if self.generate_prototype_layout {
+            self.fragments.iter().map(|struct_fragment| {
+                struct_fragment.compile_fragment(&mut function_builder, type_layout_slot_index, type_layout_metadata_slot_index, &self.struct_meta_layout, true, false)
+            }).chain_compiler_result(|| compiler_error!(&self.source_context, "Failed to compile struct definition (prototype pass)"))?;
+        }
+        for base_class_expression in &self.base_class_expressions {
+            function_builder.compile_type_layout_base_class_expression(&function_builder.function_scope.clone(), type_layout_slot_index, base_class_expression, true, false)?;
+        }
         function_builder.compile_type_layout_finalization(type_layout_slot_index, type_layout_metadata_slot_index, &self.source_context)?;
         function_builder.commit()
     }
 }
 
 impl CompilerInstance {
-    pub fn create() -> Rc<CompilerInstance> {
-        Rc::new(CompilerInstance{module_scopes: RefCell::new(HashMap::new())})
+    pub fn create(options: CompilerOptions) -> Rc<CompilerInstance> {
+        Rc::new(CompilerInstance{compiler_options: options, module_scopes: RefCell::new(HashMap::new())})
     }
     pub fn declare_module(self: &Rc<Self>, module_name: &str) -> CompilerResult<CompilerModuleDeclarationBuilder> {
         let source_context = CompilerSourceContext::default();
@@ -1775,6 +1945,7 @@ impl CompilerInstance {
             Self::pre_compile_type_layout_inner_declaration(&function_scope, struct_inner_declaration, visibility_override)
         }).collect_compiler_result(|| compiler_error!(&source_context, "Failed to pre-compile struct definition"))?;
 
+        let (allow_partial_types, generate_prototype_layouts) = scope.compiler().map(|x| (x.compiler_options.allow_partial_types, x.compiler_options.generate_prototype_layouts)).unwrap_or((false, false));
         if let Some(module_codegen_data) = scope.module_codegen() {
             module_codegen_data.push_delayed_function_definition(&function_scope, Box::new(CompilerStructFunctionGenerator{
                 source_context,
@@ -1784,6 +1955,7 @@ impl CompilerInstance {
                 alignment_expression: statement.alignment_expression.clone(),
                 member_pack_alignment_expression: statement.member_pack_expression.clone(),
                 base_class_expressions: statement.base_class_expressions.clone(),
+                allow_partial_types, generate_prototype_layout: generate_prototype_layouts,
                 fragments,
             }))?;
         }

@@ -131,14 +131,14 @@ pub enum GospelOpcode {
     TypeUDTAllocate = 0x77, // <imm> <imm>; -> [push stack]
     #[strum(props(stack_in_count = "2"))]
     TypeUDTSetUserAlignment = 0x78, // ; [pop stack] [pop stack] ->
-    #[strum(props(stack_in_count = "2"))]
-    TypeUDTAddBaseClass = 0x79, // ; [pop stack] [pop stack] ->
-    #[strum(props(immediate_count = "1", stack_in_count = "3"))]
-    TypeUDTAddField = 0x7B, // <imm>; [pop stack] [pop stack] [pop stack] ->
-    #[strum(props(immediate_count = "1", stack_in_count = "3"))]
-    TypeUDTAddBitfield = 0x7C, // <imm>; [pop stack] [pop stack] [pop stack] ->
-    #[strum(props(immediate_count = "2", stack_in_count = "2", stack_out_count = "1", stack_variable_input_count_immediate = "1"))]
-    TypeUDTAddVirtualFunction = 0x7D, // <imm> <imm>; [pop stack] x <imm1> [pop stack] [pop stack] [pop stack] ->
+    #[strum(props(immediate_count = "1", stack_in_count = "2"))]
+    TypeUDTAddBaseClass = 0x79, // <imm>; [pop stack] [pop stack] ->
+    #[strum(props(immediate_count = "2", stack_in_count = "3"))]
+    TypeUDTAddField = 0x7B, // <imm> <imm>; [pop stack] [pop stack] [pop stack] ->
+    #[strum(props(immediate_count = "2", stack_in_count = "3"))]
+    TypeUDTAddBitfield = 0x7C, // <imm> <imm>; [pop stack] [pop stack] [pop stack] ->
+    #[strum(props(immediate_count = "3", stack_in_count = "2", stack_variable_input_count_immediate = "2"))]
+    TypeUDTAddVirtualFunction = 0x7D, // <imm> <imm> <imm>; [pop stack] x <imm1> [pop stack] [pop stack] ->
     #[strum(props(stack_in_count = "2"))]
     TypeUDTAttachMetadata = 0x7E, // ; [pop stack] [pop stack] ->
     #[strum(props(stack_in_count = "1"))]
@@ -205,14 +205,15 @@ pub enum GospelOpcode {
     TypeFunctionGetReturnValueType = 0xB3, // ; [pop stack] -> [push stack]
     #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
     TypeFunctionGetArgumentType = 0xB4, // ; [pop stack] [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
+    TypePointerCreateReference = 0xB5, // ; [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
+    TypePointerIsReference = 0xB6, // ; [pop stack] -> [push stack]
+    // Type creation opcode extensions
     #[strum(props(stack_in_count = "2"))]
-    TypeUDTSetMemberPackAlignment = 0xB5, // ; [pop stack] [pop stack] ->
-    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
-    TypePointerCreateReference = 0xB6, // ; [pop stack] -> [push stack]
-    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
-    TypePointerIsReference = 0xB7, // ; [pop stack] -> [push stack]
+    TypeUDTSetMemberPackAlignment = 0xC0, // ; [pop stack] [pop stack] ->
     #[strum(props(stack_in_count = "1"))]
-    TypeUDTMarkPartial = 0x7A, // [pop stack] -> 
+    TypeUDTMarkTypePartial = 0xC1, // [pop stack] ->
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]

@@ -193,23 +193,33 @@ impl GospelSourceFunctionDefinition {
         self.code[fixup.instruction_index as usize].set_immediate_operand(fixup.operand_index as usize, target_instruction_index)
     }
     pub fn add_string_instruction(&mut self, opcode: GospelOpcode, string: &str, line_number: i32) -> anyhow::Result<u32> {
-        if opcode != GospelOpcode::TypeUDTAddField && opcode != GospelOpcode::TypeUDTAddField &&
-            opcode != GospelOpcode::TypeUDTAddBitfield && opcode != GospelOpcode::TypeUDTHasField &&
-            opcode != GospelOpcode::TypeUDTTypeofField && opcode != GospelOpcode::TypeUDTCalculateVirtualFunctionOffset &&
-            opcode != GospelOpcode::RaiseException && opcode != GospelOpcode::TypePrimitiveCreate &&
-            opcode != GospelOpcode::LoadTargetProperty && opcode != GospelOpcode::LoadGlobalVariable {
-            bail!("Invalid opcode for named instruction (TypeUDTAllocate, TypeLayoutDoesMemberExist, TypeLayoutGetMemberOffset, TypeLayoutGetMemberSize, TypeLayoutGetMemberTypeLayout, RaiseException, LoadTargetProperty, LoadGlobalVariable are allowed)");
+        if opcode != GospelOpcode::TypeUDTHasField && opcode != GospelOpcode::TypeUDTTypeofField &&
+            opcode != GospelOpcode::TypeUDTCalculateVirtualFunctionOffset && opcode != GospelOpcode::RaiseException &&
+            opcode != GospelOpcode::TypePrimitiveCreate && opcode != GospelOpcode::LoadTargetProperty &&
+            opcode != GospelOpcode::LoadGlobalVariable {
+            bail!("Invalid opcode for named instruction (TypeUDTHasField, TypeUDTTypeofField, TypeUDTCalculateVirtualFunctionOffset, TypePrimitiveCreate, RaiseException, LoadTargetProperty, LoadGlobalVariable are allowed)");
         }
         let string_index = self.add_string_reference_internal(string);
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[string_index])?, line_number))
     }
-    pub fn add_double_string_instruction(&mut self, opcode: GospelOpcode, string1: &str, string2: &str, line_number: i32) -> anyhow::Result<u32> {
-        if opcode != GospelOpcode::TypeUDTAllocate {
-            bail!("Invalid opcode for named instruction (only TypeUDTAllocate is allowed)");
+    pub fn add_udt_allocate_instruction(&mut self, name: &str, udt_kind: &str, line_number: i32) -> anyhow::Result<u32> {
+        let name_index = self.add_string_reference_internal(name);
+        let udt_kind_index = self.add_string_reference_internal(udt_kind);
+        Ok(self.add_instruction_internal(GospelInstruction::create(GospelOpcode::TypeUDTAllocate, &[name_index, udt_kind_index])?, line_number))
+    }
+    pub fn add_udt_base_class_instruction(&mut self, base_class_flags: u32, line_number: i32) -> anyhow::Result<u32> {
+        Ok(self.add_instruction_internal(GospelInstruction::create(GospelOpcode::TypeUDTAddBaseClass, &[base_class_flags])?, line_number))
+    }
+    pub fn add_udt_member_instruction(&mut self, opcode: GospelOpcode, name: &str, member_flags: u32, line_number: i32) -> anyhow::Result<u32> {
+        if opcode != GospelOpcode::TypeUDTAddField &&opcode != GospelOpcode::TypeUDTAddBitfield {
+            bail!("Invalid opcode for udt member instruction (TypeUDTAddField, TypeUDTAddBitfield are allowed)");
         }
-        let string_index1 = self.add_string_reference_internal(string1);
-        let string_index2 = self.add_string_reference_internal(string2);
-        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[string_index1, string_index2])?, line_number))
+        let name_index = self.add_string_reference_internal(name);
+        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[name_index, member_flags])?, line_number))
+    }
+    pub fn add_udt_virtual_function_instruction(&mut self, name: &str, function_flags: u32, argument_count: u32, line_number: i32) -> anyhow::Result<u32> {
+        let name_index = self.add_string_reference_internal(name);
+        Ok(self.add_instruction_internal(GospelInstruction::create(GospelOpcode::TypeUDTAddVirtualFunction, &[name_index, function_flags, argument_count])?, line_number))
     }
     pub fn add_struct_instruction(&mut self, opcode: GospelOpcode, struct_reference: GospelSourceObjectReference, line_number: i32) -> anyhow::Result<u32> {
         if opcode != GospelOpcode::StructAllocate && opcode != GospelOpcode::StructIsStructOfType {
@@ -245,13 +255,6 @@ impl GospelSourceFunctionDefinition {
             bail!("Invalid opcode for variadic instruction (only Call, BindClosure, PCall and TypeFunctionCreateMember/Global are allowed)");
         }
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[argument_count])?, line_number))
-    }
-    pub fn add_variadic_string_instruction(&mut self, opcode: GospelOpcode, string: &str, argument_count: u32, line_number: i32) -> anyhow::Result<u32> {
-        if opcode != GospelOpcode::TypeUDTAddVirtualFunction {
-            bail!("Invalid opcode for variadic instruction (only TypeUDTAddVirtualFunction is allowed)");
-        }
-        let string_index = self.add_string_reference_internal(string);
-        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[string_index, argument_count])?, line_number))
     }
 }
 

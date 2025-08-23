@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::str::FromStr;
 use anyhow::{anyhow, bail};
 use clap::{Parser, ValueEnum};
+use crate::backend::CompilerOptions;
 use gospel_typelib::type_model::{ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, TypeLayoutCache, TypeTree};
 use gospel_vm::module::{GospelContainer};
 use gospel_vm::reflection::{GospelContainerReflector, GospelModuleReflector};
@@ -384,7 +385,7 @@ fn do_action_compile(action: ActionCompileModule) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow!("First source file name provided is not a valid file name"))?;
     let module_name = action.module_name.unwrap_or(first_file_base_name);
 
-    let compiler_instance = CompilerInstance::create();
+    let compiler_instance = CompilerInstance::create(CompilerOptions::default());
     let module_writer = compiler_instance.define_module(&module_name).to_simple_result()?;
 
     for source_file_name in &action.files {
@@ -430,7 +431,7 @@ fn do_action_eval(action: ActionEvalExpression) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow!("First source file name provided is not a valid file name"))?;
     let module_name = action.module_name.unwrap_or(first_file_base_name);
 
-    let compiler_instance = CompilerInstance::create();
+    let compiler_instance = CompilerInstance::create(CompilerOptions::default());
     let module_writer = compiler_instance.define_module(&module_name).to_simple_result()?;
 
     // Compile provided source files first

@@ -1,6 +1,6 @@
 ﻿use std::cell::RefCell;
 use std::cmp::max;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::rc::{Rc};
@@ -108,31 +108,39 @@ impl GospelVMOptions {
 }
 
 /// Wrapper for Types that also contains metadata maintained by the VM
-#[derive(Debug)]
-struct GospelVMTypeWrapper {
-    wrapped_type: Type,
-    vm_metadata: Option<GospelVMStruct>,
+#[derive(Debug, Clone)]
+pub struct GospelVMTypeContainer {
+    pub wrapped_type: Type,
+    pub base_class_prototypes: Option<HashSet<usize>>,
+    pub member_prototypes: Option<HashSet<UserDefinedTypeMember>>,
+    pub vm_metadata: Option<GospelVMStruct>,
+    pub partial_type: bool,
     owner_stack_frame_token: usize,
     size_has_been_validated: bool,
-    partial_type: bool,
 }
 
 /// Run context allows caching results of function invocations and creating type graphs from individual types
 #[derive(Debug)]
 pub struct GospelVMRunContext {
     options: GospelVMOptions,
-    types: Vec<GospelVMTypeWrapper>,
+    types: Vec<GospelVMTypeContainer>,
     simple_type_lookup: HashMap<Type, usize>,
     call_result_lookup: HashMap<GospelVMClosure, Rc<RefCell<Option<GospelVMValue>>>>,
     stack_frame_counter: usize,
 }
 impl GospelVMRunContext {
+    /// Creates new run context from the specified VM options
     pub fn create(options: GospelVMOptions) -> GospelVMRunContext {
         GospelVMRunContext{options, types: Vec::new(), simple_type_lookup: HashMap::new(), call_result_lookup: HashMap::new(), stack_frame_counter: 1}
     }
+    /// Returns the target triplet associated with this run context
     pub fn target_triplet(&self) -> Option<&TargetTriplet> {
         self.options.target_triplet.as_ref()
     }
+    /// Returns the type container for the type at the given index. Type container contains additional metadata tracked by the VM that might be useful in some cases
+    pub fn type_container_by_index(&self, type_index: usize) -> &GospelVMTypeContainer {
+        &self.types[type_index]
+    } 
     fn read_global_value(&self, global_name: &str, default_value: Option<i32>) -> Option<i32> {
         if let Some(global_value_override) = self.options.globals.get(global_name) {
             Some(*global_value_override)
@@ -151,14 +159,14 @@ impl GospelVMRunContext {
         } else {
             let new_type_index = self.types.len();
             // Simple types cannot have VM metadata assigned to them
-            self.types.push(GospelVMTypeWrapper{wrapped_type: type_data.clone(), vm_metadata: None, owner_stack_frame_token: 0, size_has_been_validated: false, partial_type: false});
+            self.types.push(GospelVMTypeContainer {wrapped_type: type_data.clone(), base_class_prototypes: None, member_prototypes: None, vm_metadata: None, owner_stack_frame_token: 0, size_has_been_validated: false, partial_type: false});
             self.simple_type_lookup.insert(type_data, new_type_index);
             new_type_index
         }
     }
     fn store_user_defined_type(&mut self, type_data: UserDefinedType, stack_frame_token: usize) -> usize {
         let new_type_index = self.types.len();
-        self.types.push(GospelVMTypeWrapper{wrapped_type: Type::UDT(type_data), vm_metadata: None, owner_stack_frame_token: stack_frame_token, size_has_been_validated: false, partial_type: false});
+        self.types.push(GospelVMTypeContainer {wrapped_type: Type::UDT(type_data), base_class_prototypes: Some(HashSet::new()), member_prototypes: Some(HashSet::new()), vm_metadata: None, owner_stack_frame_token: stack_frame_token, size_has_been_validated: false, partial_type: false});
         new_type_index
     }
     fn validate_type_not_partial(&mut self, type_index: usize, source_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<()> {
@@ -184,10 +192,10 @@ impl GospelVMRunContext {
         let cloned_type = self.types[type_index].wrapped_type.clone();
         match cloned_type {
             Type::Array(array_type) => {
-                is_partial_type |= self.validate_type_internal(array_type.element_type_index, source_frame, type_size_calculation_stack)?; 
+                is_partial_type |= self.validate_type_internal(array_type.element_type_index, source_frame, type_size_calculation_stack)?;
             }
             Type::CVQualified(cv_qualified_type) => {
-                is_partial_type |= self.validate_type_internal(cv_qualified_type.base_type_index, source_frame, type_size_calculation_stack)?; 
+                is_partial_type |= self.validate_type_internal(cv_qualified_type.base_type_index, source_frame, type_size_calculation_stack)?;
             }
             Type::UDT(user_defined_type) => {
                 for base_class_index in &user_defined_type.base_class_indices {
@@ -1034,11 +1042,18 @@ impl<'a> GospelVMExecutionState<'a> {
                     let base_class_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(base_class_type_index, run_context)?;
 
+                    let field_flags = state.immediate_value_checked(instruction, 0)?;
+                    let is_base_class_prototype = field_flags & (1 << 2) != 0;
+
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
                     state.validate_udt_type_not_finalized(type_index, run_context)?;
 
-                    if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
+                    if let Some(prototype_base_classes) = run_context.types[type_index].base_class_prototypes.as_mut() {
+                        prototype_base_classes.insert(base_class_type_index);
+                    }
+                    // Only add the base class index to the UDT if this is not a prototype
+                    if !is_base_class_prototype && let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
                         if user_defined_type.kind == UserDefinedTypeKind::Union {
                             vm_bail!(Some(state), "Union types cannot have base classes");
                         }
@@ -1052,6 +1067,9 @@ impl<'a> GospelVMExecutionState<'a> {
                     let field_name_index = state.immediate_value_checked(instruction, 0)? as i32;
                     let field_name = if field_name_index == -1 { None } else { Some(state.get_referenced_string_checked(field_name_index as usize)?.to_string()) };
 
+                    let field_flags = state.immediate_value_checked(instruction, 1)?;
+                    let is_field_prototype = field_flags & (1 << 2) != 0;
+
                     let raw_user_alignment = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))?;
                     let user_alignment = if raw_user_alignment == -1 { None } else { Some(raw_user_alignment as usize) };
                     let field_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
@@ -1060,17 +1078,24 @@ impl<'a> GospelVMExecutionState<'a> {
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
                     state.validate_udt_type_not_finalized(type_index, run_context)?;
 
-                    if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
+                    let result_field = UserDefinedTypeMember::Field(UserDefinedTypeField{name: field_name.clone(), user_alignment, member_type_index: field_type_index});
+                    if let Some(prototype_members) = run_context.types[type_index].member_prototypes.as_mut() {
+                        prototype_members.insert(result_field.clone());
+                    }
+                    // Add field to the actual UDT only if this is not a field prototype
+                    if !is_field_prototype && let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
                         if field_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == field_name.as_deref()) {
                             vm_bail!(Some(state), "Type #{} already contains a member named {}", type_index, field_name.as_ref().unwrap());
                         }
-                        let result_field = UserDefinedTypeField{name: field_name, user_alignment, member_type_index: field_type_index};
-                        user_defined_type.members.push(UserDefinedTypeMember::Field(result_field))
+                        user_defined_type.members.push(result_field);
                     }
                 }
                 GospelOpcode::TypeUDTAddBitfield => {
                     let field_name_index = state.immediate_value_checked(instruction, 0)? as i32;
                     let field_name = if field_name_index == -1 { None } else { Some(state.get_referenced_string_checked(field_name_index as usize)?.to_string()) };
+
+                    let bitfield_flags = state.immediate_value_checked(instruction, 1)?;
+                    let is_bitfield_prototype = bitfield_flags & (1 << 2) != 0;
 
                     let bitfield_width = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
 
@@ -1086,19 +1111,28 @@ impl<'a> GospelVMExecutionState<'a> {
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
                     state.validate_udt_type_not_finalized(type_index, run_context)?;
 
-                    if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
+                    let result_bitfield = UserDefinedTypeMember::Bitfield(UserDefinedTypeBitfield{name: field_name.clone(), primitive_type: primitive_field_type, bitfield_width});
+                    if let Some(prototype_members) = run_context.types[type_index].member_prototypes.as_mut() {
+                        prototype_members.insert(result_bitfield.clone());
+                    }
+                    // Add bitfield to the actual UDT only if this is not a bitfield prototype
+                    if !is_bitfield_prototype && let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
                         if field_name.is_some() && user_defined_type.members.iter().any(|x| x.name() == field_name.as_deref()) {
                             vm_bail!(Some(state), "Type #{} already contains a member named {}", type_index, field_name.as_ref().unwrap());
                         }
-                        let result_bitfield = UserDefinedTypeBitfield{name: field_name, primitive_type: primitive_field_type, bitfield_width};
-                        user_defined_type.members.push(UserDefinedTypeMember::Bitfield(result_bitfield))
+                        user_defined_type.members.push(result_bitfield);
                     }
                 }
                 GospelOpcode::TypeUDTAddVirtualFunction => {
                     let function_name_index = state.immediate_value_checked(instruction, 0)? as i32;
                     let function_name = state.get_referenced_string_checked(function_name_index as usize)?;
 
-                    let number_of_parameter_stack_values = state.immediate_value_checked(instruction, 1)? as usize;
+                    let function_flags = state.immediate_value_checked(instruction, 1)?;
+                    let is_const_member_function = function_flags & (1 << 0) != 0;
+                    let is_function_override = function_flags & (1 << 1) != 0;
+                    let is_function_prototype = function_flags & (1 << 2) != 0;
+
+                    let number_of_parameter_stack_values = state.immediate_value_checked(instruction, 2)? as usize;
                     if number_of_parameter_stack_values % 2 != 0 {
                         vm_bail!(Some(state), "Invalid number of parameter stack values for TypeUDTAddVirtualFunction; expected even number of stack parameters (pairs of parameter type and name index)");
                     }
@@ -1112,10 +1146,6 @@ impl<'a> GospelVMExecutionState<'a> {
                         parameters[number_of_parameters - index - 1] = FunctionParameterDeclaration{parameter_type_index, parameter_name};
                     }
 
-                    let function_flags = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as u32;
-                    let is_const_member_function = if function_flags & (1 << 0) != 0 { true } else { false };
-                    let is_function_override = if function_flags & (1 << 1) != 0 { true } else { false };
-
                     let return_value_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     let new_function_declaration = FunctionDeclaration{name: function_name.to_string(), return_value_type_index, parameters, is_const_member_function, is_virtual_function_override: is_function_override};
 
@@ -1123,7 +1153,11 @@ impl<'a> GospelVMExecutionState<'a> {
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
                     state.validate_udt_type_not_finalized(type_index, run_context)?;
 
-                    if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
+                    if let Some(prototype_members) = run_context.types[type_index].member_prototypes.as_mut() {
+                        prototype_members.insert(UserDefinedTypeMember::VirtualFunction(new_function_declaration.clone()));
+                    }
+                    // Add virtual function to the UDT only if this is not a function prototype
+                    if !is_function_prototype && let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
                         if user_defined_type.kind == UserDefinedTypeKind::Union {
                             vm_bail!(Some(state), "Union types cannot have virtual functions");
                         }
@@ -1148,7 +1182,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     run_context.types[type_index].vm_metadata = Some(metadata_struct);
                 }
-                GospelOpcode::TypeUDTMarkPartial => {
+                GospelOpcode::TypeUDTMarkTypePartial => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
                     state.validate_udt_type_not_finalized(type_index, run_context)?;
