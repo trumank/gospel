@@ -137,7 +137,7 @@ impl TargetTriplet {
     }
 }
 
-fn fork_type_graph_internal<'a, T : TypeGraphLike>(graph: &'a T, type_index: usize, result: &mut TypeTree, type_lookup: &mut HashMap<usize, usize>) -> usize {
+pub fn fork_type_graph<'a, T : TypeGraphLike>(graph: &'a T, type_index: usize, result: &mut TypeTree, type_lookup: &mut HashMap<usize, usize>) -> usize {
     if let Some(existing_index) = type_lookup.get(&type_index) {
         return *existing_index
     }
@@ -147,37 +147,37 @@ fn fork_type_graph_internal<'a, T : TypeGraphLike>(graph: &'a T, type_index: usi
     type_lookup.insert(type_index, new_index);
 
     let copied_type = match graph.type_by_index(type_index) {
-        Type::Pointer(pointer_type) => Type::Pointer(PointerType{pointee_type_index: fork_type_graph_internal(graph, pointer_type.pointee_type_index, result, type_lookup), is_reference: pointer_type.is_reference}),
-        Type::Array(array_type) => Type::Array(ArrayType{element_type_index: fork_type_graph_internal(graph, array_type.element_type_index, result, type_lookup), array_length: array_type.array_length}),
-        Type::CVQualified(cv_qualified_type) => Type::CVQualified(CVQualifiedType{base_type_index: fork_type_graph_internal(graph, cv_qualified_type.base_type_index, result, type_lookup), constant: cv_qualified_type.constant, volatile: cv_qualified_type.volatile}),
+        Type::Pointer(pointer_type) => Type::Pointer(PointerType{pointee_type_index: fork_type_graph(graph, pointer_type.pointee_type_index, result, type_lookup), is_reference: pointer_type.is_reference}),
+        Type::Array(array_type) => Type::Array(ArrayType{element_type_index: fork_type_graph(graph, array_type.element_type_index, result, type_lookup), array_length: array_type.array_length}),
+        Type::CVQualified(cv_qualified_type) => Type::CVQualified(CVQualifiedType{base_type_index: fork_type_graph(graph, cv_qualified_type.base_type_index, result, type_lookup), constant: cv_qualified_type.constant, volatile: cv_qualified_type.volatile}),
         Type::Primitive(primitive_type) => Type::Primitive(primitive_type.clone()),
         Type::Function(function_type) => {
-            let return_value_type_index = fork_type_graph_internal(graph, function_type.return_value_type_index, result, type_lookup);
-            let this_type_index = if let Some(value) = function_type.this_type_index { Some(fork_type_graph_internal(graph, value, result, type_lookup)) } else { None };
+            let return_value_type_index = fork_type_graph(graph, function_type.return_value_type_index, result, type_lookup);
+            let this_type_index = if let Some(value) = function_type.this_type_index { Some(fork_type_graph(graph, value, result, type_lookup)) } else { None };
             let mut argument_type_indices: Vec<usize> = Vec::new();
             for argument_type_index in &function_type.argument_type_indices {
-                argument_type_indices.push(fork_type_graph_internal(graph, *argument_type_index, result, type_lookup))
+                argument_type_indices.push(fork_type_graph(graph, *argument_type_index, result, type_lookup))
             }
             Type::Function(FunctionType{return_value_type_index, this_type_index, argument_type_indices})
         },
         Type::UDT(user_defined_type) => {
             let mut base_class_indices: Vec<usize> = Vec::new();
             for base_class_index in &user_defined_type.base_class_indices {
-                base_class_indices.push(fork_type_graph_internal(graph, *base_class_index, result, type_lookup))
+                base_class_indices.push(fork_type_graph(graph, *base_class_index, result, type_lookup))
             }
             let mut members: Vec<UserDefinedTypeMember> = Vec::new();
             for member in &user_defined_type.members {
                 members.push(match member {
                     UserDefinedTypeMember::Field(field) => {
-                        let member_type_index = fork_type_graph_internal(graph, field.member_type_index, result, type_lookup);
+                        let member_type_index = fork_type_graph(graph, field.member_type_index, result, type_lookup);
                         UserDefinedTypeMember::Field(UserDefinedTypeField{name: field.name.clone(), user_alignment: field.user_alignment, member_type_index})
                     },
                     UserDefinedTypeMember::Bitfield(bitfield) => UserDefinedTypeMember::Bitfield(bitfield.clone()),
                     UserDefinedTypeMember::VirtualFunction(function_declaration) => {
-                        let return_value_type_index = fork_type_graph_internal(graph, function_declaration.return_value_type_index, result, type_lookup);
+                        let return_value_type_index = fork_type_graph(graph, function_declaration.return_value_type_index, result, type_lookup);
                         let mut parameters: Vec<FunctionParameterDeclaration> = Vec::new();
                         for function_parameter in &function_declaration.parameters {
-                            let parameter_type_index = fork_type_graph_internal(graph, function_parameter.parameter_type_index, result, type_lookup);
+                            let parameter_type_index = fork_type_graph(graph, function_parameter.parameter_type_index, result, type_lookup);
                             parameters.push(FunctionParameterDeclaration{parameter_name: function_parameter.parameter_name.clone(), parameter_type_index});
                         }
                         UserDefinedTypeMember::VirtualFunction(FunctionDeclaration {name: function_declaration.name.clone(), return_value_type_index, parameters,
@@ -202,7 +202,7 @@ pub trait TypeGraphLike {
     fn type_tree(&self, type_index: usize) -> TypeTree where Self: Sized {
         let mut result = TypeTree{types: Vec::new(), root_type_index: 0};
         let mut type_lookup: HashMap<usize, usize> = HashMap::new();
-        let root_type_index = fork_type_graph_internal(self, type_index, &mut result, &mut type_lookup);
+        let root_type_index = fork_type_graph(self, type_index, &mut result, &mut type_lookup);
         result.root_type_index = root_type_index;
         result
     }

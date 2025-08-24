@@ -11,7 +11,7 @@ use clap::{Args, Parser, ValueEnum};
 use gospel_typelib::type_model::{ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, TypeLayoutCache, TypeTree};
 use gospel_vm::module::{GospelContainer};
 use gospel_vm::reflection::{GospelContainerReflector, GospelModuleReflector};
-use gospel_vm::vm::{GospelVMContainer, GospelVMOptions, GospelVMRunContext, GospelVMState, GospelVMValue};
+use gospel_vm::vm::{GospelVMContainer, GospelVMOptions, GospelVMRunContext, GospelVMState, GospelVMTypeContainer, GospelVMValue};
 use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter};
 use crate::assembler::GospelAssembler;
 use crate::ast::ExpressionValueType;
@@ -284,7 +284,7 @@ fn do_action_assemble(action: ActionAssembleModule) -> anyhow::Result<()> {
     Ok({})
 }
 
-fn print_full_type_tree(type_tree: &TypeTree, target_triplet: Option<TargetTriplet>) -> anyhow::Result<()> {
+fn print_full_type_tree(type_tree: &TypeTree, root_type_container: Option<&GospelVMTypeContainer>, target_triplet: Option<TargetTriplet>) -> anyhow::Result<()> {
     let mut optional_type_layout_cache = target_triplet.map(|x| TypeLayoutCache::create(x));
     for type_index in 0..type_tree.types.len() {
         if type_index == type_tree.root_type_index {
@@ -310,13 +310,22 @@ fn print_full_type_tree(type_tree: &TypeTree, target_triplet: Option<TargetTripl
         serde_json::to_string_pretty(type_tree.type_by_index(type_index))?.lines().for_each(|x| {
             println!(" | {}", x);
         });
+        // TODO: Type indices printed as a part of type prototype are actually incorrect because they refer to the original type graph and not a sub-tree we have forked off
+        if type_index == type_tree.root_type_index && let Some(root_type_container) = root_type_container {
+            if let Some(member_prototypes) = &root_type_container.member_prototypes {
+                println!(" |$ Type Prototype: ");
+                serde_json::to_string_pretty(member_prototypes)?.lines().for_each(|x| {
+                    println!(" |$ {}", x);
+                });
+            }
+        }
         if let Some(type_layout_cache) = optional_type_layout_cache.as_mut() {
             if let Type::UDT(user_defined_type) = &type_tree.type_by_index(type_index) {
-                println!(" # UDT Layout:");
+                println!(" |# UDT Layout:");
                 match user_defined_type.layout(type_tree, type_layout_cache) {
                     Ok(type_layout) => {
                         serde_json::to_string_pretty(&type_layout.deref())?.lines().for_each(|x| {
-                            println!(" # {}", x);
+                            println!(" |# {}", x);
                         });
                     }
                     Err(layout_error) => {
@@ -354,19 +363,20 @@ fn print_simplified_type_tree(type_tree: &TypeTree, target_triplet: Option<Targe
     Ok({})
 }
 
-fn print_type_tree(type_tree: &TypeTree, target_triplet: Option<TargetTriplet>, print_format: TypeTreeOutputFormat) -> anyhow::Result<()> {
+fn print_type_tree(type_tree: &TypeTree, root_type_container: Option<&GospelVMTypeContainer>, target_triplet: Option<TargetTriplet>, print_format: TypeTreeOutputFormat) -> anyhow::Result<()> {
     if print_format == TypeTreeOutputFormat::Simple {
         print_simplified_type_tree(type_tree, target_triplet)
     } else {
-        print_full_type_tree(type_tree, target_triplet)
+        print_full_type_tree(type_tree, root_type_container, target_triplet)
     }
 }
 
 fn pretty_print_vm_value(value: &GospelVMValue, execution_context: &GospelVMRunContext, output_format: Option<TypeTreeOutputFormat>) -> anyhow::Result<()> {
     if let GospelVMValue::TypeReference(type_index) = value {
+        let type_container = execution_context.type_container_by_index(*type_index);
         let type_tree = execution_context.type_tree(*type_index);
         let result_output_format = output_format.unwrap_or(TypeTreeOutputFormat::Full);
-        print_type_tree(&type_tree, execution_context.target_triplet().cloned(), result_output_format)?;
+        print_type_tree(&type_tree, Some(type_container), execution_context.target_triplet().cloned(), result_output_format)?;
     } else {
         println!("Value: {}", serde_json::to_string_pretty(&value)?);
     };
