@@ -342,7 +342,7 @@ impl CompilerFunctionBuilder {
 
         // Compile all statements in the block and then push the return value expression on the stack
         let block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{block_range: CompilerInstructionRange::default(), loop_codegen_data: None}));
-        let block_scope = scope.declare_scope("block", CompilerLexicalScopeClass::Block(block_declaration.clone()), DeclarationVisibility::Private, &source_context.line_context)?;
+        let block_scope = scope.declare_scope_generated_name("block", CompilerLexicalScopeClass::Block(block_declaration.clone()), &source_context.line_context)?;
         let block_start_instruction_index = self.function_definition.current_instruction_count();
         for statement in &expression.statements {
             self.compile_statement(&block_scope, statement)?;
@@ -364,7 +364,7 @@ impl CompilerFunctionBuilder {
 
         // We did not jump to the else block, which means the condition was true. Evaluate the true branch and jump to the end
         let then_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{block_range: CompilerInstructionRange::default(), loop_codegen_data: None}));
-        let then_branch_block = scope.declare_scope("then", CompilerLexicalScopeClass::Block(then_block_declaration.clone()), DeclarationVisibility::Private, &source_context.line_context)?;
+        let then_branch_block = scope.declare_scope_generated_name("then", CompilerLexicalScopeClass::Block(then_block_declaration.clone()), &source_context.line_context)?;
         let then_instruction_index = self.function_definition.current_instruction_count();
         let then_expression_type = self.compile_expression(&then_branch_block, &expression.true_expression)?;
 
@@ -379,7 +379,7 @@ impl CompilerFunctionBuilder {
 
         // We jumped to the else block, evaluate the false branch
         let else_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{block_range: CompilerInstructionRange::default(), loop_codegen_data: None}));
-        let else_branch_block = scope.declare_scope("else", CompilerLexicalScopeClass::Block(else_block_declaration.clone()), DeclarationVisibility::Private, &source_context.line_context)?;
+        let else_branch_block = scope.declare_scope_generated_name("else", CompilerLexicalScopeClass::Block(else_block_declaration.clone()), &source_context.line_context)?;
         let else_expression_type = self.compile_expression(&else_branch_block, &expression.false_expression)?;
         else_block_declaration.borrow_mut().block_range = CompilerInstructionRange{
             start_instruction_index: else_block_instruction_index,
