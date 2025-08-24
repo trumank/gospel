@@ -1,0 +1,6 @@
+[module]
+name = "dependent_module"
+version = "1.0.0"
+
+[dependencies]
+minimal_module = { version = "1.0", path = "../minimal_module" }

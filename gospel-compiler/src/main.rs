@@ -1,13 +1,13 @@
 use std::cell::RefCell;
-use std::fs::{read, read_to_string, write};
+use std::env::current_dir;
+use std::fs::{create_dir_all, read, read_to_string, write};
 use std::ops::Deref;
-use std::path::PathBuf;
+use std::path::{absolute, PathBuf};
 use std::process::exit;
 use std::rc::Rc;
 use std::str::FromStr;
-use anyhow::{anyhow, bail};
-use clap::{Parser, ValueEnum};
-use crate::backend::CompilerOptions;
+use anyhow::{anyhow};
+use clap::{Args, Parser, ValueEnum};
 use gospel_typelib::type_model::{ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, TypeLayoutCache, TypeTree};
 use gospel_vm::module::{GospelContainer};
 use gospel_vm::reflection::{GospelContainerReflector, GospelModuleReflector};
@@ -15,7 +15,8 @@ use gospel_vm::vm::{GospelVMContainer, GospelVMOptions, GospelVMRunContext, Gosp
 use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter};
 use crate::assembler::GospelAssembler;
 use crate::ast::ExpressionValueType;
-use crate::backend::{CompilerInstance, CompilerModuleBuilder, CompilerResultTrait};
+use crate::backend::{CompilerInstance, CompilerModuleBuilder, CompilerOptions, CompilerResultTrait};
+use crate::module_definition::{resolve_module_dependencies, GospelModule};
 use crate::parser::{parse_expression, parse_source_file};
 
 pub mod assembler;
@@ -23,6 +24,7 @@ pub mod ast;
 pub mod parser;
 mod lex_util;
 pub mod backend;
+pub mod module_definition;
 
 #[derive(Parser, Debug)]
 struct ActionAssembleModule {
@@ -35,115 +37,6 @@ struct ActionAssembleModule {
     /// Assembly files to compile to the container
     #[arg(index = 2)]
     files: Vec<PathBuf>,
-}
-
-#[derive(Parser, Debug)]
-struct ActionCallFunction {
-    /// Container files to load to the VM before evaluation of the expression
-    #[arg(long, short)]
-    input: Vec<PathBuf>,
-    /// Target triple to use as a platform config. When not provided, current platform will be used instead (environment is assumed to be native to the platform)
-    #[arg(long, short)]
-    target: Option<String>,
-    /// Name of the container to find the function in, if not provided all containers are searched in the same order they are passed on the command line
-    #[arg(long, short)]
-    container_name: Option<String>,
-    /// Name of the function to call
-    #[arg(index = 1)]
-    function_name: String,
-    /// Optional arguments to provide to the function
-    #[arg(index = 2)]
-    function_args: Vec<String>,
-    /// Global variable to set (must be int) e.g. VERSION=12 or SIZE=0x10
-    #[arg(long, short)]
-    global: Vec<GlobalVariable>,
-    /// Output format for the type tree (if result is a type tree)
-    #[arg(long, short = 'f')]
-    output_format: Option<TypeTreeOutputFormat>,
-}
-
-#[derive(Parser, Debug)]
-struct ActionReflectModule {
-    /// Module container or reference container to print the public interface of
-    #[arg(index = 1)]
-    input: PathBuf,
-}
-
-#[derive(Parser, Debug)]
-struct ActionParseSourceFile {
-    /// Path to the source file to parse
-    #[arg(index = 1)]
-    input: PathBuf,
-    /// Output to write the result JSON to. If not provided, result is written to stdout
-    #[arg(long, short)]
-    output: Option<PathBuf>,
-}
-
-#[derive(Parser, Debug)]
-struct ActionCompileModule {
-    /// Name of the module to compile. If not provided, base name of the first file is used
-    #[arg(long, short)]
-    module_name: Option<String>,
-    /// Output to write the compiled module to. If not provided, the file created will be {module_name}.gso
-    #[arg(long, short)]
-    output: Option<PathBuf>,
-    /// Files to compile into the module
-    #[arg(index = 1)]
-    files: Vec<PathBuf>,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
-enum TypeTreeOutputFormat {
-    Simple,
-    Full,
-}
-
-#[derive(Parser, Debug)]
-struct ActionEvalExpression {
-    /// Target triple to use as a platform config. When not provided, current platform will be used instead (environment is assumed to be native to the platform)
-    #[arg(long, short)]
-    target: Option<String>,
-    /// Name of the module to compile as. If not provided, name of the first input file is used
-    #[arg(long, short)]
-    module_name: Option<String>,
-    /// Files to compile into the module
-    #[arg(long, short)]
-    input: Vec<PathBuf>,
-    /// Expression to eval against the input
-    #[arg(long, short)]
-    expression: String,
-    /// Global variable to set (must be int) e.g. VERSION=12 or SIZE=0x10
-    #[arg(long, short)]
-    global: Vec<GlobalVariable>,
-    /// Type of the value yielded by the expression. If not specified, default expression type is Typename
-    #[arg(long, short = 'x')]
-    expression_type: Option<String>,
-    /// Output format for the type tree (if result is a type tree)
-    #[arg(long, short = 'f')]
-    output_format: Option<TypeTreeOutputFormat>,
-}
-
-#[derive(Parser, Debug)]
-enum Action {
-    /// Assembles low level gospel assembly source files to a module container
-    Assemble(ActionAssembleModule),
-    /// Call a named function with the provided arguments
-    Call(ActionCallFunction),
-    /// Prints information about the public interface of the given module. Note that this will not print any private module definitions or data
-    Reflect(ActionReflectModule),
-    /// Parses the source file to an AST and dumps it to the standard output as JSON
-    Parse(ActionParseSourceFile),
-    /// Compiles module files into a module container
-    Compile(ActionCompileModule),
-    /// Compiles input files and evals an expression against them, and returns the result
-    Eval(ActionEvalExpression),
-}
-
-#[derive(Parser, Debug)]
-#[clap(version)]
-struct Args {
-    #[command(subcommand)]
-    action: Action,
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +62,203 @@ impl FromStr for GlobalVariable {
     }
 }
 
+/// Shared options passed to the Gospel VM
+#[derive(Debug, Args)]
+struct CommandLineVMOptions {
+    /// Target triple to use as a platform config. When not provided, current platform will be used instead (environment is assumed to be native to the platform)
+    #[arg(long, short)]
+    target: Option<String>,
+    /// Global variables to set (must be int) e.g. VERSION=12 or SIZE=0x10
+    #[arg(long, short)]
+    global: Vec<GlobalVariable>,
+    /// Disable default target selection, when no target is provided code will run with no target triplet (and will not be able to calculate sizes)
+    #[arg(long)]
+    no_default_target: bool,
+    /// Do not use default global variable values provided by the module containers
+    #[arg(long)]
+    no_default_globals: bool,
+}
+impl CommandLineVMOptions {
+    fn create_run_context(&self) -> anyhow::Result<GospelVMRunContext> {
+        let target_triplet = if let Some(target_triplet_name) = &self.target {
+            Some(TargetTriplet::parse(target_triplet_name.as_str())
+                .map_err(|x| anyhow!("Failed to parse provided target triplet: {}", x.to_string()))?)
+        } else if !self.no_default_target {
+            Some(TargetTriplet::current_target()
+                .ok_or_else(|| anyhow!("Current platform is not a valid target. Please specify target manually with --target "))?)
+        } else { None };
+
+        let mut vm_options = GospelVMOptions::default();
+        if let Some(set_target_triplet) = target_triplet {
+            vm_options = vm_options.target_triplet(set_target_triplet);
+        }
+        for global in &self.global {
+            vm_options = vm_options.with_global(&global.name, global.value);
+        }
+        if self.no_default_globals {
+            vm_options = vm_options.no_default_globals();
+        }
+        Ok(GospelVMRunContext::create(vm_options))
+    }
+}
+
+#[derive(Debug, Parser)]
+struct ActionCallFunction {
+    /// VM options to pass to the VM
+    #[command(flatten)]
+    vm_options: CommandLineVMOptions,
+    /// Container files to load to the VM before evaluation of the expression
+    #[arg(long, short)]
+    input: Vec<PathBuf>,
+    /// Name of the container to find the function in, if not provided all containers are searched in the same order they are passed on the command line
+    #[arg(long, short)]
+    container_name: Option<String>,
+    /// Name of the function to call
+    #[arg(index = 1)]
+    function_name: String,
+    /// Optional arguments to provide to the function
+    #[arg(index = 2)]
+    function_args: Vec<String>,
+    /// Output format for the type tree (if result is a type tree)
+    #[arg(long, short = 'f')]
+    output_format: Option<TypeTreeOutputFormat>,
+}
+
+#[derive(Parser, Debug)]
+struct ActionReflectModule {
+    /// Module container or reference container to print the public interface of
+    #[arg(index = 1)]
+    input: PathBuf,
+}
+
+#[derive(Parser, Debug)]
+struct ActionParseSourceFile {
+    /// Path to the source file to parse
+    #[arg(index = 1)]
+    input: PathBuf,
+    /// Output to write the result JSON to. If not provided, result is written to stdout
+    #[arg(long, short)]
+    output: Option<PathBuf>,
+}
+
+/// Shared options passed to the Gospel Compiler
+#[derive(Debug, Args)]
+struct CommandLineCompilerOptions {
+    /// Whenever partial type definitions should be produced (wrap members in try/catch blocks)
+    #[arg(long)]
+    allow_partial_types: bool,
+    /// Whenever prototype UDT layout metadata should be written
+    #[arg(long)]
+    generate_prototypes: bool,
+}
+impl CommandLineCompilerOptions {
+    fn create_compiler_instance(&self) -> anyhow::Result<Rc<CompilerInstance>> {
+        let mut compiler_options = CompilerOptions::default();
+        if self.allow_partial_types {
+            compiler_options = compiler_options.allow_partial_types();
+        }
+        if self.generate_prototypes {
+            compiler_options = compiler_options.generate_prototype_layouts();
+        }
+        Ok(CompilerInstance::create(compiler_options))
+    }
+}
+
+/// Options passed to the compiler to compile a single module
+#[derive(Debug, Args)]
+struct CommandLineModuleCompileOptions {
+    /// Additional module paths that should be included and available to the compiled module
+    #[arg(long, short)]
+    included_modules: Vec<PathBuf>,
+    /// Module directory to compile. If not specified, current directory is used
+    #[arg(index = 1)]
+    module: Option<PathBuf>,
+}
+impl CommandLineModuleCompileOptions {
+    fn resolve_module_dependencies(&self) -> anyhow::Result<Rc<GospelModule>> {
+        let mut all_module_paths: Vec<PathBuf> = Vec::new();
+        for module_include_path in &self.included_modules {
+            let absolute_module_path = absolute(module_include_path)?;
+            if !all_module_paths.contains(&absolute_module_path) {
+                all_module_paths.push(absolute_module_path);
+            }
+        }
+        let absolute_module_path = absolute(if let Some(user_specified_path) = self.module.clone() {
+            user_specified_path
+        } else { current_dir()? })?;
+        let main_module_index = all_module_paths.iter().position(|x| x == &absolute_module_path).unwrap_or_else(|| {
+            all_module_paths.push(absolute_module_path);
+            all_module_paths.len() - 1
+        });
+        let resolved_modules = resolve_module_dependencies(&all_module_paths)?;
+        Ok(resolved_modules[main_module_index].clone())
+    }
+}
+
+#[derive(Parser, Debug)]
+struct ActionCompileModule {
+    /// Options to pass to the compiler
+    #[command(flatten)]
+    compiler_options: CommandLineCompilerOptions,
+    /// Specification for the module to compile
+    #[command(flatten)]
+    module_compile_options: CommandLineModuleCompileOptions,
+    /// Output to write the compiled module to. If not provided, the file created will be {module_name}.gso
+    #[arg(long, short)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
+enum TypeTreeOutputFormat {
+    Simple,
+    Full,
+}
+
+#[derive(Debug, Parser)]
+struct ActionEvalExpression {
+    /// VM options to pass to the VM
+    #[command(flatten)]
+    vm_options: CommandLineVMOptions,
+    /// Options to pass to the compiler
+    #[command(flatten)]
+    compiler_options: CommandLineCompilerOptions,
+    /// Specification for the module to compile
+    #[command(flatten)]
+    module_compile_options: CommandLineModuleCompileOptions,
+    /// Expression to eval against the input
+    #[arg(long, short)]
+    expression: String,
+    /// Type of the value yielded by the expression. If not specified, default expression type is Typename
+    #[arg(long, short = 'x')]
+    expression_type: Option<String>,
+    /// Output format for the type tree (if result is a type tree)
+    #[arg(long, short = 'f')]
+    output_format: Option<TypeTreeOutputFormat>,
+}
+
+#[derive(Debug, Parser)]
+enum Action {
+    /// Assembles low level gospel assembly source files to a module container
+    Assemble(ActionAssembleModule),
+    /// Call a named function with the provided arguments
+    Call(ActionCallFunction),
+    /// Prints information about the public interface of the given module. Note that this will not print any private module definitions or data
+    Reflect(ActionReflectModule),
+    /// Parses the source file to an AST and dumps it to the standard output as JSON
+    Parse(ActionParseSourceFile),
+    /// Compiles module files into a module container
+    Compile(ActionCompileModule),
+    /// Compiles input files and evals an expression against them, and returns the result
+    Eval(ActionEvalExpression),
+}
+
+#[derive(Debug, Parser)]
+#[clap(version)]
+struct TopLevelArgs {
+    #[command(subcommand)]
+    action: Action,
+}
+
 fn do_action_assemble(action: ActionAssembleModule) -> anyhow::Result<()> {
     let writer = Rc::new(RefCell::new(GospelContainerWriter::create(action.module_name.as_str())));
     let mut assembler = GospelAssembler::create(writer.clone());
@@ -184,6 +274,9 @@ fn do_action_assemble(action: ActionAssembleModule) -> anyhow::Result<()> {
     let result_container = writer.borrow_mut().build()
         .map_err(|x| anyhow!("Failed to build container: {}", x.to_string()))?;
     let output_file_name = action.output.unwrap_or_else(|| PathBuf::from(format!("{}.gso", action.module_name)));
+    if let Some(parent_directory) = output_file_name.parent() {
+        create_dir_all(parent_directory).map_err(|x| anyhow!("Failed to create parent directories for file {}: {}", output_file_name.display(), x))?;
+    }
     let container_serialized_data = result_container.write()
         .map_err(|x| anyhow!("Failed to serialize container: {}", x.to_string()))?;
     write(output_file_name.clone(), container_serialized_data)
@@ -269,16 +362,19 @@ fn print_type_tree(type_tree: &TypeTree, target_triplet: Option<TargetTriplet>, 
     }
 }
 
+fn pretty_print_vm_value(value: &GospelVMValue, execution_context: &GospelVMRunContext, output_format: Option<TypeTreeOutputFormat>) -> anyhow::Result<()> {
+    if let GospelVMValue::TypeReference(type_index) = value {
+        let type_tree = execution_context.type_tree(*type_index);
+        let result_output_format = output_format.unwrap_or(TypeTreeOutputFormat::Full);
+        print_type_tree(&type_tree, execution_context.target_triplet().cloned(), result_output_format)?;
+    } else {
+        println!("Value: {}", serde_json::to_string_pretty(&value)?);
+    };
+    Ok({})
+}
+
 fn do_action_call(action: ActionCallFunction) -> anyhow::Result<()> {
     // Parse target triplet
-    let target_triplet = if let Some(target_triplet_name) = &action.target {
-        TargetTriplet::parse(target_triplet_name.as_str())
-            .map_err(|x| anyhow!("Failed to parse provided target triplet: {}", x.to_string()))?
-    } else {
-        TargetTriplet::current_target()
-            .ok_or_else(|| anyhow!("Current platform is not a valid target. Please specify target manually with --target "))?
-    };
-    let output_format = action.output_format.unwrap_or(TypeTreeOutputFormat::Full);
 
     // Load containers to the VM
     let mut vm_state = GospelVMState::create();
@@ -314,22 +410,12 @@ fn do_action_call(action: ActionCallFunction) -> anyhow::Result<()> {
     }
 
     // Evaluate the function
-    let mut vm_options = GospelVMOptions::default().target_triplet(target_triplet);
-    for global in action.global {
-        vm_options = vm_options.with_global(&global.name, global.value);
-    }
-    let mut execution_context = GospelVMRunContext::create(vm_options);
+    let mut execution_context = action.vm_options.create_run_context()?;
     let function_result = result_function_pointer.execute(function_arguments, &mut execution_context)
         .map_err(|x| anyhow!("Failed to execute function: {}", x.to_string()))?;
 
     // Print the result now
-    if let GospelVMValue::TypeReference(type_index) = function_result {
-        let type_tree = execution_context.type_tree(type_index);
-        print_type_tree(&type_tree, execution_context.target_triplet().cloned(), output_format)?;
-    } else {
-        println!("Value: {}", serde_json::to_string_pretty(&function_result)?);
-    };
-    Ok({})
+    pretty_print_vm_value(&function_result, &execution_context, action.output_format)
 }
 
 fn do_action_reflect(action: ActionReflectModule) -> anyhow::Result<()> {
@@ -378,31 +464,16 @@ fn do_action_parse(action: ActionParseSourceFile) -> anyhow::Result<()> {
 }
 
 fn do_action_compile(action: ActionCompileModule) -> anyhow::Result<()> {
-    if action.files.is_empty() {
-       bail!("No source files provided");
+    let module_definition = action.module_compile_options.resolve_module_dependencies()?;
+    let compiler_instance = action.compiler_options.create_compiler_instance()?;
+
+    let output_file_name = action.output.unwrap_or_else(|| module_definition.default_build_product_path());
+    if let Some(parent_directory) = output_file_name.parent() {
+        create_dir_all(parent_directory).map_err(|x| anyhow!("Failed to create parent directories for file {}: {}", output_file_name.display(), x))?;
     }
-    let first_file_base_name = action.files[0].file_stem().map(|x| x.to_string_lossy().to_string())
-        .ok_or_else(|| anyhow!("First source file name provided is not a valid file name"))?;
-    let module_name = action.module_name.unwrap_or(first_file_base_name);
 
-    let compiler_instance = CompilerInstance::create(CompilerOptions::default());
-    let module_writer = compiler_instance.define_module(&module_name).to_simple_result()?;
-
-    for source_file_name in &action.files {
-        let file_contents = read_to_string(source_file_name)
-            .map_err(|x| anyhow!("Failed to open source file {}: {}", source_file_name.to_string_lossy(), x.to_string()))?;
-        let file_name = source_file_name.file_name()
-            .map(|x| x.to_string_lossy().to_string())
-            .unwrap_or(String::from("<unknown>"));
-
-        let module_source_file = parse_source_file(file_name.as_str(), file_contents.as_str())
-            .map_err(|x| anyhow!("Failed to parse source file {}: {}", file_name, x))?;
-        module_writer.add_source_file(module_source_file).to_simple_result()
-            .map_err(|x| anyhow!("Failed to pre-compile source file {}: {}", file_name, x))?;
-    }
-    let result_container = module_writer.compile().to_simple_result()
-        .map_err(|x| anyhow!("Failed to compile module: {}", x.to_string()))?;
-    let output_file_name = action.output.unwrap_or_else(|| PathBuf::from(format!("{}.gso", module_name.as_str())));
+    // Include module dependencies to the VM and compile only the current module
+    let result_container = module_definition.include_dependencies_and_compile_module(&compiler_instance)?;
     let container_serialized_data = result_container.write()
         .map_err(|x| anyhow!("Failed to serialize container: {}", x.to_string()))?;
     write(output_file_name.clone(), container_serialized_data)
@@ -411,75 +482,41 @@ fn do_action_compile(action: ActionCompileModule) -> anyhow::Result<()> {
 }
 
 fn do_action_eval(action: ActionEvalExpression) -> anyhow::Result<()> {
-    // Parse target triplet
-    let target_triplet = if let Some(target_triplet_name) = &action.target {
-        TargetTriplet::parse(target_triplet_name.as_str())
-            .map_err(|x| anyhow!("Failed to parse provided target triplet: {}", x.to_string()))?
-    } else {
-        TargetTriplet::current_target()
-            .ok_or_else(|| anyhow!("Current platform is not a valid target. Please specify target manually with --target "))?
-    };
-    let output_format = action.output_format.unwrap_or(TypeTreeOutputFormat::Full);
+    let module_definition = action.module_compile_options.resolve_module_dependencies()?;
+    let compiler_instance = action.compiler_options.create_compiler_instance()?;
 
+    // Compile full module tree and mount it to the VM state
+    let module_containers = module_definition.compile_module_tree(&compiler_instance)?;
+    let mut vm_state = GospelVMState::create();
+    for module_container in module_containers {
+        vm_state.mount_container(module_container).map_err(|x| anyhow!("Failed to mount module container: {}", x))?;
+    }
+
+    // Compile the provided expression in a separate module
     let expression_value_type = if let Some(value_type_string) = &action.expression_type {
         ExpressionValueType::from_str(value_type_string).map_err(|x| anyhow!("Unknown expression value type: {}. Allowed expression value types are typename and int", x))?
     } else { ExpressionValueType::Typename };
-    if action.input.is_empty() {
-        bail!("No source files provided");
-    }
-    let first_file_base_name = action.input[0].file_stem().map(|x| x.to_string_lossy().to_string())
-        .ok_or_else(|| anyhow!("First source file name provided is not a valid file name"))?;
-    let module_name = action.module_name.unwrap_or(first_file_base_name);
-
-    let compiler_instance = CompilerInstance::create(CompilerOptions::default());
-    let module_writer = compiler_instance.define_module(&module_name).to_simple_result()?;
-
-    // Compile provided source files first
-    for source_file_name in &action.input {
-        let file_contents = read_to_string(source_file_name)
-            .map_err(|x| anyhow!("Failed to open source file {}: {}", source_file_name.to_string_lossy(), x.to_string()))?;
-        let file_name = source_file_name.file_name()
-            .map(|x| x.to_string_lossy().to_string())
-            .unwrap_or(String::from("<unknown>"));
-
-        let module_source_file = parse_source_file(file_name.as_str(), file_contents.as_str())
-            .map_err(|x| anyhow!("Failed to parse source file {}: {}", file_name, x))?;
-        module_writer.add_source_file(module_source_file).to_simple_result()
-            .map_err(|x| anyhow!("Failed to compile source file {}: {}", file_name, x))?;
-    }
-    // Compile the provided expression into a generated function
     let parsed_expression = parse_expression("<stdin>", action.expression.as_str())
         .map_err(|x| anyhow!("Failed to parse expression: {}", x))?;
+
+    let module_writer = compiler_instance.define_module("@stdin_repl").to_simple_result()?;
     let function_reference = module_writer.add_simple_function("@stdin_repl", expression_value_type, &parsed_expression).to_simple_result()
         .map_err(|x| anyhow!("Failed to compile expression: {}", x))?;
-
-    let mut vm_state = GospelVMState::create();
-    let mounted_container = vm_state.mount_container(module_writer.compile().to_simple_result()
-        .map_err(|x| anyhow!("Failed to compile module: {}", x))?)?;
-    let compiled_expression = mounted_container.find_named_function(function_reference.local_name.as_str()).ok_or_else(|| anyhow!("Failed to find compiled expression function"))?;
+    let result_module = module_writer.compile().map_err(|x| anyhow!("Failed to compile module: {}", x))?;
+    let mounted_container = vm_state.mount_container(result_module).map_err(|x| anyhow!("Failed to mount module container: {}", x))?;
 
     // Evaluate the function
-    let mut vm_options = GospelVMOptions::default().target_triplet(target_triplet);
-    for global in action.global {
-        vm_options = vm_options.with_global(&global.name, global.value);
-    }
-    let mut execution_context = GospelVMRunContext::create(vm_options);
-
+    let compiled_expression = mounted_container.find_named_function(function_reference.local_name.as_str()).ok_or_else(|| anyhow!("Failed to find compiled expression function"))?;
+    let mut execution_context = action.vm_options.create_run_context()?;
     let function_result = compiled_expression.execute(Vec::new(), &mut execution_context)
         .map_err(|x| anyhow!("Failed to eval expression: {}", x.to_string()))?;
 
     // Print the result now
-    if let GospelVMValue::TypeReference(type_index) = function_result {
-        let type_tree = execution_context.type_tree(type_index);
-        print_type_tree(&type_tree, execution_context.target_triplet().cloned(), output_format)?;
-    } else {
-        println!("Value: {}", serde_json::to_string_pretty(&function_result)?);
-    };
-    Ok({})
+    pretty_print_vm_value(&function_result, &execution_context, action.output_format)
 }
 
 fn main() {
-    let args = Args::parse();
+    let args = TopLevelArgs::parse();
     let result = match args.action {
         Action::Assemble(assemble_action) => do_action_assemble(assemble_action),
         Action::Call(call_action) => do_action_call(call_action),
