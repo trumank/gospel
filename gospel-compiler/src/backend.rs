@@ -1,4 +1,4 @@
-﻿use std::cell::RefCell;
+﻿use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{HashMap};
 use std::fmt::{Debug, Display, Formatter};
 use std::path::PathBuf;
@@ -121,24 +121,27 @@ impl<T, R> ToCompositeCompilerResult<T> for R where R: Iterator<Item = CompilerR
     }
 }
 
+/// Represents an explicit function parameter declaration
 #[derive(Debug, Clone)]
-struct CompilerFunctionParameter {
-    parameter_type: ExpressionValueType,
-    default_value: Option<CompilerFunctionReference>,
-    parameter_declaration: Weak<CompilerLexicalDeclaration>,
+pub struct CompilerFunctionParameter {
+    pub parameter_type: ExpressionValueType,
+    pub default_value: Option<CompilerFunctionReference>,
+    pub parameter_declaration: Weak<CompilerLexicalDeclaration>,
 }
 
+/// Represents a signature of the function with all the implicit and explicit parameters, as well as return value, listed
 #[derive(Debug, Clone, Default)]
-struct CompilerFunctionSignature {
-    implicit_parameters: Vec<Weak<CompilerLexicalDeclaration>>,
-    explicit_parameters: Option<Vec<CompilerFunctionParameter>>,
-    return_value_type: ExpressionValueType,
+pub struct CompilerFunctionSignature {
+    pub implicit_parameters: Vec<Weak<CompilerLexicalDeclaration>>,
+    pub explicit_parameters: Option<Vec<CompilerFunctionParameter>>,
+    pub return_value_type: ExpressionValueType,
 }
 
+/// Represents a reference to a function that can be used to call the function later
 #[derive(Debug, Clone, Default)]
-struct CompilerFunctionReference {
-    function: GospelSourceObjectReference,
-    signature: CompilerFunctionSignature,
+pub struct CompilerFunctionReference {
+    pub function: GospelSourceObjectReference,
+    pub signature: CompilerFunctionSignature,
 }
 
 /// Compiler options that affect the compilation of the source files and modules
@@ -342,7 +345,7 @@ impl CompilerFunctionBuilder {
 
         // Compile all statements in the block and then push the return value expression on the stack
         let block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{block_range: CompilerInstructionRange::default(), loop_codegen_data: None}));
-        let block_scope = scope.declare_scope_generated_name("block", CompilerLexicalScopeClass::Block(block_declaration.clone()), &source_context.line_context)?;
+        let block_scope = scope.declare_scope_generated_name("block", CompilerLexicalScopeClass::Block(CompilerResource{resource_handle: block_declaration.clone()}), &source_context.line_context)?;
         let block_start_instruction_index = self.function_definition.current_instruction_count();
         for statement in &expression.statements {
             self.compile_statement(&block_scope, statement)?;
@@ -364,7 +367,7 @@ impl CompilerFunctionBuilder {
 
         // We did not jump to the else block, which means the condition was true. Evaluate the true branch and jump to the end
         let then_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{block_range: CompilerInstructionRange::default(), loop_codegen_data: None}));
-        let then_branch_block = scope.declare_scope_generated_name("then", CompilerLexicalScopeClass::Block(then_block_declaration.clone()), &source_context.line_context)?;
+        let then_branch_block = scope.declare_scope_generated_name("then", CompilerLexicalScopeClass::Block(CompilerResource{resource_handle: then_block_declaration.clone()}), &source_context.line_context)?;
         let then_instruction_index = self.function_definition.current_instruction_count();
         let then_expression_type = self.compile_expression(&then_branch_block, &expression.true_expression)?;
 
@@ -379,7 +382,7 @@ impl CompilerFunctionBuilder {
 
         // We jumped to the else block, evaluate the false branch
         let else_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{block_range: CompilerInstructionRange::default(), loop_codegen_data: None}));
-        let else_branch_block = scope.declare_scope_generated_name("else", CompilerLexicalScopeClass::Block(else_block_declaration.clone()), &source_context.line_context)?;
+        let else_branch_block = scope.declare_scope_generated_name("else", CompilerLexicalScopeClass::Block(CompilerResource{resource_handle: else_block_declaration.clone()}), &source_context.line_context)?;
         let else_expression_type = self.compile_expression(&else_branch_block, &expression.false_expression)?;
         else_block_declaration.borrow_mut().block_range = CompilerInstructionRange{
             start_instruction_index: else_block_instruction_index,
@@ -625,9 +628,9 @@ impl CompilerFunctionBuilder {
             CompilerLexicalDeclarationClass::Parameter(parameter_type) => {
                 self.compile_argument_value(source_context, &declaration, parameter_type.clone())
             }
-            CompilerLexicalDeclarationClass::GlobalData((global_variable_expression_type, global_variable_name)) => {
-                self.function_definition.add_string_instruction(GospelOpcode::LoadGlobalVariable, &global_variable_name, Self::get_line_number(source_context)).with_source_context(source_context)?;
-                Ok(*global_variable_expression_type)
+            CompilerLexicalDeclarationClass::GlobalData(global_data) => {
+                self.function_definition.add_string_instruction(GospelOpcode::LoadGlobalVariable, &global_data.global_name, Self::get_line_number(source_context)).with_source_context(source_context)?;
+                Ok(global_data.value_type)
             }
             _ => Err(compiler_error!(source_context, "Declaration {} does not name a local or global variable or template parameter", declaration.name))
         }
@@ -806,7 +809,7 @@ impl CompilerFunctionBuilder {
         let (_, condition_fixup) = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
 
         let then_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{block_range: CompilerInstructionRange::default(), loop_codegen_data: None}));
-        let then_scope = scope.declare_scope_generated_name("then", CompilerLexicalScopeClass::Block(then_block_declaration.clone()), &source_context.line_context)?;
+        let then_scope = scope.declare_scope_generated_name("then", CompilerLexicalScopeClass::Block(CompilerResource{resource_handle: then_block_declaration.clone()}), &source_context.line_context)?;
         let then_instruction_index=  self.function_definition.current_instruction_count();
         self.compile_statement(&then_scope, &statement.then_statement)?;
 
@@ -820,7 +823,7 @@ impl CompilerFunctionBuilder {
             };
 
             let else_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{block_range: CompilerInstructionRange::default(), loop_codegen_data: None}));
-            let else_scope = scope.declare_scope_generated_name("else", CompilerLexicalScopeClass::Block(else_block_declaration.clone()), &statement.source_context)?;
+            let else_scope = scope.declare_scope_generated_name("else", CompilerLexicalScopeClass::Block(CompilerResource{resource_handle: else_block_declaration.clone()}), &statement.source_context)?;
             self.compile_statement(&else_scope, &else_statement)?;
             else_block_declaration.borrow_mut().block_range = CompilerInstructionRange{
                 start_instruction_index: else_branch_instruction_index,
@@ -843,7 +846,7 @@ impl CompilerFunctionBuilder {
     }
     fn compile_block_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &BlockStatement) -> CompilerResult<()> {
         let block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{block_range: CompilerInstructionRange::default(), loop_codegen_data: None}));
-        let block_scope = scope.declare_scope_generated_name("block", CompilerLexicalScopeClass::Block(block_declaration.clone()), &statement.source_context)?;
+        let block_scope = scope.declare_scope_generated_name("block", CompilerLexicalScopeClass::Block(CompilerResource{resource_handle: block_declaration.clone()}), &statement.source_context)?;
         let block_start_instruction_index = self.function_definition.current_instruction_count();
         for inner_statement in &statement.statements {
             self.compile_statement(&block_scope, inner_statement)?;
@@ -863,7 +866,7 @@ impl CompilerFunctionBuilder {
         let (_, loop_condition_fixup) = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
 
         let loop_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{block_range: CompilerInstructionRange::default(), loop_codegen_data: Some(CompilerLoopCodegenData::default())}));
-        let loop_scope = scope.declare_scope_generated_name("loop", CompilerLexicalScopeClass::Block(loop_declaration.clone()), &source_context.line_context)?;
+        let loop_scope = scope.declare_scope_generated_name("loop", CompilerLexicalScopeClass::Block(CompilerResource{resource_handle: loop_declaration.clone()}), &source_context.line_context)?;
         self.compile_statement(&loop_scope, &statement.loop_body_statement)?;
 
         self.function_definition.add_control_flow_instruction_no_fixup(GospelOpcode::Branch, loop_start_instruction_index, Self::get_line_number(&loop_scope.source_context)).with_source_context(&loop_scope.source_context)?;
@@ -1031,7 +1034,7 @@ impl CompilerFunctionBuilder {
     fn commit(self) -> CompilerResult<()> {
         let codegen_data = self.function_scope.module_codegen().ok_or_else(|| compiler_error!(&self.function_scope.source_context, "Codegen not found for current module"))?;
         if let Err(error) = codegen_data.visitor.borrow_mut().define_function(self.function_definition) {
-            compiler_bail!(&self.function_scope.source_context, "Failed to define function {}: {}", self.function_scope.full_scope_name(), error.to_string());
+            compiler_bail!(&self.function_scope.source_context, "Failed to define function {}: {}", self.function_scope.full_scope_name_no_module_name(), error.to_string());
         }
         Ok({})
     }
@@ -1045,7 +1048,7 @@ trait CompilerModuleBuilderInternal : Debug {
 pub trait CompilerModuleBuilder : CompilerModuleBuilderInternal {
     fn add_source_file(&self, source_file: ModuleSourceFile) -> CompilerResult<()> {
         let file_name_without_extension = PathBuf::from(source_file.file_name.as_str()).file_stem().map(|x| x.to_string_lossy().to_string()).unwrap();
-        let file_scope = self.module_scope().declare_scope(&file_name_without_extension, CompilerLexicalScopeClass::SourceFile(source_file.file_name.clone()), DeclarationVisibility::Public, &ASTSourceContext::default())?;
+        let file_scope = self.module_scope().declare_scope(&file_name_without_extension, CompilerLexicalScopeClass::SourceFile(CompilerSourceFileData{file_name: source_file.file_name.clone()}), DeclarationVisibility::Public, &ASTSourceContext::default())?;
 
         source_file.declarations.iter().map(|top_level_declaration| match top_level_declaration {
             ModuleTopLevelDeclaration::EmptyStatement => { Ok({}) }
@@ -1122,15 +1125,18 @@ impl CompilerModuleBuilderInternal for CompilerModuleDefinitionBuilder {
 }
 impl CompilerModuleBuilder for CompilerModuleDefinitionBuilder {}
 
+/// Represents a meta-layout of struct member
 #[derive(Debug, Clone)]
-struct CompilerStructMetaMember {
-    name: String,
-    value_type: ExpressionValueType,
+pub struct CompilerStructMetaMember {
+    pub name: String,
+    pub value_type: ExpressionValueType,
     declaration_source_contexts: Vec<CompilerSourceContext>,
 }
+
+/// Represents a meta-layout of struct
 #[derive(Debug, Clone, Default)]
-struct CompilerStructMetaLayout {
-    members: Vec<CompilerStructMetaMember>,
+pub struct CompilerStructMetaLayout {
+    pub members: Vec<CompilerStructMetaMember>,
     member_lookup: HashMap<String, usize>,
 }
 impl CompilerStructMetaLayout {
@@ -1162,10 +1168,11 @@ impl CompilerStructMetaLayout {
     }
 }
 
+/// Represents a meta-layout of the compiled struct
 #[derive(Debug, Clone, Default)]
-struct CompilerStructMetaLayoutReference {
-    reference: GospelSourceObjectReference,
-    signature: CompilerStructMetaLayout,
+pub struct CompilerStructMetaLayoutReference {
+    pub reference: GospelSourceObjectReference,
+    pub signature: CompilerStructMetaLayout,
 }
 
 #[derive(Debug, Clone)]
@@ -1672,7 +1679,7 @@ impl CompilerInstance {
         if statement.value_type != ExpressionValueType::Int {
             compiler_bail!(&source_context, "Global data can only be of Int type, attempting to declare global data {} as {}", name.as_str(), statement.value_type);
         }
-        scope.declare(&name, CompilerLexicalDeclarationClass::GlobalData((statement.value_type, name.clone())), DeclarationVisibility::Public, &source_context.line_context)?;
+        scope.declare(&name, CompilerLexicalDeclarationClass::GlobalData(GlobalDataDeclaration{global_name: name.clone(), value_type: statement.value_type}), DeclarationVisibility::Public, &source_context.line_context)?;
         let maybe_default_value = if let Some(default_value_expression) = &statement.default_value {
             if let Expression::IntegerConstantExpression(int_constant_expr) = default_value_expression {
                 Some(int_constant_expr.constant_value)
@@ -1697,9 +1704,9 @@ impl CompilerInstance {
                 }
             }));
             let function_parent_scope = source_function_scope.parent_scope().unwrap();
-            let default_value_function_scope = function_parent_scope.declare_scope(function_name.as_str(), CompilerLexicalScopeClass::Function(function_closure.clone()), source_function_scope.visibility, &source_context.line_context)?;
+            let default_value_function_scope = function_parent_scope.declare_scope(function_name.as_str(), CompilerLexicalScopeClass::Function(CompilerResource{resource_handle: function_closure.clone()}), source_function_scope.visibility, &source_context.line_context)?;
 
-            function_closure.borrow_mut().function_reference.function = GospelSourceObjectReference{module_name: default_value_function_scope.module_name(), local_name: default_value_function_scope.full_scope_name()};
+            function_closure.borrow_mut().function_reference.function = GospelSourceObjectReference{module_name: default_value_function_scope.module_name(), local_name: default_value_function_scope.full_scope_name_no_module_name()};
             function_closure.borrow_mut().function_reference.signature.return_value_type = template_argument.value_type;
             function_closure.borrow_mut().function_reference.signature.implicit_parameters = source_function_closure.borrow().function_reference.signature.implicit_parameters.clone();
             function_closure.borrow_mut().function_reference.signature.explicit_parameters = source_function_closure.borrow().function_reference.signature.explicit_parameters.clone();
@@ -1733,8 +1740,8 @@ impl CompilerInstance {
                 signature: CompilerFunctionSignature{ return_value_type, implicit_parameters, explicit_parameters: None }
             }
         }));
-        let function_scope = scope.declare_scope(function_name, CompilerLexicalScopeClass::Function(function_closure.clone()), visibility, &actual_source_context.line_context)?;
-        function_closure.borrow_mut().function_reference.function = GospelSourceObjectReference{module_name: scope.module_name(), local_name: function_scope.full_scope_name()};
+        let function_scope = scope.declare_scope(function_name, CompilerLexicalScopeClass::Function(CompilerResource{resource_handle: function_closure.clone()}), visibility, &actual_source_context.line_context)?;
+        function_closure.borrow_mut().function_reference.function = GospelSourceObjectReference{module_name: scope.module_name(), local_name: function_scope.full_scope_name_no_module_name()};
 
         if let Some(template_arguments) = template_declaration {
             function_closure.borrow_mut().function_reference.signature.explicit_parameters = Some(Vec::new());
@@ -1806,9 +1813,9 @@ impl CompilerInstance {
             reference: GospelSourceObjectReference::default(),
             signature: meta_layout,
         }));
-        let declaration_class = CompilerLexicalDeclarationClass::StructMetaLayout(meta_layout_reference.clone());
+        let declaration_class = CompilerLexicalDeclarationClass::StructMetaLayout(CompilerResource{resource_handle: meta_layout_reference.clone()});
         let meta_layout_declaration = struct_scope.declare("@meta_layout", declaration_class, DeclarationVisibility::Public, &source_context.line_context)?;
-        meta_layout_reference.borrow_mut().reference = GospelSourceObjectReference{module_name: struct_scope.module_name(), local_name: meta_layout_declaration.full_declaration_name()};
+        meta_layout_reference.borrow_mut().reference = GospelSourceObjectReference{module_name: struct_scope.module_name(), local_name: meta_layout_declaration.full_declaration_name_no_module_name()};
 
         if let Some(module_codegen_data) = struct_scope.module_codegen() {
             let compiled_struct_definition = GospelSourceStructDefinition{
@@ -1825,7 +1832,7 @@ impl CompilerInstance {
     fn pre_compile_type_layout_block_declaration(scope: &Rc<CompilerLexicalScope>, declaration: &BlockDeclaration) -> CompilerResult<Box<dyn CompilerStructFragmentGenerator>> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: declaration.source_context.clone()};
         let block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{block_range: CompilerInstructionRange::default(), loop_codegen_data: None}));
-        let block_scope = scope.declare_scope_generated_name("block", CompilerLexicalScopeClass::Block(block_declaration.clone()), &source_context.line_context)?;
+        let block_scope = scope.declare_scope_generated_name("block", CompilerLexicalScopeClass::Block(CompilerResource{resource_handle: block_declaration.clone()}), &source_context.line_context)?;
 
         let fragments = declaration.declarations.iter().map(|declaration| {
             Self::pre_compile_type_layout_inner_declaration(&block_scope, declaration, None)
@@ -1837,12 +1844,12 @@ impl CompilerInstance {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: declaration.source_context.clone()};
 
         let then_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{block_range: CompilerInstructionRange::default(), loop_codegen_data: None}));
-        let then_scope = scope.declare_scope_generated_name("then", CompilerLexicalScopeClass::Block(then_block_declaration.clone()), &declaration.source_context)?;
+        let then_scope = scope.declare_scope_generated_name("then", CompilerLexicalScopeClass::Block(CompilerResource{resource_handle: then_block_declaration.clone()}), &declaration.source_context)?;
         let then_fragment = Self::pre_compile_type_layout_inner_declaration(&then_scope, &declaration.then_branch, None)?;
 
         let else_branch = if let Some(else_statement) = &declaration.else_branch {
             let else_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{block_range: CompilerInstructionRange::default(), loop_codegen_data: None}));
-            let else_scope = scope.declare_scope_generated_name("else", CompilerLexicalScopeClass::Block(else_block_declaration.clone()), &declaration.source_context)?;
+            let else_scope = scope.declare_scope_generated_name("else", CompilerLexicalScopeClass::Block(CompilerResource{resource_handle: else_block_declaration.clone()}), &declaration.source_context)?;
             let else_fragment = Self::pre_compile_type_layout_inner_declaration(&else_scope, &else_statement, None)?;
             Some((else_block_declaration, else_fragment))
         } else { None };
@@ -1963,37 +1970,68 @@ impl CompilerInstance {
     }
 }
 
+/// Represents a compiler resource that can be read from the outside but not modified
 #[derive(Debug, Clone)]
-struct CompilerLocalVariableDeclaration {
-    value_slot: u32,
-    variable_type: ExpressionValueType,
+pub struct CompilerResource<T> {
+    resource_handle: Rc<RefCell<T>>,
+}
+impl<T> CompilerResource<T> {
+    fn borrow_mut<'a>(&'a self) -> RefMut<'a, T> {
+        self.resource_handle.borrow_mut()
+    }
+    pub fn borrow<'a>(&'a self) -> Ref<'a, T> {
+        self.resource_handle.borrow()
+    }
 }
 
+/// Represents a local variable declaration in source code
+#[derive(Debug, Clone)]
+pub struct CompilerLocalVariableDeclaration {
+    pub value_slot: u32,
+    pub variable_type: ExpressionValueType,
+}
+
+/// Represents a global data (input variable) declaration in source code
+#[derive(Debug, Clone)]
+pub struct GlobalDataDeclaration {
+    pub global_name: String,
+    pub value_type: ExpressionValueType,
+}
+
+/// Describes possible kinds of declarations in the compiler
 #[derive(Debug, Clone, Display)]
-enum CompilerLexicalDeclarationClass {
+pub enum CompilerLexicalDeclarationClass {
+    /// Represents a global data declaration (input variable)
     #[strum(to_string = "global data")]
-    GlobalData((ExpressionValueType, String)),
+    GlobalData(GlobalDataDeclaration),
+    /// Represents a function parameter (template argument). Value is a parameter type
     #[strum(to_string = "parameter")]
     Parameter(ExpressionValueType),
+    /// Represents an import statement
     #[strum(to_string = "import")]
     Import(Weak<CompilerLexicalDeclaration>),
+    /// Represents a namespace import
     #[strum(to_string = "namespace import")]
     NamespaceImport(Weak<CompilerLexicalScope>),
+    /// Represents a local variable declaration
     #[strum(to_string = "local variable")]
     LocalVariable(CompilerLocalVariableDeclaration),
+    /// Represents a meta-layout of source code struct
     #[strum(to_string = "struct meta layout")]
-    StructMetaLayout(Rc<RefCell<CompilerStructMetaLayoutReference>>),
+    StructMetaLayout(CompilerResource<CompilerStructMetaLayoutReference>),
 }
 
+/// Describes a visibility of a declaration relative to other declarations
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum DeclarationVisibility {
+pub enum DeclarationVisibility {
     Public,
     ModuleInternal,
     FileLocal,
     Private,
 }
 impl DeclarationVisibility {
-    fn intersect(self, other: Self) -> Self {
+    /// Between two visibilities, returns the one that is more private
+    pub fn intersect(self, other: Self) -> Self {
         if self > other { self } else { other }
     }
 }
@@ -2004,24 +2042,39 @@ struct DeclarationVisibilityContext {
     source_scope: Option<Rc<CompilerLexicalScope>>,
 }
 
+/// Represents a declaration within the scope
 #[derive(Debug, Clone)]
-struct CompilerLexicalDeclaration {
+pub struct CompilerLexicalDeclaration {
     parent: Weak<CompilerLexicalScope>,
-    class: CompilerLexicalDeclarationClass,
-    name: String,
-    visibility: DeclarationVisibility,
-    source_context: CompilerSourceContext,
+    pub class: CompilerLexicalDeclarationClass,
+    pub name: String,
+    pub visibility: DeclarationVisibility,
+    pub source_context: CompilerSourceContext,
 }
 impl Display for CompilerLexicalDeclaration {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let scope_full_name = self.parent.upgrade().map(|x| x.full_scope_display_name()).unwrap_or(String::from("<unknown>"));
-        write!(f, "{} {}::{} ({})", self.class, scope_full_name, self.name, self.source_context)
+        write!(f, "{} {} ({})", self.class, self.full_declaration_display_name(), self.source_context)
     }
 }
 impl CompilerLexicalDeclaration {
-    fn full_declaration_name(&self) -> String {
+    /// Returns the parent scope of this declaration
+    pub fn parent_scope(self: &Rc<Self>) -> Option<Rc<CompilerLexicalScope>> {
+        self.parent.upgrade()
+    }
+    /// Returns full mangled name of this declaration (:: replaced with $). Excludes the module name
+    pub fn full_declaration_name_no_module_name(&self) -> String {
+        let scope_full_name = self.parent.upgrade().map(|x| x.full_scope_name_no_module_name()).unwrap_or(String::from("<unknown>"));
+        format!("{}${}", scope_full_name, self.name.as_str())
+    }
+    /// Returns full mangled name of this declaration (:: replaced with $)
+    pub fn full_declaration_name(&self) -> String {
         let scope_full_name = self.parent.upgrade().map(|x| x.full_scope_name()).unwrap_or(String::from("<unknown>"));
         format!("{}${}", scope_full_name, self.name.as_str())
+    }
+    /// Returns the full display name for the declaration (:: as a separator)
+    pub fn full_declaration_display_name(&self) -> String {
+        let scope_full_name = self.parent.upgrade().map(|x| x.full_scope_display_name()).unwrap_or(String::from("<unknown>"));
+        format!("{}::{}", scope_full_name, self.name)
     }
 }
 
@@ -2031,22 +2084,24 @@ struct CompilerLoopCodegenData {
     loop_finish_fixups: Vec<GospelJumpLabelFixup>,
 }
 
+/// Represents an instruction range describing the location of the source level object within the compiled code
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
-struct CompilerInstructionRange {
-    start_instruction_index: u32,
-    end_instruction_index: u32,
+pub struct CompilerInstructionRange {
+    pub start_instruction_index: u32,
+    pub end_instruction_index: u32,
 }
 
+/// Represents a block declaration within the function
 #[derive(Debug, Clone)]
-struct CompilerBlockDeclaration {
-    block_range: CompilerInstructionRange,
+pub struct CompilerBlockDeclaration {
+    pub block_range: CompilerInstructionRange,
     loop_codegen_data: Option<CompilerLoopCodegenData>,
 }
 
+/// Represents a function declaration
 #[derive(Debug, Clone)]
-struct CompilerFunctionDeclaration {
-    function_reference: CompilerFunctionReference,
+pub struct CompilerFunctionDeclaration {
+    pub function_reference: CompilerFunctionReference,
 }
 
 trait CompilerFunctionCodeGenerator : Debug {
@@ -2110,28 +2165,43 @@ impl CompilerModuleCodegenData {
     }
 }
 
+/// Describes a module-level compiler metadata. This should not be used outside the compiler, use functions of CompilerLexicalScope instead
 #[derive(Debug, Clone)]
-struct CompilerModuleData {
+pub struct CompilerModuleData {
     compiler: Weak<CompilerInstance>,
     codegen_data: RefCell<Option<Rc<CompilerModuleCodegenData>>>,
 }
 
-#[derive(Debug, Clone, Display)]
-enum CompilerLexicalScopeClass {
-    #[strum(to_string = "module")]
-    Module(CompilerModuleData),
-    #[strum(to_string = "source file")]
-    SourceFile(String),
-    #[strum(to_string = "namespace")]
-    Namespace,
-    #[strum(to_string = "function")]
-    Function(Rc<RefCell<CompilerFunctionDeclaration>>),
-    #[strum(to_string = "block")]
-    Block(Rc<RefCell<CompilerBlockDeclaration>>),
+/// Describes a source file-level compiler metadata
+#[derive(Debug, Clone)]
+pub struct CompilerSourceFileData {
+    /// Name of this source file, including extension
+    pub file_name: String,
 }
 
+/// Describes a type of the scope. Different scope types describe different source level objects and contain different metadata
 #[derive(Debug, Clone, Display)]
-enum CompilerLexicalNode {
+pub enum CompilerLexicalScopeClass {
+    /// Represents a top level module scope
+    #[strum(to_string = "module")]
+    Module(CompilerModuleData),
+    /// Represents a source file scope within the module
+    #[strum(to_string = "source file")]
+    SourceFile(CompilerSourceFileData),
+    /// Represents a namespace (declared with namespace statement)
+    #[strum(to_string = "namespace")]
+    Namespace,
+    /// Represents a function declaration (represents type alias or type declaration)
+    #[strum(to_string = "function")]
+    Function(CompilerResource<CompilerFunctionDeclaration>),
+    /// Represents a logical block within the function
+    #[strum(to_string = "block")]
+    Block(CompilerResource<CompilerBlockDeclaration>),
+}
+
+/// Lexical node refers to either a child scope or a declaration within the parent scope
+#[derive(Debug, Clone, Display)]
+pub enum CompilerLexicalNode {
     #[strum(to_string = "{0} scope")]
     Scope(Rc<CompilerLexicalScope>),
     #[strum(to_string = "{0} declaration")]
@@ -2148,12 +2218,14 @@ impl PartialEq for CompilerLexicalNode {
 }
 impl Eq for CompilerLexicalNode {}
 impl CompilerLexicalNode {
-    fn node_name(&self) -> &str {
+    /// Returns the name of this lexical node
+    pub fn node_name(&self) -> &str {
         match &self {
             CompilerLexicalNode::Scope(scope) => scope.name.as_str(),
             CompilerLexicalNode::Declaration(decl) => decl.name.as_str(),
         }
     }
+    /// Returns the parent scope of this lexical node
     fn node_parent(&self) -> Option<Rc<CompilerLexicalScope>> {
         match &self {
             CompilerLexicalNode::Scope(scope) => scope.parent.as_ref().and_then(|x| x.upgrade()),
@@ -2175,13 +2247,14 @@ impl CompilerLexicalNode {
     }
 }
 
+/// Lexical scope represents a scope within which other nodes (scope or terminal) can be defined
 #[derive(Debug)]
-struct CompilerLexicalScope {
+pub struct CompilerLexicalScope {
     parent: Option<Weak<CompilerLexicalScope>>,
-    class: CompilerLexicalScopeClass,
-    name: String,
-    visibility: DeclarationVisibility,
-    source_context: CompilerSourceContext,
+    pub class: CompilerLexicalScopeClass,
+    pub name: String,
+    pub visibility: DeclarationVisibility,
+    pub source_context: CompilerSourceContext,
     children: RefCell<Vec<CompilerLexicalNode>>,
     child_lookup: RefCell<HashMap<String, CompilerLexicalNode>>,
     unique_name_counter: RefCell<usize>,
@@ -2212,7 +2285,7 @@ impl CompilerLexicalScope {
         })
     }
     fn declare_scope_internal(self: &Rc<Self>, name: &str, class: CompilerLexicalScopeClass, visibility: DeclarationVisibility, source_context: &ASTSourceContext) -> CompilerResult<Rc<CompilerLexicalScope>> {
-        let file_name_override = if let CompilerLexicalScopeClass::SourceFile(file_name) = &class { Some(file_name.clone()) } else { None };
+        let file_name_override = if let CompilerLexicalScopeClass::SourceFile(file_name) = &class { Some(file_name.file_name.clone()) } else { None };
         let new_scope = Rc::new(Self{
             parent: Some(Rc::downgrade(self)),
             class,
@@ -2261,10 +2334,12 @@ impl CompilerLexicalScope {
         self.child_lookup.borrow_mut().insert(name.to_string(), CompilerLexicalNode::Declaration(new_declaration.clone()));
         Ok(new_declaration)
     }
-    fn parent_scope(self: &Rc<Self>) -> Option<Rc<Self>> {
+    /// Returns the parent scope of this scope. Returns None if this is a top level module scope
+    pub fn parent_scope(self: &Rc<Self>) -> Option<Rc<Self>> {
         self.parent.as_ref().and_then(|x| x.upgrade())
     }
-    fn iterate_scope_chain_inner_first(self: &Rc<Self>) -> impl DoubleEndedIterator<Item = Rc<Self>> {
+    /// Iterates this scope outer chain. Innermost scopes (closest to this one) appear first in the list
+    pub fn iterate_scope_chain_inner_first(self: &Rc<Self>) -> impl DoubleEndedIterator<Item = Rc<Self>> {
         let mut chain_segments: Vec<Rc<Self>> = Vec::with_capacity(10);
         let mut current_scope = self.clone();
         loop {
@@ -2277,13 +2352,16 @@ impl CompilerLexicalScope {
         }
         chain_segments.into_iter()
     }
-    fn iterate_scope_chain_outer_first(self: &Rc<Self>) -> impl Iterator<Item = Rc<Self>> {
+    /// Iterates this scope outer chain. Outermost scopes (closest to the root scope) appear first in the list
+    pub fn iterate_scope_chain_outer_first(self: &Rc<Self>) -> impl Iterator<Item = Rc<Self>> {
         self.iterate_scope_chain_inner_first().rev()
     }
-    fn iterate_children(self: &Rc<Self>) -> impl Iterator<Item = CompilerLexicalNode> {
+    /// Returns iterator over the children of this scope (not recursive)
+    pub fn iterate_children(self: &Rc<Self>) -> impl Iterator<Item = CompilerLexicalNode> {
         self.children.borrow().clone().into_iter()
     }
-    fn module_name(self: &Rc<Self>) -> String {
+    /// Returns the name of the module with which this scope is associated
+    pub fn module_name(self: &Rc<Self>) -> String {
         self.iterate_scope_chain_outer_first()
             .find(|x| matches!(x.class, CompilerLexicalScopeClass::Module(_)))
             .map(|x| x.name.clone()).unwrap()
@@ -2292,14 +2370,17 @@ impl CompilerLexicalScope {
         self.iterate_scope_chain_outer_first()
             .find_map(|x| if let CompilerLexicalScopeClass::Module(module) = &x.class { module.codegen_data.borrow().clone() } else { None })
     }
-    fn compiler(self: &Rc<Self>) -> Option<Rc<CompilerInstance>> {
+    /// Returns the compiler instance owning this lexical scope. This should always be valid under normal conditions, but scopes do not hold strong reference to the owner compiler
+    pub fn compiler(self: &Rc<Self>) -> Option<Rc<CompilerInstance>> {
         self.iterate_scope_chain_outer_first()
             .find_map(|x| if let CompilerLexicalScopeClass::Module(module) = &x.class { module.compiler.upgrade() } else { None })
     }
-    fn file_name(self: &Rc<Self>) -> Option<String> {
+    /// Returns name of the source code file this scope has been created from (if available)
+    pub fn file_name(self: &Rc<Self>) -> Option<String> {
         self.source_context.file_name.clone()
     }
-    fn is_child_of(self: &Rc<Self>, parent: &Rc<Self>) -> bool {
+    /// Returns true if this scope is a sub-scope of the given parent scope
+    pub fn is_child_of(self: &Rc<Self>, parent: &Rc<Self>) -> bool {
         let mut current_scope = Some(self.clone());
         while current_scope.is_some() && !Rc::ptr_eq(current_scope.as_ref().unwrap(), parent) {
             current_scope = current_scope.as_ref()
@@ -2308,9 +2389,15 @@ impl CompilerLexicalScope {
         }
         current_scope.is_some()
     }
-    fn full_scope_name(self: &Rc<Self>) -> String {
+    /// Returns the full mangled (:: replaced with $) name of this scope. Excludes the name of the module
+    pub fn full_scope_name_no_module_name(self: &Rc<Self>) -> String {
         self.iterate_scope_chain_outer_first().skip(1).map(|x| x.name.clone()).join("$")
     }
+    /// Returns the full mangled (:: replaced with $) name of this scope
+    pub fn full_scope_name(self: &Rc<Self>) -> String {
+        self.iterate_scope_chain_outer_first().map(|x| x.name.clone()).join("$")
+    }
+    /// Returns the full user-facing display name (with :: as a separator) of this scope. Includes the module name
     fn full_scope_display_name(self: &Rc<Self>) -> String {
         self.iterate_scope_chain_outer_first().map(|x| x.name.clone()).join("::")
     }
@@ -2325,7 +2412,8 @@ impl CompilerLexicalScope {
             DeclarationVisibility::Private => visibility_context.source_scope.as_ref().map(|x| x.is_child_of(self)).unwrap_or(false),
         }
     }
-    fn find_unique_child(self: &Rc<Self>, name: &str) -> Option<CompilerLexicalNode> {
+    /// Attempts to find a child node by its name. Returns child node if found, or None otherwise
+    pub fn find_unique_child(self: &Rc<Self>, name: &str) -> Option<CompilerLexicalNode> {
         self.child_lookup.borrow().get(name).cloned()
     }
     fn find_unique_child_check_access(self: &Rc<Self>, name: &str, visibility_context: Option<&DeclarationVisibilityContext>) -> Option<CompilerLexicalNode> {
