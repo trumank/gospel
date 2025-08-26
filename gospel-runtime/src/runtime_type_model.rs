@@ -3,6 +3,7 @@ use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, RwLock};
 use anyhow::anyhow;
+use paste::paste;
 use gospel_typelib::type_model::{MutableTypeGraph, PrimitiveType, ResolvedUDTMemberLayout, Type, TypeLayoutCache, UserDefinedTypeMember};
 use crate::memory_access::OpaquePtr;
 
@@ -70,10 +71,45 @@ impl TypePtrMetadata {
             }, type_graph.deref(), layout_cache.deref_mut())
         } else { Ok(None) }
     }
+    pub fn struct_type_name(&self) -> anyhow::Result<Option<String>> {
+        let type_graph = self.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
+        let type_data = type_graph.base_type_by_index(self.type_index);
+        if let Type::UDT(user_defined_type) = type_data {
+            Ok(user_defined_type.name.clone())
+        } else { Ok(None) }
+    }
     pub fn types_identical(&self, type_index_a: usize, type_index_b: usize) -> anyhow::Result<bool> {
         let type_graph = self.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
         Ok(type_graph.base_type_index(type_index_a) == type_graph.base_type_index(type_index_b))
     }
+}
+
+macro_rules! implement_dynamic_ptr_numeric_access {
+    ($data_type: ident, $is_integral: literal, $is_floating_point: literal) => {
+        paste! {
+            pub fn [<read_ $data_type>](&self) -> anyhow::Result<Option<$data_type>> {
+                if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size()? && primitive_type.is_integral() == $is_integral && primitive_type.is_floating_point() == $is_floating_point && primitive_size == size_of::<$data_type>() {
+                    Ok(Some(self.opaque_ptr.[<read_ $data_type>]()?))
+                } else { Ok(None) }
+            }
+            pub fn [<read_ $data_type _slice_unchecked>](&self, buffer: &mut [$data_type]) -> anyhow::Result<bool> {
+                if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size()? && primitive_type.is_integral() == $is_integral && primitive_type.is_floating_point() == $is_floating_point && primitive_size == size_of::<$data_type>() {
+                    self.opaque_ptr.[<read_ $data_type _array>](buffer)?;
+                    Ok(true)
+                } else { Ok(false) }
+            }
+            pub fn [<write_ $data_type>](&self, value: $data_type) -> anyhow::Result<()> {
+                if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size()? && primitive_type.is_integral() == $is_integral && primitive_type.is_floating_point() == $is_floating_point && primitive_size == size_of::<$data_type>() {
+                    self.opaque_ptr.[<write_ $data_type>](value)
+                } else { Err(anyhow!("Not an integral type of the matching bit width")) }
+            }
+            pub fn [<write_ $data_type _slice_unchecked>](&self, buffer: &[$data_type]) -> anyhow::Result<()> {
+                if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size()? && primitive_type.is_integral() == $is_integral && primitive_type.is_floating_point() == $is_floating_point && primitive_size == size_of::<$data_type>() {
+                    self.opaque_ptr.[<write_ $data_type _array>](buffer)
+                } else { Err(anyhow!("Not an integral type of the matching bit width")) }
+            }
+        }
+    };
 }
 
 #[derive(Clone)]
@@ -104,17 +140,17 @@ impl Hash for DynamicPtr {
 }
 impl DynamicPtr {
     /// Offsets this pointer towards lower addresses by the given number of elements
-    pub fn unchecked_offset_add(&self, count: usize) -> anyhow::Result<Self> {
+    pub fn add_unchecked(&self, count: usize) -> anyhow::Result<Self> {
         Ok(Self{opaque_ptr: self.opaque_ptr.clone() + (count * self.metadata.size_and_alignment()?.0), metadata: self.metadata.clone() })
     }
     /// Offsets this pointer towards higher addresses by the given number of elements
-    pub fn unchecked_offset_sub(&self, count: usize) -> anyhow::Result<Self> {
+    pub fn sub_unchecked(&self, count: usize) -> anyhow::Result<Self> {
         Ok(Self{opaque_ptr: self.opaque_ptr.clone() - (count * self.metadata.size_and_alignment()?.0), metadata: self.metadata.clone() })
     }
     /// Returns the pointer to the array element at the given index. Performs boundaries check
     pub fn get_array_element_ptr(&self, array_element_index: usize) -> anyhow::Result<Option<Self>> {
         if let Some(static_array_length) = self.metadata.array_static_array_length()? && array_element_index < static_array_length {
-            Ok(Some(self.unchecked_offset_add(array_element_index)?))
+            Ok(Some(self.add_unchecked(array_element_index)?))
         } else { Ok(None) }
     }
     /// Returns the pointer to the struct field with the given name
@@ -123,100 +159,40 @@ impl DynamicPtr {
             Ok(Some(Self{opaque_ptr: self.opaque_ptr.clone() + field_offset, metadata: self.metadata.with_type_index(field_type_index)}))
         } else { Ok(None) }
     }
-    /// Attempts to read this dynamic pointer as a pointer. Returns pointer to read value if this is a pointer, or empty option if it is not
+    /// Attempts to read this dynamic pointer as a pointer
     pub fn read_ptr(&self) -> anyhow::Result<Option<DynamicPtr>> {
         if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? {
             let pointee_opaque_ptr = self.opaque_ptr.read_ptr()?;
             Ok(Some(DynamicPtr{opaque_ptr: pointee_opaque_ptr, metadata: self.metadata.with_type_index(pointee_type_index)}))
         } else { Ok(None) }
     }
-    /// Attempts to read this dynamic pointer value as a primitive integral value of the matching bit width
-    pub fn read_u8(&self) -> anyhow::Result<Option<u8>> {
-        if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size()? && primitive_type.is_integral() && primitive_size == 1 {
-            Ok(Some(self.opaque_ptr.read_u8()?))
+    pub fn read_ptr_slice_unchecked(&self, len: usize) -> anyhow::Result<Option<Vec<DynamicPtr>>> {
+        if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? {
+            let element_metadata = self.metadata.with_type_index(pointee_type_index);
+            Ok(Some(self.opaque_ptr.read_ptr_array(len)?.into_iter().map(|x| DynamicPtr{opaque_ptr: x, metadata: element_metadata.clone()}).collect()))
         } else { Ok(None) }
     }
-    /// Attempts to read this dynamic pointer value as a primitive integral value of the matching bit width
-    pub fn read_u16(&self) -> anyhow::Result<Option<u16>> {
-        if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size()? && primitive_type.is_integral() && primitive_size == 2 {
-            Ok(Some(self.opaque_ptr.read_u16()?))
-        } else { Ok(None) }
-    }
-    /// Attempts to read this dynamic pointer value as a primitive integral value of the matching bit width
-    pub fn read_u32(&self) -> anyhow::Result<Option<u32>> {
-        if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size()? && primitive_type.is_integral() && primitive_size == 4 {
-            Ok(Some(self.opaque_ptr.read_u32()?))
-        } else { Ok(None) }
-    }
-    /// Attempts to read this dynamic pointer value as a primitive integral value of the matching bit width
-    pub fn read_u64(&self) -> anyhow::Result<Option<u64>> {
-        if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size()? && primitive_type.is_integral() && primitive_size == 8 {
-            Ok(Some(self.opaque_ptr.read_u64()?))
-        } else { Ok(None) }
-    }
-    /// Attempts to read this dynamic pointer value as a primitive floating point value of the matching bit width
-    pub fn read_f32(&self) -> anyhow::Result<Option<f32>> {
-        if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size()? && primitive_type.is_floating_point() && primitive_size == 4 {
-            Ok(Some(f32::from_bits(self.opaque_ptr.read_u32()?)))
-        } else { Ok(None) }
-    }
-    /// Attempts to read this dynamic pointer value as a primitive integral value of the matching bit width and signedness
-    pub fn read_f64(&self) -> anyhow::Result<Option<f64>> {
-        if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size()? && primitive_type.is_floating_point() && primitive_size == 8 {
-            Ok(Some(f64::from_bits(self.opaque_ptr.read_u64()?)))
-        } else { Ok(None) }
-    }
-    /// Utility functions to read signed primitive integral values of the matching bit width
-    pub fn read_i8(&self) -> anyhow::Result<Option<i8>> { Ok(self.read_u8()?.map(|x| x as i8)) }
-    pub fn read_i16(&self) -> anyhow::Result<Option<i16>> { Ok(self.read_u8()?.map(|x| x as i16)) }
-    pub fn read_i32(&self) -> anyhow::Result<Option<i32>> { Ok(self.read_u8()?.map(|x| x as i32)) }
-    pub fn read_i64(&self) -> anyhow::Result<Option<i64>> { Ok(self.read_u8()?.map(|x| x as i64)) }
-
     /// Attempts to write this dynamic pointer as a pointer
     pub fn write_ptr(&self, value: &DynamicPtr) -> anyhow::Result<()> {
         if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? && self.metadata.types_identical(pointee_type_index, value.metadata.type_index)? {
             self.opaque_ptr.write_ptr(&value.opaque_ptr)
         } else { Err(anyhow!("Not a pointer of a compatible type")) }
     }
-    /// Attempts to write this dynamic pointer value as a primitive integral value of the matching bit width
-    pub fn write_u8(&self, value: u8) -> anyhow::Result<()> {
-        if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size()? && primitive_type.is_integral() && primitive_size == 1 {
-            self.opaque_ptr.write_u8(value)
-        } else { Err(anyhow!("Not an integral type of the matching bit width")) }
+    pub fn write_ptr_slice_unchecked(&self, buffer: &[DynamicPtr]) -> anyhow::Result<()> {
+        if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? && !buffer.is_empty() && self.metadata.types_identical(pointee_type_index, buffer[0].metadata.type_index)? {
+            let raw_ptr_array: Vec<OpaquePtr> = buffer.iter().map(|x| x.opaque_ptr.clone()).collect();
+            self.opaque_ptr.write_ptr_array(raw_ptr_array.as_slice())
+        } else { Err(anyhow!("Not a pointer of a compatible type")) }
     }
-    /// Attempts to write this dynamic pointer value as a primitive integral value of the matching bit width
-    pub fn write_u16(&self, value: u16) -> anyhow::Result<()> {
-        if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size()? && primitive_type.is_integral() && primitive_size == 2 {
-            self.opaque_ptr.write_u16(value)
-        } else { Err(anyhow!("Not an integral type of the matching bit width")) }
-    }
-    /// Attempts to write this dynamic pointer value as a primitive integral value of the matching bit width
-    pub fn write_u32(&self, value: u32) -> anyhow::Result<()> {
-        if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size()? && primitive_type.is_integral() && primitive_size == 4 {
-            self.opaque_ptr.write_u32(value)
-        } else { Err(anyhow!("Not an integral type of the matching bit width")) }
-    }
-    /// Attempts to write this dynamic pointer value as a primitive integral value of the matching bit width
-    pub fn write_u64(&self, value: u64) -> anyhow::Result<()> {
-        if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size()? && primitive_type.is_integral() && primitive_size == 8 {
-            self.opaque_ptr.write_u64(value)
-        } else { Err(anyhow!("Not an integral type of the matching bit width")) }
-    }
-    /// Attempts to write this dynamic pointer value as a primitive floating point value of the matching bit width
-    pub fn write_f32(&self, value: f32) -> anyhow::Result<()> {
-        if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size()? && primitive_type.is_floating_point() && primitive_size == 4 {
-            self.opaque_ptr.write_u32(value.to_bits())
-        } else { Err(anyhow!("Not an integral type of the matching bit width")) }
-    }
-    /// Attempts to write this dynamic pointer value as a primitive floating point value of the matching bit width
-    pub fn write_f64(&self, value: f64) -> anyhow::Result<()> {
-        if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size()? && primitive_type.is_floating_point() && primitive_size == 8 {
-            self.opaque_ptr.write_u64(value.to_bits())
-        } else { Err(anyhow!("Not an integral type of the matching bit width")) }
-    }
-    /// Utility functions to write signed primitive integral values of the matching bit width
-    pub fn write_i8(&self, value: i8) -> anyhow::Result<()> { self.write_u8(value as u8) }
-    pub fn write_i16(&self, value: i16) -> anyhow::Result<()> { self.write_u16(value as u16) }
-    pub fn write_i32(&self, value: i32) -> anyhow::Result<()> { self.write_u32(value as u32) }
-    pub fn write_i64(&self, value: i64) -> anyhow::Result<()> { self.write_u64(value as u64) }
+
+    implement_dynamic_ptr_numeric_access!(u8, true, false);
+    implement_dynamic_ptr_numeric_access!(u16, true, false);
+    implement_dynamic_ptr_numeric_access!(u32, true, false);
+    implement_dynamic_ptr_numeric_access!(u64, true, false);
+    implement_dynamic_ptr_numeric_access!(i8, true, false);
+    implement_dynamic_ptr_numeric_access!(i16, true, false);
+    implement_dynamic_ptr_numeric_access!(i32, true, false);
+    implement_dynamic_ptr_numeric_access!(i64, true, false);
+    implement_dynamic_ptr_numeric_access!(f32, false, true);
+    implement_dynamic_ptr_numeric_access!(f64, false, true);
 }

@@ -1,7 +1,7 @@
 use anyhow::anyhow;
 use process_memory::{Architecture, CopyAddress, ProcessHandle, PutAddress};
 use gospel_typelib::type_model::{TargetArchitecture, TargetOperatingSystem};
-use crate::memory_access::Memory;
+use crate::memory_access::{DataEndianness, Memory};
 
 pub struct LocalProcessMemory {
     process_handle: ProcessHandle,
@@ -21,6 +21,9 @@ impl Memory for LocalProcessMemory {
             Architecture::Arch32Bit => Ok(4),
             _ => Err(anyhow!("Unsupported process pointer width")),
         }
+    }
+    fn data_endianness(&self) -> anyhow::Result<DataEndianness> {
+        Ok(DataEndianness::host_endianness())
     }
     fn read_chunk(&self, address: u64, buffer: &mut [u8]) -> anyhow::Result<()> {
         Ok(self.process_handle.copy_address(address as usize, buffer)?)

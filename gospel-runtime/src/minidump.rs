@@ -1,8 +1,8 @@
 use anyhow::{anyhow, bail};
-use minidump::{MinidumpSystemInfo, UnifiedMemoryList};
+use minidump::{Endian, MinidumpSystemInfo, UnifiedMemory, UnifiedMemoryList};
 use minidump::system_info::{Cpu, Os, PointerWidth};
 use gospel_typelib::type_model::{TargetArchitecture, TargetOperatingSystem};
-use crate::memory_access::Memory;
+use crate::memory_access::{DataEndianness, Memory};
 
 pub trait MinidumpAccess {
     /// Retrieves the system info for the minidump
@@ -38,6 +38,19 @@ impl<T : MinidumpAccess> Memory for MinidumpMemory<T> {
             PointerWidth::Bits32 => Ok(4),
             _ => Err(anyhow!("Unknown pointer width for minidump")),
         }
+    }
+    fn data_endianness(&self) -> anyhow::Result<DataEndianness> {
+        self.minidump.use_minidump_memory_list(|x| {
+            let first_memory = x.iter().next().ok_or_else(|| anyhow!("Minidump does not contain any memory slices"))?;
+            let minidump_endian = match first_memory {
+                UnifiedMemory::Memory(x) => x.endian,
+                UnifiedMemory::Memory64(x) => x.endian,
+            };
+            match minidump_endian {
+                Endian::Big => Ok(DataEndianness::BigEndian),
+                Endian::Little => Ok(DataEndianness::LittleEndian),
+            }
+        })
     }
     fn read_chunk(&self, address: u64, buffer: &mut [u8]) -> anyhow::Result<()> {
         self.minidump.use_minidump_memory_list(|memory_list| {

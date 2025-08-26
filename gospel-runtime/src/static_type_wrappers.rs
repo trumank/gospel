@@ -1,0 +1,326 @@
+use std::ops::{Deref, DerefMut};
+use anyhow::bail;
+use std::marker::PhantomData;
+use anyhow::anyhow;
+use paste::paste;
+use crate::runtime_type_model::{DynamicPtr, TypePtrMetadata};
+use gospel_typelib::type_model::PrimitiveType;
+use crate::memory_access::OpaquePtr;
+
+/// Represents a value corresponding to native type "long int", which can have a size of either 4 or 8 bytes depending on the target
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LongInt(i64);
+
+/// Represents a value corresponding to native type "unsigned long int", which can have a size of either 4 or 8 bytes depending on the target
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct UnsignedLongInt(u64);
+
+/// Represents a value corresponding to native type "wchar_t", which can have a size of either 2 or 4 bytes depending on the target
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct WideChar(u32);
+
+/// Represents a statically typed wrapper around DynamicPtr with runtime type checking
+pub trait TypedDynamicPtrWrapper where Self: Sized {
+    fn from_ptr_unchecked(ptr: DynamicPtr) -> Self;
+    fn get_inner_ptr(&self) -> &DynamicPtr;
+    fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool>;
+    fn cast(ptr: DynamicPtr) -> anyhow::Result<Option<Self>> {
+        if Self::can_typecast(&ptr.metadata)? { Ok(Some(Self::from_ptr_unchecked(ptr))) } else { Ok(None) }
+    }
+}
+
+pub trait TrivialValue : Copy + Default {
+    fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool>;
+    fn read(ptr: &TrivialPtr<Self>) -> anyhow::Result<Self>;
+    fn write(ptr: &TrivialPtr<Self>, value: Self) -> anyhow::Result<()>;
+    fn read_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &mut [Self]) -> anyhow::Result<()>;
+    fn write_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &[Self]) -> anyhow::Result<()>;
+}
+
+macro_rules! implement_numeric_trivial_value {
+    ( $value_type:ident, $is_integral:literal, $is_floating_point:literal ) => {
+       impl TrivialValue for $value_type {
+            fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
+               if let Some((primitive_type, primitive_size)) = ptr_metadata.primitive_type_and_size()? {
+                   Ok(primitive_type.is_integral() == $is_integral && primitive_type.is_floating_point() == $is_floating_point && primitive_size == size_of::<Self>())
+               } else { Ok(false) }
+            }
+            fn read(ptr: &TrivialPtr<Self>) -> anyhow::Result<Self> {
+                paste! {
+                    ptr.inner_ptr.[<read_ $value_type>]()?.ok_or_else(|| anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))
+                }
+            }
+            fn write(ptr: &TrivialPtr<Self>, value: Self) -> anyhow::Result<()> {
+                paste! {
+                    ptr.inner_ptr.[<write_ $value_type>](value)
+                }
+            }
+            fn read_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &mut [$value_type]) -> anyhow::Result<()> {
+                 paste! {
+                    if !ptr.inner_ptr.[<read_ $value_type _slice_unchecked>](buffer)? {
+                        Err(anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))
+                    } else { Ok({}) }
+                }
+            }
+            fn write_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &[$value_type]) -> anyhow::Result<()> {
+                paste! {
+                    ptr.inner_ptr.[<write_ $value_type _slice_unchecked>](buffer)
+                }
+            }
+        }
+    };
+}
+implement_numeric_trivial_value!(u8, true, false);
+implement_numeric_trivial_value!(u16, true, false);
+implement_numeric_trivial_value!(u32, true, false);
+implement_numeric_trivial_value!(u64, true, false);
+implement_numeric_trivial_value!(i8, true, false);
+implement_numeric_trivial_value!(i16, true, false);
+implement_numeric_trivial_value!(i32, true, false);
+implement_numeric_trivial_value!(i64, true, false);
+implement_numeric_trivial_value!(f32, false, true);
+implement_numeric_trivial_value!(f64, false, true);
+
+macro_rules! implement_variable_size_trivial_value {
+    ( $value_type:ident, $large_underlying_type:ident, $small_underlying_type:ident, |$primitive_type_local_name:ident| $type_check_expr:expr ) => {
+        paste! {
+            impl TrivialValue for $value_type {
+                fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
+                    if let Some(($primitive_type_local_name, _)) = ptr_metadata.primitive_type_and_size()? {
+                        Ok($type_check_expr)
+                    } else { Ok(false) }
+                }
+                fn read(ptr: &TrivialPtr<Self>) -> anyhow::Result<Self> {
+                    let (_, primitive_size) = ptr.inner_ptr.metadata.primitive_type_and_size()?
+                        .ok_or_else(|| anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))?;
+                    if primitive_size == size_of::<$small_underlying_type>() {
+                        Ok($value_type(ptr.inner_ptr.[<read_ $small_underlying_type>]()?.ok_or_else(|| anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))? as $large_underlying_type))
+                    } else if primitive_size == size_of::<$large_underlying_type>() {
+                        Ok($value_type(ptr.inner_ptr.[<read_ $large_underlying_type>]()?.ok_or_else(|| anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))? as $large_underlying_type))
+                    } else {
+                        Err(anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))
+                    }
+                }
+                fn write(ptr: &TrivialPtr<Self>, value: Self) -> anyhow::Result<()> {
+                   let (_, primitive_size) = ptr.inner_ptr.metadata.primitive_type_and_size()?
+                        .ok_or_else(|| anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))?;
+                   if primitive_size == size_of::<$small_underlying_type>() {
+                       ptr.inner_ptr.[<write_ $small_underlying_type>](value.0 as $small_underlying_type)
+                   } else if primitive_size == size_of::<$large_underlying_type>() {
+                       ptr.inner_ptr.[<write_ $large_underlying_type>](value.0 as $large_underlying_type)
+                   } else {
+                       Err(anyhow!("Failed to write: value is not compatible with {} type", core::stringify!($value_type)))
+                   }
+                }
+                fn read_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &mut [$value_type]) -> anyhow::Result<()> {
+                    let (_, primitive_size) = ptr.inner_ptr.metadata.primitive_type_and_size()?
+                        .ok_or_else(|| anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))?;
+                    if primitive_size == size_of::<$small_underlying_type>() {
+                        let mut local_buffer: Box<[$small_underlying_type]> = vec![0; buffer.len()].into_boxed_slice();
+                        if !ptr.inner_ptr.[<read_ $small_underlying_type _slice_unchecked>](local_buffer.deref_mut())? {
+                            bail!("Failed to read: value is not compatible with {} type", core::stringify!($value_type));
+                        }
+                        for index in 0..buffer.len() {
+                            buffer[index] = $value_type(local_buffer[index] as $large_underlying_type)
+                        }
+                        Ok({})
+                    } else if primitive_size == size_of::<$large_underlying_type>() {
+                        let mut local_buffer: Box<[$large_underlying_type]> = vec![0; buffer.len()].into_boxed_slice();
+                        if !ptr.inner_ptr.[<read_ $large_underlying_type _slice_unchecked>](local_buffer.deref_mut())? {
+                            bail!("Failed to read: value is not compatible with {} type", core::stringify!($value_type));
+                        }
+                        for index in 0..buffer.len() {
+                            buffer[index] = $value_type(local_buffer[index] as $large_underlying_type)
+                        }
+                        Ok({})
+                    } else {
+                       Err(anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))
+                    }
+                }
+                fn write_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &[Self]) -> anyhow::Result<()> {
+                    let (_, primitive_size) = ptr.inner_ptr.metadata.primitive_type_and_size()?
+                        .ok_or_else(|| anyhow!("Failed to write: value is not compatible with {} type", core::stringify!($value_type)))?;
+                    if primitive_size == size_of::<$small_underlying_type>() {
+                        let mut local_buffer: Box<[$small_underlying_type]> = vec![0; buffer.len()].into_boxed_slice();
+                        for index in 0..buffer.len() {
+                            local_buffer[index] = buffer[index].0 as $small_underlying_type;
+                        }
+                        ptr.inner_ptr.[<write_ $small_underlying_type _slice_unchecked>](local_buffer.deref())
+                    } else if primitive_size == size_of::<$large_underlying_type>() {
+                        let mut local_buffer: Box<[$large_underlying_type]> = vec![0; buffer.len()].into_boxed_slice();
+                        for index in 0..buffer.len() {
+                            local_buffer[index] = buffer[index].0 as $large_underlying_type;
+                        }
+                        ptr.inner_ptr.[<write_ $large_underlying_type _slice_unchecked>](local_buffer.deref())
+                    } else {
+                       Err(anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))
+                    }
+                }
+            }
+        }
+    };
+}
+
+implement_variable_size_trivial_value!(LongInt, i64, i32, |primitive_type| primitive_type == PrimitiveType::LongInt || primitive_type == PrimitiveType::UnsignedLongInt);
+implement_variable_size_trivial_value!(UnsignedLongInt, u64, u32, |primitive_type| primitive_type == PrimitiveType::LongInt || primitive_type == PrimitiveType::UnsignedLongInt);
+implement_variable_size_trivial_value!(WideChar, u32, u16, |primitive_type| primitive_type == PrimitiveType::WideChar);
+
+impl TrivialValue for bool {
+    fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
+        if let Some((primitive_type, _)) = ptr_metadata.primitive_type_and_size()? {
+            Ok(primitive_type == PrimitiveType::Bool || primitive_type == PrimitiveType::Char || primitive_type == PrimitiveType::UnsignedChar)
+        } else { Ok(false) }
+    }
+    fn read(ptr: &TrivialPtr<Self>) -> anyhow::Result<Self> {
+        Ok(ptr.inner_ptr.read_u8()?.ok_or_else(|| anyhow!("Failed to read: value is not compatible with bool type"))? != 0)
+    }
+    fn write(ptr: &TrivialPtr<Self>, value: Self) -> anyhow::Result<()> {
+        ptr.inner_ptr.write_u8(if value { 1 } else { 0 })
+    }
+    fn read_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &mut [Self]) -> anyhow::Result<()> {
+        let mut byte_buffer: Box<[u8]> = vec![0; buffer.len()].into_boxed_slice();
+        if !ptr.inner_ptr.read_u8_slice_unchecked(byte_buffer.deref_mut())? {
+            bail!("Failed to read: value is not compatible with bool type");
+        }
+        for index in 0..buffer.len() {
+            buffer[index] = byte_buffer[index] != 0;
+        }
+        Ok({})
+    }
+    fn write_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &[Self]) -> anyhow::Result<()> {
+        let mut byte_buffer: Box<[u8]> = vec![0; buffer.len()].into_boxed_slice();
+        for index in 0..buffer.len() {
+            byte_buffer[index] = if buffer[index] { 1 } else { 0 };
+        }
+        ptr.inner_ptr.write_u8_slice_unchecked(byte_buffer.deref())
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TrivialPtr<T : TrivialValue> {
+    pub inner_ptr: DynamicPtr,
+    pub phantom_data: PhantomData<T>,
+}
+impl<T : TrivialValue> TrivialPtr<T> {
+    pub fn read(&self) -> anyhow::Result<T> { T::read(self) }
+    pub fn write(&self, value: T) -> anyhow::Result<()> { T::write(self, value) }
+    pub fn read_slice_unchecked(&self, len: usize) -> anyhow::Result<Vec<T>> {
+        let mut result_buffer = vec![T::default(); len];
+        T::read_slice_unchecked(self, result_buffer.as_mut_slice())?;
+        Ok(result_buffer)
+    }
+    pub fn write_slice_unchecked(&self, slice: &[T]) -> anyhow::Result<()> {
+        T::write_slice_unchecked(self, slice)
+    }
+}
+impl<T : TrivialValue> TypedDynamicPtrWrapper for TrivialPtr<T> {
+    fn from_ptr_unchecked(ptr: DynamicPtr) -> Self {
+        Self{inner_ptr: ptr, phantom_data: PhantomData::default()}
+    }
+    fn get_inner_ptr(&self) -> &DynamicPtr {
+        &self.inner_ptr
+    }
+    fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
+        T::can_typecast(ptr_metadata)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct StaticArrayPtr<T : TypedDynamicPtrWrapper> {
+    pub inner_ptr: DynamicPtr,
+    pub phantom_data: PhantomData<T>,
+}
+impl<T : TypedDynamicPtrWrapper> StaticArrayPtr<T> {
+    pub fn static_len(&self) -> anyhow::Result<usize> {
+        self.inner_ptr.metadata.array_static_array_length()?.ok_or_else(|| anyhow!("Ptr does not point to a statically sized array"))
+    }
+    pub fn element_metadata(&self) -> anyhow::Result<TypePtrMetadata> {
+        Ok(self.inner_ptr.metadata.with_type_index(self.inner_ptr.metadata.array_element_type_index()?.ok_or_else(|| anyhow!("Ptr does not point to a statically sized array"))?))
+    }
+    pub fn element_ptr(&self, index: usize) -> anyhow::Result<T> {
+        Ok(T::from_ptr_unchecked(self.inner_ptr.get_array_element_ptr(index)?.ok_or_else(|| anyhow!("Ptr does not point to a statically sized array"))?))
+    }
+}
+impl<T : TrivialValue> StaticArrayPtr<TrivialPtr<T>> {
+    pub fn read_element(&self, index: usize) -> anyhow::Result<T> {
+        self.element_ptr(index)?.read()
+    }
+    pub fn write_element(&self, index: usize, value: T) -> anyhow::Result<()> {
+        self.element_ptr(index)?.write(value)
+    }
+    pub fn read_array(&self) -> anyhow::Result<Vec<T>> {
+        let mut result_buffer = vec![T::default(); self.static_len()?];
+        T::read_slice_unchecked(&self.element_ptr(0)?, result_buffer.as_mut_slice())?;
+        Ok(result_buffer)
+    }
+    pub fn write_array(&self, array: &[T]) -> anyhow::Result<()> {
+        if self.static_len()? != array.len() {
+            bail!("Static array length mismatch: Array length is {}, but passed slice len is {}", self.static_len()?, array.len());
+        }
+        T::write_slice_unchecked(&self.element_ptr(0)?, array)
+    }
+}
+impl<T : TypedDynamicPtrWrapper> TypedDynamicPtrWrapper for StaticArrayPtr<T> {
+    fn from_ptr_unchecked(ptr: DynamicPtr) -> Self {
+        Self{inner_ptr: ptr, phantom_data: PhantomData::default()}
+    }
+    fn get_inner_ptr(&self) -> &DynamicPtr {
+        &self.inner_ptr
+    }
+    fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
+        if let Some(element_type_index) = ptr_metadata.array_element_type_index()? {
+            let element_ptr_metadata = ptr_metadata.with_type_index(element_type_index);
+            T::can_typecast(&element_ptr_metadata)
+        } else { Ok(false) }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct IndirectPtr<T : TypedDynamicPtrWrapper> {
+    pub inner_ptr: DynamicPtr,
+    pub phantom_data: PhantomData<T>,
+}
+impl<T : TypedDynamicPtrWrapper> IndirectPtr<T> {
+    pub fn read(&self) -> anyhow::Result<T> {
+        let result_ptr = self.inner_ptr.read_ptr()?.ok_or_else(|| anyhow!("Ptr does not point to a ptr"))?;
+        Ok(T::from_ptr_unchecked(result_ptr))
+    }
+    pub fn write(&self, value: &T) -> anyhow::Result<()> {
+        self.inner_ptr.write_ptr(value.get_inner_ptr())
+    }
+}
+impl<T : TypedDynamicPtrWrapper> TypedDynamicPtrWrapper for IndirectPtr<T> {
+    fn from_ptr_unchecked(ptr: DynamicPtr) -> Self {
+        Self{inner_ptr: ptr, phantom_data: PhantomData::default()}
+    }
+    fn get_inner_ptr(&self) -> &DynamicPtr {
+        &self.inner_ptr
+    }
+    fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
+        if let Some(pointee_type_index) = ptr_metadata.pointer_pointee_type_index()? {
+            let pointee_ptr_metadata = ptr_metadata.with_type_index(pointee_type_index);
+            T::can_typecast(&pointee_ptr_metadata)
+        } else { Ok(false) }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct VoidPtr {
+    pub inner_ptr: DynamicPtr,
+}
+impl VoidPtr {
+    pub fn raw_ptr(&self) -> &OpaquePtr {
+        &self.inner_ptr.opaque_ptr
+    }
+}
+impl TypedDynamicPtrWrapper for VoidPtr {
+    fn from_ptr_unchecked(ptr: DynamicPtr) -> Self {
+        Self{inner_ptr: ptr}
+    }
+    fn get_inner_ptr(&self) -> &DynamicPtr {
+        &self.inner_ptr
+    }
+    fn can_typecast(_: &TypePtrMetadata) -> anyhow::Result<bool> {
+        Ok(true)
+    }
+}
