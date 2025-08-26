@@ -47,6 +47,9 @@ pub struct GospelModule {
     pub resolved_dependencies: RefCell<Vec<Rc<GospelModule>>>,
 }
 impl GospelModule {
+    pub fn module_name(&self) -> &str {
+        &self.definition.module.name
+    }
     fn collect_source_files(&self, builder: &dyn CompilerModuleBuilder) -> anyhow::Result<()> {
         let mut all_source_files: Vec<PathBuf> = Vec::new();
 

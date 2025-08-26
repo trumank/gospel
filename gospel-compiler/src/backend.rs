@@ -142,6 +142,7 @@ pub struct CompilerFunctionSignature {
 pub struct CompilerFunctionReference {
     pub function: GospelSourceObjectReference,
     pub signature: CompilerFunctionSignature,
+    pub return_value_type_name: Option<String>,
 }
 
 /// Compiler options that affect the compilation of the source files and modules
@@ -176,12 +177,13 @@ pub struct CompilerInstance {
 struct CompilerFunctionBuilder {
     function_scope: Rc<CompilerLexicalScope>,
     function_signature: CompilerFunctionSignature,
+    return_value_struct_name: Option<String>,
     function_definition: GospelSourceFunctionDefinition,
     argument_source_declarations: Vec<Rc<CompilerLexicalDeclaration>>,
     inline_struct_counter: usize,
 }
 impl CompilerFunctionBuilder {
-    fn pre_compile_function(function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<(GospelSourceFunctionDeclaration, CompilerFunctionSignature, Vec<Rc<CompilerLexicalDeclaration>>)> {
+    fn pre_compile_function(function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<(GospelSourceFunctionDeclaration, CompilerFunctionSignature, Option<String>, Vec<Rc<CompilerLexicalDeclaration>>)> {
         let function_reference = if let CompilerLexicalScopeClass::Function(function_closure) = &function_scope.class {
             let borrowed_closure = function_closure.borrow();
             borrowed_closure.function_reference.clone()
@@ -222,13 +224,14 @@ impl CompilerFunctionBuilder {
                 }
             }
         }
-        Ok((function_declaration, function_reference.signature, argument_source_declarations))
+        Ok((function_declaration, function_reference.signature, function_reference.return_value_type_name.clone(), argument_source_declarations))
     }
     fn create(function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<CompilerFunctionBuilder> {
-        let (function_declaration, function_signature, argument_source_declarations) = Self::pre_compile_function(function_scope)?;
+        let (function_declaration, function_signature, return_value_struct_name, argument_source_declarations) = Self::pre_compile_function(function_scope)?;
         Ok(CompilerFunctionBuilder{
             function_scope: function_scope.clone(),
             function_signature: function_signature.clone(),
+            return_value_struct_name,
             function_definition: GospelSourceFunctionDefinition::create(function_declaration),
             argument_source_declarations,
             inline_struct_counter: 0,
@@ -904,9 +907,10 @@ impl CompilerFunctionBuilder {
         innermost_loop_statement.borrow_mut().loop_codegen_data.as_mut().unwrap().loop_start_fixups.push(continue_fixup);
         Ok({})
     }
-    fn compile_type_layout_initialization(&mut self, type_name: &str, type_kind: UserDefinedTypeKind) -> CompilerResult<u32> {
+    fn compile_type_layout_initialization(&mut self, type_kind: UserDefinedTypeKind) -> CompilerResult<u32> {
         let source_context = self.function_scope.source_context.clone();
         let slot_index = self.function_definition.add_slot().with_source_context(&source_context)?;
+        let type_name = self.return_value_struct_name.as_ref().ok_or_else(|| compiler_error!(&source_context, "Return value struct name not set on function attempting to allocate UDT layout"))?;
 
         self.function_definition.add_udt_allocate_instruction(type_name, type_kind.to_string().as_str(), Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
@@ -1062,7 +1066,7 @@ pub trait CompilerModuleBuilder : CompilerModuleBuilderInternal {
     fn add_simple_function(&self, function_name: &str, return_value_type: ExpressionValueType, expression: &Expression) -> CompilerResult<GospelSourceObjectReference> {
         let source_context = CompilerSourceContext::default();
         let (function_scope, function_closure) = CompilerInstance::declare_function(
-            &self.module_scope(), function_name, DeclarationVisibility::Public, return_value_type, None, &source_context.line_context)?;
+            &self.module_scope(), function_name, DeclarationVisibility::Public, return_value_type, None, false, &source_context.line_context)?;
 
         if let Some(module_codegen_data) = self.module_scope().module_codegen() {
             module_codegen_data.push_delayed_function_definition(&function_scope, Box::new(CompilerSimpleExpressionFunctionGenerator{
@@ -1480,7 +1484,6 @@ impl CompilerStructFragmentGenerator for BlankStructFragmentGenerator {
 
 #[derive(Debug)]
 struct CompilerStructFunctionGenerator {
-    struct_name: String,
     struct_kind: UserDefinedTypeKind,
     struct_meta_layout: CompilerStructMetaLayoutReference,
     alignment_expression: Option<ExpressionWithCondition>,
@@ -1494,7 +1497,7 @@ struct CompilerStructFunctionGenerator {
 impl CompilerFunctionCodeGenerator for CompilerStructFunctionGenerator {
     fn generate(&self, function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<()> {
         let mut function_builder = CompilerFunctionBuilder::create(function_scope)?;
-        let type_layout_slot_index = function_builder.compile_type_layout_initialization(self.struct_name.as_str(), self.struct_kind)?;
+        let type_layout_slot_index = function_builder.compile_type_layout_initialization(self.struct_kind)?;
         let type_layout_metadata_slot_index = function_builder.compile_type_layout_metadata_struct_initialization(&self.struct_meta_layout)?;
 
         if let Some(alignment_expression) = &self.alignment_expression {
@@ -1547,6 +1550,9 @@ impl CompilerInstance {
         let new_module_scope = CompilerLexicalScope::create_module_scope(self, module_name.to_string(), &source_context, Some(container_writer.clone()));
         self.module_scopes.borrow_mut().insert(module_name.to_string(), new_module_scope.clone());
         Ok(CompilerModuleDefinitionBuilder{module_scope: new_module_scope, compiler: self.clone(), container_builder: RefCell::new(Some(container_writer))})
+    }
+    pub fn find_module_scope(self: &Rc<Self>, module_name: &str) -> Option<Rc<CompilerLexicalScope>> {
+        self.module_scopes.borrow().get(module_name).cloned()
     }
     fn resolve_absolute_identifier(&self, identifier: &PartialIdentifier, visibility_context: Option<&DeclarationVisibilityContext>) -> Option<CompilerLexicalNode> {
         if identifier.kind == PartialIdentifierKind::ModuleRelative {
@@ -1700,7 +1706,8 @@ impl CompilerInstance {
             let function_closure = Rc::new(RefCell::new(CompilerFunctionDeclaration {
                 function_reference: CompilerFunctionReference{
                     function: GospelSourceObjectReference::default(),
-                    signature: CompilerFunctionSignature{ implicit_parameters: source_function_closure.borrow().function_reference.signature.implicit_parameters.clone(), ..CompilerFunctionSignature::default() }
+                    signature: CompilerFunctionSignature{ implicit_parameters: source_function_closure.borrow().function_reference.signature.implicit_parameters.clone(), ..CompilerFunctionSignature::default() },
+                    return_value_type_name: None,
                 }
             }));
             let function_parent_scope = source_function_scope.parent_scope().unwrap();
@@ -1730,18 +1737,22 @@ impl CompilerInstance {
         });
         Ok(new_parameter_declaration)
     }
-    fn declare_function(scope: &Rc<CompilerLexicalScope>, function_name: &str, visibility: DeclarationVisibility, return_value_type: ExpressionValueType, template_declaration: Option<&TemplateDeclaration>, source_context: &ASTSourceContext) -> CompilerResult<(Rc<CompilerLexicalScope>, Rc<RefCell<CompilerFunctionDeclaration>>)> {
+    fn declare_function(scope: &Rc<CompilerLexicalScope>, function_name: &str, visibility: DeclarationVisibility, return_value_type: ExpressionValueType, template_declaration: Option<&TemplateDeclaration>, is_type_definition: bool, source_context: &ASTSourceContext) -> CompilerResult<(Rc<CompilerLexicalScope>, Rc<RefCell<CompilerFunctionDeclaration>>)> {
         let actual_source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: source_context.clone()};
 
         let implicit_parameters = scope.collect_implicit_scope_parameters();
         let function_closure = Rc::new(RefCell::new(CompilerFunctionDeclaration {
             function_reference: CompilerFunctionReference{
                 function: GospelSourceObjectReference::default(),
-                signature: CompilerFunctionSignature{ return_value_type, implicit_parameters, explicit_parameters: None }
+                signature: CompilerFunctionSignature{ return_value_type, implicit_parameters, explicit_parameters: None },
+                return_value_type_name: None,
             }
         }));
         let function_scope = scope.declare_scope(function_name, CompilerLexicalScopeClass::Function(CompilerResource{resource_handle: function_closure.clone()}), visibility, &actual_source_context.line_context)?;
         function_closure.borrow_mut().function_reference.function = GospelSourceObjectReference{module_name: scope.module_name(), local_name: function_scope.full_scope_name_no_module_name()};
+        if return_value_type == ExpressionValueType::Typename && is_type_definition {
+            function_closure.borrow_mut().function_reference.return_value_type_name = Some(function_scope.full_scope_name());
+        }
 
         if let Some(template_arguments) = template_declaration {
             function_closure.borrow_mut().function_reference.signature.explicit_parameters = Some(Vec::new());
@@ -1753,7 +1764,7 @@ impl CompilerInstance {
     }
     fn pre_compile_data_statement(scope: &Rc<CompilerLexicalScope>, statement: &DataStatement, default_visibility: DeclarationVisibility) -> CompilerResult<CompilerFunctionReference> {
         let visibility = statement.access_specifier.map(|x| Self::convert_access_specifier(x)).unwrap_or(default_visibility);
-        let (function_scope, function_closure) = Self::declare_function(scope, statement.name.as_str(), visibility, statement.value_type, statement.template_declaration.as_ref(), &statement.source_context)?;
+        let (function_scope, function_closure) = Self::declare_function(scope, statement.name.as_str(), visibility, statement.value_type, statement.template_declaration.as_ref(), false, &statement.source_context)?;
 
         if let Some(module_codegen_data) = function_scope.module_codegen() {
             module_codegen_data.push_delayed_function_definition(&function_scope, Box::new(CompilerSimpleExpressionFunctionGenerator{
@@ -1942,7 +1953,7 @@ impl CompilerInstance {
 
         let visibility = statement.access_specifier.map(|x| Self::convert_access_specifier(x)).unwrap_or(default_visibility);
         let (function_scope, function_closure) = Self::declare_function(scope, function_name, visibility,
-            ExpressionValueType::Typename, statement.template_declaration.as_ref(), &source_context.line_context)?;
+            ExpressionValueType::Typename, statement.template_declaration.as_ref(), true, &source_context.line_context)?;
         let visibility_override = if !function_closure.borrow().function_reference.signature.implicit_parameters.is_empty() || function_closure.borrow().function_reference.signature.explicit_parameters.is_some() {
             Some(DeclarationVisibility::Private)
         } else { None };
@@ -1956,7 +1967,6 @@ impl CompilerInstance {
         if let Some(module_codegen_data) = scope.module_codegen() {
             module_codegen_data.push_delayed_function_definition(&function_scope, Box::new(CompilerStructFunctionGenerator{
                 source_context,
-                struct_name: function_name.to_string(),
                 struct_kind: statement.struct_kind,
                 struct_meta_layout: meta_layout,
                 alignment_expression: statement.alignment_expression.clone(),
@@ -1976,10 +1986,10 @@ pub struct CompilerResource<T> {
     resource_handle: Rc<RefCell<T>>,
 }
 impl<T> CompilerResource<T> {
-    fn borrow_mut<'a>(&'a self) -> RefMut<'a, T> {
+    fn borrow_mut(&self) -> RefMut<'_, T> {
         self.resource_handle.borrow_mut()
     }
-    pub fn borrow<'a>(&'a self) -> Ref<'a, T> {
+    pub fn borrow(&self) -> Ref<'_, T> {
         self.resource_handle.borrow()
     }
 }
@@ -2134,7 +2144,7 @@ impl CompilerModuleCodegenData {
     }
     fn push_delayed_function_definition(&self, function_scope: &Rc<CompilerLexicalScope>, generator: Box<dyn CompilerFunctionCodeGenerator>) -> CompilerResult<()> {
         // Declare the function immediately so future function definitions can refer to it
-        let (function_declaration, _, _) = CompilerFunctionBuilder::pre_compile_function(function_scope)?;
+        let (function_declaration, _, _, _) = CompilerFunctionBuilder::pre_compile_function(function_scope)?;
         self.visitor.borrow_mut().declare_function(function_declaration).with_source_context(&function_scope.source_context)?;
 
         // Push the delayed function definition now
