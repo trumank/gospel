@@ -222,6 +222,8 @@ pub trait TypeGraphLike {
 pub trait MutableTypeGraph : TypeGraphLike {
     /// Adds type to the type graph and returns its index. If this type is already part of the type graph, returns index of an existing type
     fn store_type(&mut self, type_data: Type) -> usize;
+    /// Attempts to find or create UDT type by its qualified name (with $ as a separator)
+    fn find_create_named_udt_type(&mut self, full_type_name: &str) -> anyhow::Result<Option<usize>>;
 }
 
 /// Type layout cache caches type layout calculations for arbitrary types

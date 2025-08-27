@@ -7,60 +7,66 @@ use paste::paste;
 use gospel_typelib::type_model::{MutableTypeGraph, PrimitiveType, ResolvedUDTMemberLayout, Type, TypeLayoutCache, UserDefinedTypeMember};
 use crate::memory_access::OpaquePtr;
 
+/// Type ptr namespace represents a type hierarchy used by a hierarchy of related type pointers
 #[derive(Clone)]
-pub struct TypePtrMetadata {
+pub struct TypePtrNamespace {
     pub type_graph: Arc<RwLock<dyn MutableTypeGraph>>,
     pub layout_cache: Arc<RwLock<TypeLayoutCache>>,
+}
+
+#[derive(Clone)]
+pub struct TypePtrMetadata {
+    pub namespace: TypePtrNamespace,
     pub type_index: usize,
 }
 impl TypePtrMetadata {
     pub fn with_type_index(&self, type_index: usize) -> Self {
-        Self{type_graph: self.type_graph.clone(), layout_cache: self.layout_cache.clone(), type_index}
+        Self{namespace: self.namespace.clone(), type_index}
     }
     pub fn size_and_alignment(&self) -> anyhow::Result<(usize, usize)> {
-        let type_graph = self.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
-        let mut layout_cache = self.layout_cache.write().map_err(|x| anyhow!(x.to_string()))?;
+        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
+        let mut layout_cache = self.namespace.layout_cache.write().map_err(|x| anyhow!(x.to_string()))?;
         let type_data = type_graph.base_type_by_index(self.type_index);
         type_data.size_and_alignment(type_graph.deref(), layout_cache.deref_mut())
     }
     pub fn primitive_type_and_size(&self) -> anyhow::Result<Option<(PrimitiveType, usize)>> {
-        let type_graph = self.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
-        let layout_cache = self.layout_cache.read().map_err(|x| anyhow!(x.to_string()))?;
+        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
+        let layout_cache = self.namespace.layout_cache.read().map_err(|x| anyhow!(x.to_string()))?;
         let type_data = type_graph.base_type_by_index(self.type_index);
         if let Type::Primitive(primitive_type) = type_data {
             Ok(Some((primitive_type.clone(), primitive_type.size_and_alignment(&layout_cache.target_triplet)?)))
         } else { Ok(None) }
     }
     pub fn pointer_pointee_type_index(&self) -> anyhow::Result<Option<usize>> {
-        let type_graph = self.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
+        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
         let type_data = type_graph.base_type_by_index(self.type_index);
         if let Type::Pointer(pointer_type) = type_data {
             Ok(Some(pointer_type.pointee_type_index))
         } else { Ok(None) }
     }
     pub fn array_element_type_index(&self) -> anyhow::Result<Option<usize>> {
-        let type_graph = self.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
+        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
         if let Type::Array(array_type) = type_graph.base_type_by_index(self.type_index) {
             Ok(Some(array_type.element_type_index))
         } else { Ok(None) }
     }
     pub fn array_static_array_length(&self) -> anyhow::Result<Option<usize>> {
-        let type_graph = self.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
+        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
         if let Type::Array(array_type) = type_graph.base_type_by_index(self.type_index) {
             Ok(Some(array_type.array_length))
         } else { Ok(None) }
     }
     pub fn struct_base_class_offset(&self, base_class_type_index: usize) -> anyhow::Result<Option<usize>> {
-        let type_graph = self.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
-        let mut layout_cache = self.layout_cache.write().map_err(|x| anyhow!(x.to_string()))?;
+        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
+        let mut layout_cache = self.namespace.layout_cache.write().map_err(|x| anyhow!(x.to_string()))?;
         let type_data = type_graph.base_type_by_index(self.type_index);
         if let Type::UDT(user_defined_type) = type_data {
             user_defined_type.find_base_class_offset(type_graph.base_type_index(base_class_type_index), type_graph.deref(), layout_cache.deref_mut())
         } else { Ok(None) }
     }
     pub fn struct_field_type_index_and_offset(&self, field_name: &str) -> anyhow::Result<Option<(usize, usize)>> {
-        let type_graph = self.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
-        let mut layout_cache = self.layout_cache.write().map_err(|x| anyhow!(x.to_string()))?;
+        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
+        let mut layout_cache = self.namespace.layout_cache.write().map_err(|x| anyhow!(x.to_string()))?;
         let type_data = type_graph.base_type_by_index(self.type_index);
         if let Type::UDT(user_defined_type) = type_data {
             user_defined_type.find_map_member_layout(field_name, &|context| {
@@ -72,14 +78,15 @@ impl TypePtrMetadata {
         } else { Ok(None) }
     }
     pub fn struct_type_name(&self) -> anyhow::Result<Option<String>> {
-        let type_graph = self.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
+        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
         let type_data = type_graph.base_type_by_index(self.type_index);
         if let Type::UDT(user_defined_type) = type_data {
             Ok(user_defined_type.name.clone())
         } else { Ok(None) }
     }
-    pub fn types_identical(&self, type_index_a: usize, type_index_b: usize) -> anyhow::Result<bool> {
-        let type_graph = self.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
+    pub fn are_types_compatible(&self, type_index_a: usize, type_index_b: usize) -> anyhow::Result<bool> {
+        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
+        // TODO: This should be relaxed to allow integral conversions between integers of the same width
         Ok(type_graph.base_type_index(type_index_a) == type_graph.base_type_index(type_index_b))
     }
 }
@@ -174,12 +181,12 @@ impl DynamicPtr {
     }
     /// Attempts to write this dynamic pointer as a pointer
     pub fn write_ptr(&self, value: &DynamicPtr) -> anyhow::Result<()> {
-        if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? && self.metadata.types_identical(pointee_type_index, value.metadata.type_index)? {
+        if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? && self.metadata.are_types_compatible(pointee_type_index, value.metadata.type_index)? {
             self.opaque_ptr.write_ptr(&value.opaque_ptr)
         } else { Err(anyhow!("Not a pointer of a compatible type")) }
     }
     pub fn write_ptr_slice_unchecked(&self, buffer: &[DynamicPtr]) -> anyhow::Result<()> {
-        if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? && !buffer.is_empty() && self.metadata.types_identical(pointee_type_index, buffer[0].metadata.type_index)? {
+        if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? && !buffer.is_empty() && self.metadata.are_types_compatible(pointee_type_index, buffer[0].metadata.type_index)? {
             let raw_ptr_array: Vec<OpaquePtr> = buffer.iter().map(|x| x.opaque_ptr.clone()).collect();
             self.opaque_ptr.write_ptr_array(raw_ptr_array.as_slice())
         } else { Err(anyhow!("Not a pointer of a compatible type")) }

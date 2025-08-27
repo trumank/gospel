@@ -136,7 +136,7 @@ impl CodeGenerationContext {
             }
         }
     }
-    fn generate_type_definition(&self, type_index: usize) -> anyhow::Result<TokenStream> {
+    fn generate_type_definition(&self, type_index: usize, is_parameterless_type: bool) -> anyhow::Result<TokenStream> {
         let base_type_index = self.module_context.run_context.base_type_index(type_index);
         let type_container = self.module_context.run_context.type_container_by_index(base_type_index);
 
@@ -144,8 +144,8 @@ impl CodeGenerationContext {
             wrapped_user_defined_type
         } else { bail!("Type #{} is not a user defined type", base_type_index) };
 
-        let raw_type_name = user_defined_type.name.clone().ok_or_else(|| anyhow!("Cannot generate bindings for unnamed UDTs"))?;
-        let type_name = Ident::new(&Self::generate_short_udt_name(&raw_type_name), Span::call_site());
+        let full_type_name = user_defined_type.name.clone().ok_or_else(|| anyhow!("Cannot generate bindings for unnamed UDTs"))?;
+        let type_name = Ident::new(&Self::generate_short_udt_name(&full_type_name), Span::call_site());
         let mut generated_field_names: HashSet<String> = HashSet::new();
         let mut generated_fields: Vec<TokenStream> = Vec::new();
 
@@ -189,6 +189,17 @@ impl CodeGenerationContext {
                 generated_fields.push(field_tokens);
             }
         }
+        let static_type_impl = if is_parameterless_type {
+            Some(quote! {
+                impl gospel_runtime::static_type_wrappers::StaticallyTypedPtr for #type_name {
+                    fn store_type_descriptor(namespace: &gospel_runtime::runtime_type_model::TypePtrNamespace) -> anyhow::Result<gospel_runtime::runtime_type_model::TypePtrMetadata> {
+                        let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow::anyhow!(x.to_string()))?;
+                        let type_index = type_graph.find_create_named_udt_type(#full_type_name)?.ok_or_else(|| anyhow::anyhow!("Named struct not found: {}", #full_type_name))?;
+                        Ok(gospel_runtime::runtime_type_model::TypePtrMetadata{namespace: namespace.clone(), type_index})
+                    }
+                }
+            })
+        } else { None };
         Ok(quote! {
             #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
             pub struct #type_name {
@@ -206,10 +217,11 @@ impl CodeGenerationContext {
                 }
                 fn can_typecast(ptr_metadata: &gospel_runtime::runtime_type_model::TypePtrMetadata) -> anyhow::Result<bool> {
                     if let Some(struct_name) = ptr_metadata.struct_type_name()? {
-                        Ok(struct_name == stringify!(#type_name))
+                        Ok(struct_name == #full_type_name)
                     } else { Ok(false) }
                 }
             }
+            #static_type_impl
         })
     }
     fn generate_fallback_type_definition(&self, raw_type_name: &str) -> TokenStream {
@@ -218,8 +230,8 @@ impl CodeGenerationContext {
     }
     pub(crate) fn generate_bindings_file(self) -> anyhow::Result<String> {
         let mut type_definitions: Vec<TokenStream> = Vec::new();
-        for (type_name, maybe_type_index) in &self.module_context.type_name_to_type_index {
-            if let Some(type_index) = maybe_type_index.clone() && let Ok(result_type_definition) = self.generate_type_definition(type_index) {
+        for (type_name, maybe_type_index, is_parameterless_type) in &self.module_context.type_name_to_type_index {
+            if let Some(type_index) = maybe_type_index.clone() && let Ok(result_type_definition) = self.generate_type_definition(type_index, *is_parameterless_type) {
                 type_definitions.push(result_type_definition.clone());
             } else {
                 let fallback_type_definition = self.generate_fallback_type_definition(type_name);

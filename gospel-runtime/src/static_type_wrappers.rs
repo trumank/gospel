@@ -3,8 +3,8 @@ use anyhow::bail;
 use std::marker::PhantomData;
 use anyhow::anyhow;
 use paste::paste;
-use crate::runtime_type_model::{DynamicPtr, TypePtrMetadata};
-use gospel_typelib::type_model::PrimitiveType;
+use crate::runtime_type_model::{DynamicPtr, TypePtrMetadata, TypePtrNamespace};
+use gospel_typelib::type_model::{ArrayType, PointerType, PrimitiveType, Type};
 use crate::memory_access::OpaquePtr;
 
 /// Represents a value corresponding to native type "long int", which can have a size of either 4 or 8 bytes depending on the target
@@ -29,16 +29,26 @@ pub trait TypedDynamicPtrWrapper where Self: Sized {
     }
 }
 
+/// Implemented for type pointers with statically known types (e.g. pointers to primitive types or complex types composed of primitive types)
+pub trait StaticallyTypedPtr : TypedDynamicPtrWrapper {
+    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata>;
+    fn from_raw_ptr(ptr: OpaquePtr, namespace: &TypePtrNamespace) -> anyhow::Result<Self> {
+        let type_ptr_metadata = Self::store_type_descriptor(namespace)?;
+        Ok(Self::from_ptr_unchecked(DynamicPtr{opaque_ptr: ptr, metadata: type_ptr_metadata}))
+    }
+}
+
 pub trait TrivialValue : Copy + Default {
     fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool>;
     fn read(ptr: &TrivialPtr<Self>) -> anyhow::Result<Self>;
     fn write(ptr: &TrivialPtr<Self>, value: Self) -> anyhow::Result<()>;
     fn read_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &mut [Self]) -> anyhow::Result<()>;
     fn write_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &[Self]) -> anyhow::Result<()>;
+    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata>;
 }
 
 macro_rules! implement_numeric_trivial_value {
-    ( $value_type:ident, $is_integral:literal, $is_floating_point:literal ) => {
+    ( $value_type:ident, $is_integral:literal, $is_floating_point:literal, $primitive_type:expr) => {
        impl TrivialValue for $value_type {
             fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
                if let Some((primitive_type, primitive_size)) = ptr_metadata.primitive_type_and_size()? {
@@ -67,27 +77,32 @@ macro_rules! implement_numeric_trivial_value {
                     ptr.inner_ptr.[<write_ $value_type _slice_unchecked>](buffer)
                 }
             }
+            fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
+                let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
+                let type_index = type_graph.store_type(Type::Primitive($primitive_type));
+                Ok(TypePtrMetadata{namespace: namespace.clone(), type_index})
+            }
         }
     };
 }
-implement_numeric_trivial_value!(u8, true, false);
-implement_numeric_trivial_value!(u16, true, false);
-implement_numeric_trivial_value!(u32, true, false);
-implement_numeric_trivial_value!(u64, true, false);
-implement_numeric_trivial_value!(i8, true, false);
-implement_numeric_trivial_value!(i16, true, false);
-implement_numeric_trivial_value!(i32, true, false);
-implement_numeric_trivial_value!(i64, true, false);
-implement_numeric_trivial_value!(f32, false, true);
-implement_numeric_trivial_value!(f64, false, true);
+implement_numeric_trivial_value!(u8, true, false, PrimitiveType::UnsignedChar);
+implement_numeric_trivial_value!(u16, true, false, PrimitiveType::UnsignedShortInt);
+implement_numeric_trivial_value!(u32, true, false, PrimitiveType::UnsignedInt);
+implement_numeric_trivial_value!(u64, true, false, PrimitiveType::UnsignedLongLongInt);
+implement_numeric_trivial_value!(i8, true, false, PrimitiveType::Char);
+implement_numeric_trivial_value!(i16, true, false, PrimitiveType::ShortInt);
+implement_numeric_trivial_value!(i32, true, false, PrimitiveType::Int);
+implement_numeric_trivial_value!(i64, true, false, PrimitiveType::LongLongInt);
+implement_numeric_trivial_value!(f32, false, true, PrimitiveType::Float);
+implement_numeric_trivial_value!(f64, false, true, PrimitiveType::Double);
 
 macro_rules! implement_variable_size_trivial_value {
-    ( $value_type:ident, $large_underlying_type:ident, $small_underlying_type:ident, |$primitive_type_local_name:ident| $type_check_expr:expr ) => {
+    ( $value_type:ident, $large_underlying_type:ident, $small_underlying_type:ident, $primitive_type:expr, $secondary_primitive_type:expr) => {
         paste! {
             impl TrivialValue for $value_type {
                 fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
-                    if let Some(($primitive_type_local_name, _)) = ptr_metadata.primitive_type_and_size()? {
-                        Ok($type_check_expr)
+                    if let Some((primitive_type_local_name, _)) = ptr_metadata.primitive_type_and_size()? {
+                        Ok(primitive_type_local_name == $primitive_type || primitive_type_local_name == $secondary_primitive_type)
                     } else { Ok(false) }
                 }
                 fn read(ptr: &TrivialPtr<Self>) -> anyhow::Result<Self> {
@@ -156,14 +171,19 @@ macro_rules! implement_variable_size_trivial_value {
                        Err(anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))
                     }
                 }
+                fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
+                    let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
+                    let type_index = type_graph.store_type(Type::Primitive($primitive_type));
+                    Ok(TypePtrMetadata{namespace: namespace.clone(), type_index})
+                }
             }
         }
     };
 }
 
-implement_variable_size_trivial_value!(LongInt, i64, i32, |primitive_type| primitive_type == PrimitiveType::LongInt || primitive_type == PrimitiveType::UnsignedLongInt);
-implement_variable_size_trivial_value!(UnsignedLongInt, u64, u32, |primitive_type| primitive_type == PrimitiveType::LongInt || primitive_type == PrimitiveType::UnsignedLongInt);
-implement_variable_size_trivial_value!(WideChar, u32, u16, |primitive_type| primitive_type == PrimitiveType::WideChar);
+implement_variable_size_trivial_value!(LongInt, i64, i32, PrimitiveType::LongInt, PrimitiveType::UnsignedLongInt);
+implement_variable_size_trivial_value!(UnsignedLongInt, u64, u32, PrimitiveType::UnsignedLongInt, PrimitiveType::LongInt);
+implement_variable_size_trivial_value!(WideChar, u32, u16, PrimitiveType::WideChar, PrimitiveType::WideChar);
 
 impl TrivialValue for bool {
     fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
@@ -194,6 +214,11 @@ impl TrivialValue for bool {
         }
         ptr.inner_ptr.write_u8_slice_unchecked(byte_buffer.deref())
     }
+    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
+        let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
+        let type_index = type_graph.store_type(Type::Primitive(PrimitiveType::Bool));
+        Ok(TypePtrMetadata{namespace: namespace.clone(), type_index})
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -222,6 +247,11 @@ impl<T : TrivialValue> TypedDynamicPtrWrapper for TrivialPtr<T> {
     }
     fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
         T::can_typecast(ptr_metadata)
+    }
+}
+impl<T : TrivialValue> StaticallyTypedPtr for TrivialPtr<T> {
+    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
+        T::store_type_descriptor(namespace)
     }
 }
 
@@ -258,6 +288,18 @@ impl<T : TrivialValue> StaticArrayPtr<TrivialPtr<T>> {
             bail!("Static array length mismatch: Array length is {}, but passed slice len is {}", self.static_len()?, array.len());
         }
         T::write_slice_unchecked(&self.element_ptr(0)?, array)
+    }
+}
+impl<T : TypedDynamicPtrWrapper + StaticallyTypedPtr> StaticArrayPtr<T> {
+    pub fn from_raw_ptr(ptr: OpaquePtr, namespace: &TypePtrNamespace, array_length: usize) -> anyhow::Result<StaticArrayPtr<T>> {
+        let type_ptr_metadata = Self::store_type_descriptor(namespace, array_length)?;
+        Ok(Self::from_ptr_unchecked(DynamicPtr{opaque_ptr: ptr, metadata: type_ptr_metadata}))
+    }
+    pub fn store_type_descriptor(namespace: &TypePtrNamespace, array_length: usize) -> anyhow::Result<TypePtrMetadata> {
+        let element_type_index = T::store_type_descriptor(namespace)?;
+        let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
+        let type_index = type_graph.store_type(Type::Array(ArrayType{element_type_index: element_type_index.type_index, array_length}));
+        Ok(TypePtrMetadata{namespace: namespace.clone(), type_index})
     }
 }
 impl<T : TypedDynamicPtrWrapper> TypedDynamicPtrWrapper for StaticArrayPtr<T> {
@@ -303,6 +345,14 @@ impl<T : TypedDynamicPtrWrapper> TypedDynamicPtrWrapper for IndirectPtr<T> {
         } else { Ok(false) }
     }
 }
+impl<T : TypedDynamicPtrWrapper + StaticallyTypedPtr> StaticallyTypedPtr for IndirectPtr<T> {
+    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
+        let pointee_type = T::store_type_descriptor(namespace)?;
+        let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
+        let type_index = type_graph.store_type(Type::Pointer(PointerType{pointee_type_index: pointee_type.type_index, is_reference: false}));
+        Ok(TypePtrMetadata{namespace: namespace.clone(), type_index})
+    }
+}
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VoidPtr {
@@ -322,5 +372,12 @@ impl TypedDynamicPtrWrapper for VoidPtr {
     }
     fn can_typecast(_: &TypePtrMetadata) -> anyhow::Result<bool> {
         Ok(true)
+    }
+}
+impl StaticallyTypedPtr for VoidPtr {
+    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
+        let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
+        let type_index = type_graph.store_type(Type::Primitive(PrimitiveType::Void));
+        Ok(TypePtrMetadata{namespace: namespace.clone(), type_index})
     }
 }
