@@ -1,0 +1,15 @@
+[package]
+name = "gospel-bindings-test"
+description = "Test crate for Gospel bindings code generation"
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gospel-runtime = { version = "0.1.0", path = "../gospel-runtime" }
+anyhow = "1.0.93"
+
+[build-dependencies]
+gospel-bindings-gen = { version = "0.1.0", path = "../gospel-bindings-gen" }

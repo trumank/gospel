@@ -180,11 +180,14 @@ impl GospelVMRunContext {
         if self.types[type_index].size_has_been_validated {
             return Ok(self.types[type_index].partial_type)
         }
+        let type_name = if let Type::UDT(udt) = &self.types[type_index].wrapped_type {
+            udt.name.as_ref().map(|x| x.as_str()).unwrap_or("<unnamed udt>")
+        } else { "<non udt type>" };
         if self.types[type_index].owner_stack_frame_token != 0 {
-            return Err(vm_error!(source_frame, "Type at index #{} has been declared but has not been defined yet", type_index))
+            return Err(vm_error!(source_frame, "Type at index #{} ({}) has been declared but has not been defined yet (is finalization pass: {})", type_index, type_name, source_frame.is_none()))
         }
         if type_size_calculation_stack.contains(&type_index) {
-            return Err(vm_error!(source_frame, "Type at index #{} has infinite size", type_index));
+            return Err(vm_error!(source_frame, "Type at index #{} ({}) has infinite size", type_index, type_name));
         }
         type_size_calculation_stack.push(type_index);
 
@@ -1839,7 +1842,7 @@ impl GospelVMContainer {
             max_stack_size: 256, // TODO: Make limits configurable
             max_loop_jumps: 8192,
             max_recursion_depth: 128,
-            max_exception_handler_depth: 10,
+            max_exception_handler_depth: 128,
         };
 
         // Populate referenced strings

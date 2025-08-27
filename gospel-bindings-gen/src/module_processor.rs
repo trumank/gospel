@@ -76,7 +76,7 @@ pub(crate) fn process_module_context(main_module_path: &PathBuf, additional_depe
     for function_reference in &type_definition_functions {
         let type_name = function_reference.return_value_type_name.as_ref().unwrap().clone();
         if let Some(type_function) = vm_state.find_function_by_reference(&function_reference.function) &&
-            let Ok(execution_result) = type_function.execute(Vec::new(), &mut run_context) &&
+            let execution_result = type_function.execute(Vec::new(), &mut run_context).map_err(|x| anyhow!("Failed to evaluate type {}: {}", &type_name, x))? &&
             let GospelVMValue::TypeReference(type_index) = execution_result {
             type_name_to_type_index.push((type_name, Some(type_index)));
         } else {

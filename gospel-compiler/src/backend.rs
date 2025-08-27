@@ -4,7 +4,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use anyhow::anyhow;
-use itertools::Itertools;
+use itertools::{Itertools};
 use strum::Display;
 use crate::ast::{CVQualifiedExpression, FunctionParameterDeclaration, MemberFunctionDeclaration};
 use gospel_typelib::type_model::{PrimitiveType, UserDefinedTypeKind};
@@ -959,6 +959,7 @@ impl CompilerFunctionBuilder {
     fn compile_try_catch_wrapped_statement<S: FnOnce(&mut Self, &CompilerSourceContext) -> CompilerResult<()>, R: FnOnce(&mut Self, &CompilerSourceContext) -> CompilerResult<()>>(&mut self, source_context: &CompilerSourceContext, inner_code_generator: S, catch_code_generator: R)  -> CompilerResult<()> {
         let jump_to_exception_handler_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::PushExceptionHandler, Self::get_line_number(source_context)).with_source_context(source_context)?.1;
         inner_code_generator(self, source_context)?;
+        self.function_definition.add_simple_instruction(GospelOpcode::PopExceptionHandler, Self::get_line_number(source_context)).with_source_context(source_context)?;
         let jump_to_end_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch, Self::get_line_number(source_context)).with_source_context(source_context)?.1;
         let exception_handler_start_instruction_index = self.function_definition.current_instruction_count();
         self.function_definition.fixup_control_flow_instruction(jump_to_exception_handler_fixup, exception_handler_start_instruction_index).with_source_context(source_context)?;
@@ -1306,9 +1307,15 @@ struct CompilerStructMetadataFragment {
     metadata_name: String,
 }
 impl CompilerStructMetadataFragment {
-    fn compile_full_pass_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<()> {
-        // Take metadata struct from the slot
-        builder.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_metadata_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+    fn compile_full_pass_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference, allow_take_slot: bool) -> CompilerResult<()> {
+        // We cannot use TakeSlot if result of our calculation can be lost due to an exception
+        if allow_take_slot {
+            // Take metadata struct from the slot
+            builder.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_metadata_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+        } else {
+            // Copy metadata struct from the slot
+            builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_metadata_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+        }
 
         // Push the struct closure or resolved type layout on the stack
         let metadata_field_value_type = builder.compile_implicitly_bound_function_closure_or_call(&self.scope, &self.metadata_function_reference, &self.source_context)?;
@@ -1326,7 +1333,7 @@ impl CompilerStructFragmentGenerator for CompilerStructMetadataFragment {
         if !is_prototype_pass {
             if allow_partial_types {
                 builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, _| {
-                    self.compile_full_pass_fragment(inner_builder, type_layout_metadata_slot, meta_layout)?;
+                    self.compile_full_pass_fragment(inner_builder, type_layout_metadata_slot, meta_layout, !allow_partial_types)?;
                     Ok({})
                 }, |inner_builder, source_context| {
                     // Type without complete metadata is also considered incomplete
@@ -1334,7 +1341,7 @@ impl CompilerStructFragmentGenerator for CompilerStructMetadataFragment {
                     Ok({})
                 })?;
             } else {
-                self.compile_full_pass_fragment(builder, type_layout_metadata_slot, meta_layout)?;
+                self.compile_full_pass_fragment(builder, type_layout_metadata_slot, meta_layout, !allow_partial_types)?;
             }
         }
         Ok({})
@@ -1352,7 +1359,15 @@ struct CompilerStructMemberFragment {
     bitfield_width_expression: Option<Expression>,
 }
 impl CompilerStructMemberFragment {
-    fn compile_full_member_declaration(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, is_prototype_pass: bool) -> CompilerResult<()> {
+    fn compile_member_alignment_statement(&self, builder: &mut CompilerFunctionBuilder, alignment_expression: &ExpressionWithCondition) -> CompilerResult<()> {
+        builder.compile_condition_wrapped_expression(&self.scope, alignment_expression, |builder, expression, source_context| {
+            builder.function_definition.add_simple_instruction(GospelOpcode::Pop, CompilerFunctionBuilder::get_line_number(source_context)).with_source_context(source_context)?;
+            let alignment_expression_type = builder.compile_coerce_alignment_expression(&self.scope, expression, &self.source_context)?;
+            CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Int, alignment_expression_type)?;
+            Ok({})
+        })
+    }
+    fn compile_full_member_declaration(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
         builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
 
         // Compile member type expression
@@ -1376,23 +1391,28 @@ impl CompilerStructMemberFragment {
             // Generate alignment expression if we have one provided, otherwise pass -1 to indicate no user specified alignment
             builder.function_definition.add_int_constant_instruction(-1, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
             if let Some(alignment_expression) = &self.alignment_expression {
-                builder.compile_condition_wrapped_expression(&self.scope, alignment_expression, |builder, expression, source_context| {
-                    builder.function_definition.add_simple_instruction(GospelOpcode::Pop, CompilerFunctionBuilder::get_line_number(source_context)).with_source_context(source_context)?;
-                    let alignment_expression_type = builder.compile_coerce_alignment_expression(&self.scope, expression, &self.source_context)?;
-                    CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Int, alignment_expression_type)?;
-                    Ok({})
-                })?;
+                if is_prototype_pass || allow_partial_types {
+                    builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, _source_context| {
+                        self.compile_member_alignment_statement(inner_builder, alignment_expression)
+                    }, |inner_builder, source_context| {
+                        if !is_prototype_pass {
+                            inner_builder.compile_type_layout_mark_partial_statement(type_layout_slot, source_context)
+                        } else { Ok({}) }
+                    })?;
+                } else {
+                    self.compile_member_alignment_statement(builder, alignment_expression)?;
+                }
             }
             builder.function_definition.add_udt_member_instruction(GospelOpcode::TypeUDTAddField, self.member_name.as_str(), member_flags, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         }
         Ok({})
     }
-    fn compile_simplified_member_declaration(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32) -> CompilerResult<()> {
+    fn compile_simplified_member_declaration(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, is_prototype_pass: bool) -> CompilerResult<()> {
         builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
 
         // Simplified type of the expression is void, and simplified declarations are only allowed as prototypes
         builder.function_definition.add_string_instruction(GospelOpcode::TypePrimitiveCreate, PrimitiveType::Void.to_string().as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
-        let member_flags = (1 << 2) as u32;
+        let member_flags = if is_prototype_pass { (1 << 2) as u32 } else { 0 };
         if self.bitfield_width_expression.is_some() {
             builder.function_definition.add_udt_member_instruction(GospelOpcode::TypeUDTAddBitfield, self.member_name.as_str(), member_flags,
                    CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
@@ -1408,16 +1428,15 @@ impl CompilerStructFragmentGenerator for CompilerStructMemberFragment {
     fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, _type_layout_metadata_slot: u32, _meta_layout: &CompilerStructMetaLayoutReference, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
         if is_prototype_pass || allow_partial_types {
             builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, _| {
-                self.compile_full_member_declaration(inner_builder, type_layout_slot, is_prototype_pass)
+                self.compile_full_member_declaration(inner_builder, type_layout_slot, is_prototype_pass, allow_partial_types)
             }, |inner_builder, source_context| {
-                if is_prototype_pass {
-                    self.compile_simplified_member_declaration(inner_builder, type_layout_slot)
-                } else {
+                self.compile_simplified_member_declaration(inner_builder, type_layout_slot, is_prototype_pass)?;
+                if !is_prototype_pass {
                     inner_builder.compile_type_layout_mark_partial_statement(type_layout_slot, source_context)
-                }
+                } else { Ok({}) }
             })
         } else {
-            self.compile_full_member_declaration(builder, type_layout_slot, false)
+            self.compile_full_member_declaration(builder, type_layout_slot, false, false)
         }
     }
 }
@@ -1501,7 +1520,15 @@ impl CompilerFunctionCodeGenerator for CompilerStructFunctionGenerator {
         let type_layout_metadata_slot_index = function_builder.compile_type_layout_metadata_struct_initialization(&self.struct_meta_layout)?;
 
         if let Some(alignment_expression) = &self.alignment_expression {
-            function_builder.compile_type_layout_alignment_expression(&function_builder.function_scope.clone(), type_layout_slot_index, alignment_expression)?;
+            if self.allow_partial_types {
+                function_builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, _source_context| {
+                    inner_builder.compile_type_layout_alignment_expression(&inner_builder.function_scope.clone(), type_layout_slot_index, alignment_expression)
+                }, |inner_builder, source_context| {
+                    inner_builder.compile_type_layout_mark_partial_statement(type_layout_slot_index, source_context)
+                })?;
+            } else {
+                function_builder.compile_type_layout_alignment_expression(&function_builder.function_scope.clone(), type_layout_slot_index, alignment_expression)?;
+            }
         }
         if let Some(member_pack_alignment_expression) = &self.member_pack_alignment_expression {
             function_builder.compile_type_layout_member_pack_alignment_expression(&function_builder.function_scope.clone(), type_layout_slot_index, member_pack_alignment_expression)?;

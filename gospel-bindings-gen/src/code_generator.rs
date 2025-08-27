@@ -1,9 +1,11 @@
 use crate::module_processor::ResolvedBindingsModuleContext;
 use anyhow::{anyhow, bail};
 use gospel_typelib::type_model::{PrimitiveType, Type, TypeGraphLike, UserDefinedTypeMember};
-use proc_macro2::TokenStream;
+use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use convert_case::{Case, Casing};
+use syn::{parse2, parse_str, File};
 
 #[derive(Debug)]
 pub(crate) struct CodeGenerationContext {
@@ -35,13 +37,18 @@ impl CodeGenerationContext {
     }
     fn generate_short_udt_name(type_name: &str) -> String {
         if let Some(last_separator_index) = type_name.rfind('$') {
-            type_name[last_separator_index..].to_string()
+            type_name[(last_separator_index + 1)..].to_string()
         } else { type_name.to_string() }
     }
-    fn generate_udt_qualified_name(&self, source_crate_name: &Option<String>, type_name: &str) -> String {
-        let crate_name = source_crate_name.as_ref().map(|x| x.as_str()).unwrap_or("crate");
-        let short_type_name = Self::generate_short_udt_name(type_name);
-        format!("{}::{}::{}", crate_name, &self.bindings_mod_name, short_type_name)
+    fn convert_field_name_to_snake_case(field_name: &str) -> String {
+        let converted_name = field_name.from_case(Case::UpperCamel).to_case(Case::Snake);
+        if parse_str::<Ident>(&converted_name).is_ok() { converted_name } else { format!("r_{}", converted_name) }
+    }
+    fn generate_udt_qualified_name(&self, source_crate_name: &Option<String>, type_name: &str) -> TokenStream {
+        let crate_name = Ident::new(source_crate_name.as_ref().map(|x| x.as_str()).unwrap_or("crate"), Span::call_site());
+        let short_type_name = Ident::new(&Self::generate_short_udt_name(type_name), Span::call_site());
+        let mod_name = Ident::new(&self.bindings_mod_name, Span::call_site());
+        quote! { #crate_name::#mod_name::#short_type_name }
     }
     fn generate_type_reference(&self, type_index: usize) -> anyhow::Result<TokenStream> {
         let base_type_index = self.module_context.run_context.base_type_index(type_index);
@@ -82,20 +89,28 @@ impl CodeGenerationContext {
             }
         }
     }
-    fn generate_type_field_definition(&self, type_name: &str, field_name: &str, field_type_index: usize, is_prototype_field: bool) -> TokenStream {
-        if let Ok(generated_field_type) = self.generate_type_reference(field_type_index) {
+    fn is_opaque_type_index(&self, type_index: usize) -> bool {
+        let base_type_index = self.module_context.run_context.base_type_index(type_index);
+        let type_definition = self.module_context.run_context.type_by_index(base_type_index);
+        if let Type::Primitive(primitive_type) = type_definition {
+            *primitive_type == PrimitiveType::Void
+        } else { false }
+    }
+    fn generate_type_field_definition(&self, type_name: &Ident, field_name: &Ident, maybe_field_type_index: Option<usize>, is_prototype_field: bool) -> TokenStream {
+        if let Some(field_type_index) = maybe_field_type_index && !self.is_opaque_type_index(field_type_index) &&
+            let Ok(generated_field_type) = self.generate_type_reference(field_type_index) {
             if is_prototype_field {
                 quote! {
-                    fn #field_name(&self) -> anyhow::Result<Option<#generated_field_type>> {
+                    pub fn #field_name(&self) -> anyhow::Result<Option<#generated_field_type>> {
                         if let Some(raw_field_ptr) = self.inner_ptr.get_struct_field_ptr(stringify!(#field_name))? {
                             use gospel_runtime::static_type_wrappers::TypedDynamicPtrWrapper;
-                            Ok(#generated_field_type::cast(raw_field_ptr)?.ok_or_else(|| anyhow::anyhow!("Struct field is of incompatible type: {}:{}", stringify!(#type_name), stringify!(#field_name)))?)
+                            Ok(Some(#generated_field_type::cast(raw_field_ptr)?.ok_or_else(|| anyhow::anyhow!("Struct field is of incompatible type: {}:{}", stringify!(#type_name), stringify!(#field_name)))?))
                         } else { Ok(None) }
                     }
                 }
             } else {
                 quote! {
-                    fn #field_name(&self) -> anyhow::Result<#generated_field_type> {
+                    pub fn #field_name(&self) -> anyhow::Result<#generated_field_type> {
                         let raw_field_ptr = self.inner_ptr.get_struct_field_ptr(stringify!(x))?
                             .ok_or_else(|| anyhow::anyhow!("Struct missing field: {}:{}", stringify!(#type_name), stringify!(#field_name)))?;
                         use gospel_runtime::static_type_wrappers::TypedDynamicPtrWrapper;
@@ -108,13 +123,13 @@ impl CodeGenerationContext {
             // We cannot generate an accurate field type, so just return DynamicPtr as-is
             if is_prototype_field {
                 quote! {
-                    fn #field_name(&self) -> anyhow::Result<Option<gospel_runtime::runtime_type_model::DynamicPtr>> {
+                    pub fn #field_name(&self) -> anyhow::Result<Option<gospel_runtime::runtime_type_model::DynamicPtr>> {
                         self.inner_ptr.get_struct_field_ptr(stringify!(#field_name))
                     }
                 }
             } else {
                 quote! {
-                    fn #field_name(&self) -> anyhow::Result<gospel_runtime::runtime_type_model::DynamicPtr> {
+                    pub fn #field_name(&self) -> anyhow::Result<gospel_runtime::runtime_type_model::DynamicPtr> {
                         self.inner_ptr.get_struct_field_ptr(stringify!(#field_name))?.ok_or_else(|| anyhow::anyhow!("Struct missing field: {}:{}", stringify!(#type_name), stringify!(#field_name)))
                     }
                 }
@@ -130,29 +145,46 @@ impl CodeGenerationContext {
         } else { bail!("Type #{} is not a user defined type", base_type_index) };
 
         let raw_type_name = user_defined_type.name.clone().ok_or_else(|| anyhow!("Cannot generate bindings for unnamed UDTs"))?;
-        let type_name = Self::generate_short_udt_name(&raw_type_name);
+        let type_name = Ident::new(&Self::generate_short_udt_name(&raw_type_name), Span::call_site());
         let mut generated_field_names: HashSet<String> = HashSet::new();
         let mut generated_fields: Vec<TokenStream> = Vec::new();
 
         // Generate non-prototype members first
         for udt_member in &user_defined_type.members {
-            if let UserDefinedTypeMember::Field(field) = udt_member && let Some(field_name) = field.name.as_ref() {
-                let field_tokens = self.generate_type_field_definition(&type_name, field_name, field.member_type_index, false);
+            if let UserDefinedTypeMember::Field(field) = udt_member && let Some(field_name) = field.name.as_ref() && !field_name.contains("@") {
+                let field_tokens = self.generate_type_field_definition(&type_name, &Ident::new(&Self::convert_field_name_to_snake_case(field_name), Span::call_site()), Some(field.member_type_index), false);
                 generated_field_names.insert(field_name.clone());
                 generated_fields.push(field_tokens);
             }
         }
 
-        // Generate optional prototype members now if non-prototype version has not been generated
+        // Sort prototype members by name to have consistent generated code layout
         let mut sorted_prototypes = type_container.member_prototypes.as_ref()
             .map(|x| x.iter().cloned().collect::<Vec<UserDefinedTypeMember>>())
             .unwrap_or(Vec::default());
         sorted_prototypes.sort_by(|a, b| a.name().cmp(&b.name()));
 
+        // Prototype fields can have multiple definitions with conflicting types. We want to generate such fields only once and with opaque type
+        let mut prototype_field_type_tracking: HashMap<String, usize> = HashMap::new();
+        let mut prototype_fields_with_conflicting_types: HashSet<String> = HashSet::new();
+        for prototype_udt_member in &sorted_prototypes {
+            if let UserDefinedTypeMember::Field(field) = prototype_udt_member && let Some(field_name) = field.name.as_ref() && !generated_field_names.contains(field_name) {
+                if let Some(existing_field_type_index) = prototype_field_type_tracking.get(field_name) {
+                    if *existing_field_type_index != field.member_type_index {
+                        prototype_fields_with_conflicting_types.insert(field_name.clone());
+                    }
+                } else {
+                    prototype_field_type_tracking.insert(field_name.clone(), field.member_type_index);
+                }
+            }
+        }
+
+        // Generate optional prototype members now if non-prototype version has not been generated
         for prototype_udt_member in &sorted_prototypes {
             if let UserDefinedTypeMember::Field(field) = prototype_udt_member &&
                 let Some(field_name) = field.name.as_ref() && !generated_field_names.contains(field_name) {
-                let field_tokens = self.generate_type_field_definition(&type_name, field_name, field.member_type_index, true);
+                let field_type = if prototype_fields_with_conflicting_types.contains(field_name) { None } else { Some(field.member_type_index) };
+                let field_tokens = self.generate_type_field_definition(&type_name, &Ident::new(&Self::convert_field_name_to_snake_case(field_name), Span::call_site()), field_type, true);
                 generated_field_names.insert(field_name.clone());
                 generated_fields.push(field_tokens);
             }
@@ -181,7 +213,7 @@ impl CodeGenerationContext {
         })
     }
     fn generate_fallback_type_definition(&self, raw_type_name: &str) -> TokenStream {
-        let type_name = Self::generate_short_udt_name(&raw_type_name);
+        let type_name = Ident::new(&Self::generate_short_udt_name(&raw_type_name), Span::call_site());
         quote! { type #type_name = gospel_runtime::static_type_wrappers::VoidPtr; }
     }
     pub(crate) fn generate_bindings_file(self) -> anyhow::Result<String> {
@@ -194,11 +226,14 @@ impl CodeGenerationContext {
                 type_definitions.push(fallback_type_definition);
             }
         }
-        let bindings_mod_name = self.bindings_mod_name;
-        Ok(quote! {
+        let bindings_mod_name = Ident::new(&self.bindings_mod_name, Span::call_site());
+        let result_file_token_stream = quote! {
+            #[allow(warnings, unused)]
             mod #bindings_mod_name {
                 #(#type_definitions)*
             }
-        }.to_string())
+        };
+        let parsed_file = parse2::<File>(result_file_token_stream.clone()).map_err(|x| anyhow!("Failed to parse generated file: {}\n{}", x, result_file_token_stream))?;
+        Ok(prettyplease::unparse(&parsed_file))
     }
 }
