@@ -100,3 +100,46 @@ A:  IntConstant 1;
     Sub;
 C:  SetReturnValue;
 };
+
+function ProblematicType -> TypeReference;
+
+function AffectedType -> TypeReference max_slots 1 {
+    TypeUDTAllocate "AffectedType" "Struct";
+    StoreSlot 0;
+    LoadSlot 0;
+    LoadFunctionClosure function test_assembly::ProblematicType;
+    Call 0;
+    IntConstant -1;
+    TypeUDTAddField "dependent_field" 0;
+    LoadSlot 0;
+    TypeFinalize;
+    LoadSlot 0;
+    SetReturnValue;
+};
+
+function ProblematicType -> TypeReference max_slots 1 {
+    TypeUDTAllocate "ProblematicType" "Struct";
+    StoreSlot 0;
+    LoadSlot 0;
+    SetReturnValue;
+    LoadSlot 0;
+    LoadFunctionClosure function test_assembly::AffectedType;
+    Call 0;
+    TypePointerCreate;
+    IntConstant -1;
+    TypeUDTAddField "pointer_field" 0;
+    RaiseException "Exception before ProblematicType is finalized";
+    LoadSlot 0;
+    TypeFinalize;
+};
+
+function VMFunctionCallConsistencyBug -> TypeReference max_slots 1 {
+    PushExceptionHandler A;
+    LoadFunctionClosure function test_assembly::ProblematicType;
+    Call 0;
+    Pop;
+    PopExceptionHandler;
+A:  LoadFunctionClosure function test_assembly::AffectedType;
+    Call 0;
+    SetReturnValue;
+};
