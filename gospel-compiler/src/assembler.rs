@@ -62,7 +62,7 @@ enum AssemblerToken {
     #[regex("[A-Za-z_$@][A-Za-z0-9_$@]*(?:::[A-Za-z_$][A-Za-z0-9_$]*)?", parse_identifier)]
     #[strum(to_string = "identifier")]
     Identifier(AssemblerIdentifier),
-    #[regex("-?(?:0x[A-Za-z0-9]+)|(?:(?:[1-9]+[0-9]*)|0)", parse_decimal_or_hex_integer_literal)]
+    #[regex("-?(?:0x[A-Za-z0-9]+)|-?(?:(?:[1-9]+[0-9]*)|0)", parse_decimal_or_hex_integer_literal)]
     #[strum(to_string = "integer literal")]
     IntegerLiteral(i32),
     #[regex("(?:\"(?:[^\"\\\\]|(?:\\\\\")|(?:\\\\\\\\))*\")", parse_string_literal)]
