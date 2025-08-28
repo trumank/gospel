@@ -332,7 +332,19 @@ fn print_full_type_tree(type_tree: &TypeTree, root_type_container: Option<&Gospe
                         println!(" # <layout calculation error: {}>", layout_error);
                     }
                 }
+            } else if let Type::Enum(enum_type) = &type_tree.type_by_index(type_index) {
+                match enum_type.underlying_type(&type_layout_cache.target_triplet) {
+                    Ok(underlying_type) => {
+                        println!(" |# Enum Underlying Type: {}", serde_json::to_string_pretty(&underlying_type)?);
+                    }
+                    Err(calculation_error) => {
+                        println!(" # Enum Underlying Type: <underlying type calculation error: {}>", calculation_error);
+                    }
+                }
             }
+        } else if let Type::Enum(enum_type) = &type_tree.type_by_index(type_index) &&
+            let Some(static_underlying_type) = enum_type.underlying_type_no_target_no_constants() {
+            println!(" |# Enum Underlying Type: {}", serde_json::to_string_pretty(&static_underlying_type)?);
         }
     }
     Ok({})

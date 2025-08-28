@@ -44,7 +44,7 @@ impl CodeGenerationContext {
         let converted_name = field_name.from_case(Case::UpperCamel).to_case(Case::Snake);
         if parse_str::<Ident>(&converted_name).is_ok() { converted_name } else { format!("r_{}", converted_name) }
     }
-    fn generate_udt_qualified_name(&self, source_crate_name: &Option<String>, type_name: &str) -> TokenStream {
+    fn generate_type_qualified_name(&self, source_crate_name: &Option<String>, type_name: &str) -> TokenStream {
         let crate_name = Ident::new(source_crate_name.as_ref().map(|x| x.as_str()).unwrap_or("crate"), Span::call_site());
         let short_type_name = Ident::new(&Self::generate_short_udt_name(type_name), Span::call_site());
         let mod_name = Ident::new(&self.bindings_mod_name, Span::call_site());
@@ -79,11 +79,21 @@ impl CodeGenerationContext {
             }
             Type::UDT(user_defined_type) => {
                 // TODO: We could generate more accurate bindings based not just on the name of the type but also on the template parameters
-                if let Some(udt_name) = &user_defined_type.name &&
-                    let Some(source_crate_name) = self.module_context.type_name_to_dependency_crate_name.get(udt_name) {
-                    let full_type_name = self.generate_udt_qualified_name(source_crate_name, udt_name);
+                if let Some(udt_name) = &user_defined_type.name && let Some(source_crate_name) = self.module_context.type_name_to_dependency_crate_name.get(udt_name) {
+                    let full_type_name = self.generate_type_qualified_name(source_crate_name, udt_name);
                     Ok(quote! { #full_type_name })
                 } else {
+                    Ok(quote! { gospel_runtime::static_type_wrappers::VoidPtr })
+                }
+            }
+            Type::Enum(enum_type) => {
+                // Check if this enum type has a statically known underlying type that does not depend on the target or the full list of constants
+                // If it does, we can generate the pointer to the value of this enum as a trivial pointer with the known primitive type
+                if let Some(underlying_type) = enum_type.underlying_type_no_target_no_constants() &&
+                    let Some(underlying_inner_type) = Self::generate_primitive_type(&underlying_type) {
+                    Ok(quote! {gospel_runtime::static_type_wrappers::TrivialPtr::<#underlying_inner_type>})
+                } else {
+                    // Otherwise, we have to generate it as a void ptr
                     Ok(quote! { gospel_runtime::static_type_wrappers::VoidPtr })
                 }
             }

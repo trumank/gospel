@@ -13,7 +13,7 @@ use crate::gospel::{GospelFunctionDefinition, GospelObjectIndex, GospelValueType
 use crate::writer::{GospelSourceObjectReference};
 use serde::{Deserialize, Serialize, Serializer};
 use serde::ser::SerializeStruct;
-use gospel_typelib::type_model::{ArrayType, CVQualifiedType, FunctionType, PointerType, PrimitiveType, ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeBitfield, UserDefinedTypeField, UserDefinedTypeKind, UserDefinedTypeMember, FunctionDeclaration, FunctionParameterDeclaration, TypeLayoutCache};
+use gospel_typelib::type_model::{ArrayType, CVQualifiedType, FunctionType, PointerType, PrimitiveType, ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeBitfield, UserDefinedTypeField, UserDefinedTypeKind, UserDefinedTypeMember, FunctionDeclaration, FunctionParameterDeclaration, TypeLayoutCache, EnumType, EnumKind, EnumConstant};
 use crate::reflection::{GospelContainerReflector, GospelModuleReflector};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,6 +113,7 @@ pub struct GospelVMTypeContainer {
     pub wrapped_type: Type,
     pub base_class_prototypes: Option<HashSet<usize>>,
     pub member_prototypes: Option<HashSet<UserDefinedTypeMember>>,
+    pub enum_constant_prototypes: Option<HashSet<String>>,
     pub vm_metadata: Option<GospelVMStruct>,
     pub partial_type: bool,
     owner_stack_frame_token: usize,
@@ -159,14 +160,16 @@ impl GospelVMRunContext {
         } else {
             let new_type_index = self.types.len();
             // Simple types cannot have VM metadata assigned to them
-            self.types.push(GospelVMTypeContainer {wrapped_type: type_data.clone(), base_class_prototypes: None, member_prototypes: None, vm_metadata: None, owner_stack_frame_token: 0, size_has_been_validated: false, partial_type: false});
+            self.types.push(GospelVMTypeContainer {wrapped_type: type_data.clone(), base_class_prototypes: None, member_prototypes: None, enum_constant_prototypes: None,
+                vm_metadata: None, owner_stack_frame_token: 0, size_has_been_validated: false, partial_type: false});
             self.simple_type_lookup.insert(type_data, new_type_index);
             new_type_index
         }
     }
-    fn store_user_defined_type(&mut self, type_data: UserDefinedType, stack_frame_token: usize) -> usize {
+    fn store_unique_named_type(&mut self, type_data: Type, stack_frame_token: usize) -> usize {
         let new_type_index = self.types.len();
-        self.types.push(GospelVMTypeContainer {wrapped_type: Type::UDT(type_data), base_class_prototypes: Some(HashSet::new()), member_prototypes: Some(HashSet::new()), vm_metadata: None, owner_stack_frame_token: stack_frame_token, size_has_been_validated: false, partial_type: false});
+        self.types.push(GospelVMTypeContainer{wrapped_type: type_data, base_class_prototypes: Some(HashSet::new()), member_prototypes: Some(HashSet::new()), enum_constant_prototypes: Some(HashSet::new()),
+            vm_metadata: None, owner_stack_frame_token: stack_frame_token, size_has_been_validated: false, partial_type: false});
         new_type_index
     }
     fn validate_type_not_partial(&mut self, type_index: usize, source_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<()> {
@@ -622,7 +625,7 @@ impl<'a> GospelVMExecutionState<'a> {
             _ => Err(vm_error!(Some(self), "Expected struct value, got value of type {}", value.value_type()))
         }
     }
-    fn validate_udt_type_not_finalized(&self, type_index: usize, run_context: &GospelVMRunContext) -> GospelVMResult<()> {
+    fn validate_type_not_finalized(&self, type_index: usize, run_context: &GospelVMRunContext) -> GospelVMResult<()> {
         if run_context.types[type_index].owner_stack_frame_token == self.stack_frame_token {
             Ok({})
         } else {
@@ -634,6 +637,13 @@ impl<'a> GospelVMExecutionState<'a> {
             Ok(type_index)
         } else {
             Err(vm_error!(Some(self), "Expected user-defined type at index #{}, got another type", type_index))
+        }
+    }
+    fn validate_type_index_enum_type(&self, type_index: usize, run_context: &GospelVMRunContext) -> GospelVMResult<usize> {
+        if let Type::Enum(_) = run_context.type_by_index(type_index) {
+            Ok(type_index)
+        } else {
+            Err(vm_error!(Some(self), "Expected enum type at index #{}, got another type", type_index))
         }
     }
     fn new_type_layout_cache(&self, run_context: &GospelVMRunContext) -> GospelVMResult<TypeLayoutCache> {
@@ -1015,7 +1025,7 @@ impl<'a> GospelVMExecutionState<'a> {
                         .map_err(|x| vm_error!(Some(&state), "Unknown UDT kind name: {}", x.to_string()))?;
 
                     let user_defined_type = UserDefinedType{kind: type_kind, name: type_name, ..UserDefinedType::default()};
-                    let result_type_index = run_context.store_user_defined_type(user_defined_type, state.stack_frame_token);
+                    let result_type_index = run_context.store_unique_named_type(Type::UDT(user_defined_type), state.stack_frame_token);
                     state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
                 }
                 GospelOpcode::TypeUDTSetUserAlignment => {
@@ -1023,7 +1033,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_udt_type_not_finalized(type_index, run_context)?;
+                    state.validate_type_not_finalized(type_index, run_context)?;
 
                     if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
                         user_defined_type.user_alignment = Some(max(user_defined_type.user_alignment.unwrap_or(1), user_type_alignment));
@@ -1034,7 +1044,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_udt_type_not_finalized(type_index, run_context)?;
+                    state.validate_type_not_finalized(type_index, run_context)?;
 
                     if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
                         user_defined_type.member_pack_alignment = Some(member_pack_alignment);
@@ -1050,7 +1060,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_udt_type_not_finalized(type_index, run_context)?;
+                    state.validate_type_not_finalized(type_index, run_context)?;
 
                     if let Some(prototype_base_classes) = run_context.types[type_index].base_class_prototypes.as_mut() {
                         prototype_base_classes.insert(base_class_type_index);
@@ -1079,7 +1089,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_udt_type_not_finalized(type_index, run_context)?;
+                    state.validate_type_not_finalized(type_index, run_context)?;
 
                     let result_field = UserDefinedTypeMember::Field(UserDefinedTypeField{name: field_name.clone(), user_alignment, member_type_index: field_type_index});
                     if let Some(prototype_members) = run_context.types[type_index].member_prototypes.as_mut() {
@@ -1112,7 +1122,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_udt_type_not_finalized(type_index, run_context)?;
+                    state.validate_type_not_finalized(type_index, run_context)?;
 
                     let result_bitfield = UserDefinedTypeMember::Bitfield(UserDefinedTypeBitfield{name: field_name.clone(), primitive_type: primitive_field_type, bitfield_width});
                     if let Some(prototype_members) = run_context.types[type_index].member_prototypes.as_mut() {
@@ -1154,7 +1164,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_udt_type_not_finalized(type_index, run_context)?;
+                    state.validate_type_not_finalized(type_index, run_context)?;
 
                     if let Some(prototype_members) = run_context.types[type_index].member_prototypes.as_mut() {
                         prototype_members.insert(UserDefinedTypeMember::VirtualFunction(new_function_declaration.clone()));
@@ -1181,24 +1191,96 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_udt_type_not_finalized(type_index, run_context)?;
+                    state.validate_type_not_finalized(type_index, run_context)?;
 
                     run_context.types[type_index].vm_metadata = Some(metadata_struct);
                 }
-                GospelOpcode::TypeUDTMarkTypePartial => {
+                GospelOpcode::TypeMarkPartial => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_udt_type_not_finalized(type_index, run_context)?;
+                    state.validate_type_not_finalized(type_index, run_context)?;
 
                     run_context.types[type_index].partial_type = true;
                 }
-                GospelOpcode::TypeUDTFinalize => {
+                GospelOpcode::TypeFinalize => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
-                    state.validate_type_index_user_defined_type(type_index, run_context)?;
-                    state.validate_udt_type_not_finalized(type_index, run_context)?;
+                    state.validate_type_not_finalized(type_index, run_context)?;
 
                     // Resetting the stack frame token seals the type and prevents any future modifications to it
                     run_context.types[type_index].owner_stack_frame_token = 0;
+                }
+                GospelOpcode::TypeEnumAllocate => {
+                    let type_name_index = state.immediate_value_checked(instruction, 0)? as i32;
+                    let type_name = if type_name_index == -1 { None } else { Some(state.get_referenced_string_checked(type_name_index as usize)?.to_string()) };
+
+                    let enum_kind_index = state.immediate_value_checked(instruction, 1)? as usize;
+                    let enum_kind = EnumKind::from_str(state.get_referenced_string_checked(enum_kind_index)?)
+                        .map_err(|x| vm_error!(Some(&state), "Unknown enum kind name: {}", x.to_string()))?;
+
+                    let enum_type = EnumType{kind: enum_kind, name: type_name, ..EnumType::default()};
+                    let result_type_index = run_context.store_unique_named_type(Type::Enum(enum_type), state.stack_frame_token);
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
+                }
+                GospelOpcode::TypeEnumSetUnderlyingType => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_index_enum_type(type_index, run_context)?;
+                    state.validate_type_not_finalized(type_index, run_context)?;
+
+                    // Enum underlying type must be a primitive type
+                    let underlying_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    let underlying_type = if let Type::Primitive(primitive_type) = &run_context.type_by_index(underlying_type_index) && primitive_type.is_integral() {
+                        primitive_type.clone()
+                    } else {
+                        vm_bail!(Some(state), "Enum underlying type can only be an integral primitive type, type #{} is not an integral primitive type", underlying_type_index);
+                    };
+                    if let Type::Enum(enum_type) = &mut run_context.types[type_index].wrapped_type {
+                        enum_type.underlying_type = Some(underlying_type);
+                    }
+                }
+                GospelOpcode::TypeEnumAddConstantWithValue => {
+                    let constant_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as u64;
+
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_index_enum_type(type_index, run_context)?;
+                    state.validate_type_not_finalized(type_index, run_context)?;
+
+                    let constant_name_index = state.immediate_value_checked(instruction, 0)? as i32;
+                    let constant_name = if constant_name_index == -1 { None } else { Some(state.get_referenced_string_checked(constant_name_index as usize)?.to_string()) };
+
+                    let constant_flags_index = state.immediate_value_checked(instruction, 1)? as usize;
+                    let is_constant_prototype = constant_flags_index & (1 << 2) != 0;
+                    let is_constant_signed = constant_flags_index & (1 << 3) != 0;
+
+                    if constant_name.is_some() && let Some(constant_prototypes) = &mut run_context.types[type_index].enum_constant_prototypes {
+                        constant_prototypes.insert(constant_name.as_ref().unwrap().clone());
+                    }
+                    if !is_constant_prototype && let Type::Enum(enum_type) = &mut run_context.types[type_index].wrapped_type {
+                        enum_type.constants.push(EnumConstant{name: constant_name, value: constant_value, is_signed: is_constant_signed});
+                    }
+                }
+                GospelOpcode::TypeEnumAddConstant => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_index_enum_type(type_index, run_context)?;
+                    state.validate_type_not_finalized(type_index, run_context)?;
+
+                    let constant_name_index = state.immediate_value_checked(instruction, 0)? as i32;
+                    let constant_name = if constant_name_index == -1 { None } else { Some(state.get_referenced_string_checked(constant_name_index as usize)?.to_string()) };
+
+                    let constant_flags_index = state.immediate_value_checked(instruction, 1)? as usize;
+                    let is_constant_prototype = constant_flags_index & (1 << 2) != 0;
+
+                    if constant_name.is_some() && let Some(constant_prototypes) = &mut run_context.types[type_index].enum_constant_prototypes {
+                        constant_prototypes.insert(constant_name.as_ref().unwrap().clone());
+                    }
+                    if !is_constant_prototype && let Type::Enum(enum_type) = &mut run_context.types[type_index].wrapped_type {
+                        let (constant_value, is_constant_signed) = if let Some(last_constant_def) = enum_type.constants.last() {
+                            if last_constant_def.is_signed {
+                                let last_constant_value = last_constant_def.value as i64;
+                                ((last_constant_value + 1) as u64, true)
+                            } else { (last_constant_def.value + 1, false) }
+                        } else { (0, false) };
+                        enum_type.constants.push(EnumConstant{name: constant_name, value: constant_value, is_signed: is_constant_signed});
+                    }
                 }
                 // Type access opcodes
                 GospelOpcode::TypeIsSameType => {
@@ -1236,6 +1318,11 @@ impl<'a> GospelVMExecutionState<'a> {
                 GospelOpcode::TypeIsUDTType => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     let result = if matches!(run_context.type_by_index(type_index), Type::UDT(_)) { 1 } else { 0 };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeIsEnumType => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    let result = if matches!(run_context.type_by_index(type_index), Type::Enum(_)) { 1 } else { 0 };
                     state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
                 }
                 GospelOpcode::TypePointerGetPointeeType => {
@@ -1388,6 +1475,61 @@ impl<'a> GospelVMExecutionState<'a> {
                         vm_bail!(Some(state), "Type #{} is not a function type; cannot determine argument count", type_index);
                     };
                     state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
+                }
+                GospelOpcode::TypeEnumIsScopedEnum => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    let result = if let Type::Enum(enum_type) = run_context.type_by_index(type_index) {
+                        if enum_type.kind == EnumKind::Scoped { 1 } else { 0 }
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not an enum type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeEnumGetUnderlyingType => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    let result_type_index = if let Type::Enum(enum_type) = run_context.type_by_index(type_index) {
+                        // If we can calculate underlying type without target triplet, try to do that
+                        if let Some(static_underlying_type) = enum_type.underlying_type_no_target_no_constants() {
+                            run_context.store_type(Type::Primitive(static_underlying_type))
+                        } else if let Some(target_triplet) = run_context.target_triplet() {
+                            let target_underlying_type = enum_type.underlying_type(target_triplet).map_err(|x| vm_error!(Some(&state), "Failed to calculate enum underlying type: {}", x))?;
+                            run_context.store_type(Type::Primitive(target_underlying_type))
+                        } else {
+                            vm_bail!(Some(state), "Target triplet not set for implicit unscoped enum underlying type calculation");
+                        }
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not an enum type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
+                }
+                GospelOpcode::TypeEnumHasConstantByName => {
+                    let constant_name_index = state.immediate_value_checked(instruction, 0)? as usize;
+                    let constant_name = state.get_referenced_string_checked(constant_name_index)?;
+
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    let result = if let Type::Enum(enum_type) = run_context.type_by_index(type_index) {
+                        if enum_type.constants.iter().any(|x| x.name.as_ref().map(|x| x.as_str()) == Some(constant_name)) { 1 } else { 0 }
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not an enum type", type_index);
+                    };
+                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                }
+                GospelOpcode::TypeEnumConstantValueByName => {
+                    let constant_name_index = state.immediate_value_checked(instruction, 0)? as usize;
+                    let constant_name = state.get_referenced_string_checked(constant_name_index)?;
+
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
+                    if let Type::Enum(enum_type) = run_context.type_by_index(type_index) {
+                        if let Some(constant_def) = enum_type.constants.iter().find(|x| x.name.as_ref().map(|x| x.as_str()) == Some(constant_name)) {
+                            // TODO: This truncates the value. Integer should be extended to 64-bit
+                            state.push_stack_check_overflow(GospelVMValue::Integer(constant_def.value as i32))?;
+                            state.push_stack_check_overflow(GospelVMValue::Integer(if constant_def.is_signed { 1 } else { 0 }))?;
+                        } else {
+                            vm_bail!(Some(state), "Constant with name {} is not found", constant_name);
+                        }
+                    } else {
+                        vm_bail!(Some(state), "Type #{} is not an enum type", type_index);
+                    };
                 }
                 // Type layout calculation opcodes
                 GospelOpcode::TypeCalculateSize => {

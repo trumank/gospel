@@ -188,6 +188,7 @@ pub fn fork_type_graph<'a, T : TypeGraphLike>(graph: &'a T, type_index: usize, r
             Type::UDT(UserDefinedType{kind: user_defined_type.kind.clone(), name: user_defined_type.name.clone(),
                 user_alignment: user_defined_type.user_alignment, member_pack_alignment: user_defined_type.member_pack_alignment, base_class_indices, members})
         }
+        Type::Enum(enum_type) => Type::Enum(enum_type.clone()),
     };
     result.types[new_index] = copied_type;
     new_index
@@ -745,6 +746,88 @@ impl UserDefinedType {
     }
 }
 
+/// Represents a kind of enum
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize, Display, EnumString)]
+pub enum EnumKind {
+    /// enum
+    #[default]
+    Unscoped,
+    /// enum class
+    Scoped,
+}
+
+/// Represents a constant defined within the enumeration
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct EnumConstant {
+    /// Name of the enum constant
+    pub name: Option<String>,
+    /// Value of the enum constant
+    pub value: u64,
+    /// True if the value is signed (generally that means that the constant has a negative sign)
+    pub is_signed: bool,
+}
+
+/// Represents an enumeration type (enum or enum class)
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct EnumType {
+    /// Type of the enum (scoped vs unscoped)
+    pub kind: EnumKind,
+    /// Name of this enum type
+    pub name: Option<String>,
+    /// Primitive type for this enumeration, if specified
+    pub underlying_type: Option<PrimitiveType>,
+    /// All constants defined as a part of this enum
+    pub constants: Vec<EnumConstant>,
+}
+impl EnumType {
+
+    /// Calculates the underlying type for the enum type if it can be known without target triplet and full constant value set
+    pub fn underlying_type_no_target_no_constants(&self) -> Option<PrimitiveType> {
+        if let Some(explicit_underlying_type) = self.underlying_type {
+            return Some(explicit_underlying_type);
+        }
+        // Scoped enums always use Int as their underlying type
+        if self.kind == EnumKind::Scoped {
+            Some(PrimitiveType::Int)
+        } else { None }
+    }
+    /// Calculates the underlying type for the enum type. This relies on platform specific logic for unscoped enums
+    pub fn underlying_type(&self, target_triplet: &TargetTriplet) -> anyhow::Result<PrimitiveType> {
+        if let Some(explicit_underlying_type) = self.underlying_type {
+            return Ok(explicit_underlying_type);
+        }
+        // Scoped enums and all unscoped enums under MSVC always use Int as their underlying type
+        if self.kind == EnumKind::Scoped || target_triplet.env == TargetEnvironment::MSVC {
+            return Ok(PrimitiveType::Int);
+        }
+        // Unscoped enums under gnu convention pick the smallest type possible that can represent all constants, preferring unsigned types
+        let mut has_signed_constants = false;
+        let mut has_any_64bit_constants = false;
+        let mut has_any_32bit_unsigned_constants_that_will_overflow_if_signed = false;
+        for constant in &self.constants {
+            has_signed_constants |= constant.is_signed;
+            if constant.is_signed {
+                let signed_value = constant.value as i64;
+                has_any_64bit_constants |= signed_value < i32::MIN as i64 || signed_value > i32::MAX as i64;
+            } else {
+                has_any_64bit_constants |= constant.value > u32::MAX as u64;
+                has_any_32bit_unsigned_constants_that_will_overflow_if_signed |= constant.value > i32::MAX as u64;
+            }
+        }
+        let result_primitive_type = if has_signed_constants {
+            if has_any_64bit_constants || has_any_32bit_unsigned_constants_that_will_overflow_if_signed { PrimitiveType::LongInt } else { PrimitiveType::Int }
+        } else {
+            if has_any_64bit_constants { PrimitiveType::UnsignedLongInt } else { PrimitiveType::UnsignedInt }
+        };
+        Ok(result_primitive_type)
+    }
+    /// Returns the size and alignment of this enum type
+    pub fn size_and_alignment(&self, target_triplet: &TargetTriplet) -> anyhow::Result<(usize, usize)> {
+        let size_and_alignment = self.underlying_type(target_triplet)?.size_and_alignment(target_triplet)?;
+        Ok((size_and_alignment, size_and_alignment))
+    }
+}
+
 /// Represents a type with CV qualifiers applied on top
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct CVQualifiedType {
@@ -804,6 +887,7 @@ pub enum Type {
     UDT(UserDefinedType),
     CVQualified(CVQualifiedType),
     Function(FunctionType),
+    Enum(EnumType),
 }
 impl Type {
     /// Returns the size and alignment of this type
@@ -818,6 +902,7 @@ impl Type {
             Type::CVQualified(cv_qualified_type) => cv_qualified_type.size_and_alignment(type_graph, layout_cache)?,
             Type::Function(_) => { bail!("Function type is sizeless") },
             Type::UDT(udt_type) => udt_type.size_and_alignment(type_graph, layout_cache)?,
+            Type::Enum(enum_type) => enum_type.size_and_alignment(&layout_cache.target_triplet)?,
         };
         layout_cache.type_cache.insert(self.clone(), (size, alignment));
         Ok((size, alignment))

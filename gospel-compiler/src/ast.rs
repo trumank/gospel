@@ -1,7 +1,7 @@
 use std::fmt::{Display, Formatter};
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
-use gospel_typelib::type_model::{PrimitiveType, UserDefinedTypeKind};
+use gospel_typelib::type_model::{EnumKind, PrimitiveType, UserDefinedTypeKind};
 
 /// Describes value type of the expression in the source grammar
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Display, Default, EnumString)]
@@ -271,7 +271,7 @@ pub enum ModuleImportStatementType {
 
 /// Represents an import statement
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModuleImportStatement {
+pub struct ImportStatement {
     pub statement_type: ModuleImportStatementType,
     #[serde(default)]
     pub source_context: ASTSourceContext,
@@ -320,7 +320,7 @@ pub struct DataStatement {
 pub struct MemberDeclaration {
     pub alignment_expression: Option<ExpressionWithCondition>,
     pub member_type_expression: Expression,
-    pub name: String,
+    pub name: Option<String>,
     pub array_size_expression: Option<Expression>,
     pub bitfield_width_expression: Option<Expression>,
     #[serde(default)]
@@ -401,11 +401,37 @@ pub struct StructStatement {
     pub source_context: ASTSourceContext,
 }
 
-/// Declaration in a namespace. Namespaces can contain data and struct statements, as well as nested namespaces
+/// Represents a declaration of a single constant inside an enum
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum NamespaceLevelDeclaration {
+pub struct EnumConstantDeclaration {
+    pub condition_expression: Option<Expression>,
+    pub name: Option<String>,
+    pub value_expression: Option<Expression>,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
+}
+
+/// Represents a declaration of an enumeration type
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnumStatement {
+    pub template_declaration: Option<TemplateDeclaration>,
+    pub access_specifier: Option<DeclarationAccessSpecifier>,
+    pub enum_kind: EnumKind,
+    pub underlying_type_expression: Option<ExpressionWithCondition>,
+    pub name: Option<String>,
+    pub constants: Vec<EnumConstantDeclaration>,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
+}
+
+/// Declaration in a namespace or top level scope in a source file
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TopLevelDeclaration {
+    ImportStatement(ImportStatement),
+    InputStatement(InputStatement),
     DataStatement(DataStatement),
     StructStatement(StructStatement),
+    EnumStatement(EnumStatement),
     EmptyStatement,
     NamespaceStatement(NamespaceStatement),
 }
@@ -414,25 +440,14 @@ pub enum NamespaceLevelDeclaration {
 pub struct NamespaceStatement {
     pub access_specifier: Option<DeclarationAccessSpecifier>,
     pub name: PartialIdentifier,
-    pub declarations: Vec<NamespaceLevelDeclaration>,
+    pub declarations: Vec<TopLevelDeclaration>,
     #[serde(default)]
     pub source_context: ASTSourceContext,
-}
-
-/// Represents a top level declaration in the module source file
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ModuleTopLevelDeclaration {
-    ImportStatement(ModuleImportStatement),
-    InputStatement(InputStatement),
-    DataStatement(DataStatement),
-    StructStatement(StructStatement),
-    EmptyStatement,
-    NamespaceStatement(NamespaceStatement),
 }
 
 /// Represents a source file for a module
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleSourceFile {
     pub file_name: String,
-    pub declarations: Vec<ModuleTopLevelDeclaration>,
+    pub declarations: Vec<TopLevelDeclaration>,
 }

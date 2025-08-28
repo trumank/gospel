@@ -35,6 +35,9 @@ impl TypePtrMetadata {
         let type_data = type_graph.base_type_by_index(self.type_index);
         if let Type::Primitive(primitive_type) = type_data {
             Ok(Some((primitive_type.clone(), primitive_type.size_and_alignment(&layout_cache.target_triplet)?)))
+        } else if let Type::Enum(enum_type) = type_data {
+            let underlying_primitive_type = enum_type.underlying_type(&layout_cache.target_triplet)?;
+            Ok(Some((underlying_primitive_type, underlying_primitive_type.size_and_alignment(&layout_cache.target_triplet)?)))
         } else { Ok(None) }
     }
     pub fn pointer_pointee_type_index(&self) -> anyhow::Result<Option<usize>> {

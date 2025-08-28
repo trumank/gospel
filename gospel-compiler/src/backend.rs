@@ -6,13 +6,13 @@ use std::rc::{Rc, Weak};
 use anyhow::anyhow;
 use itertools::{Itertools};
 use strum::Display;
-use crate::ast::{CVQualifiedExpression, FunctionParameterDeclaration, MemberFunctionDeclaration};
-use gospel_typelib::type_model::{PrimitiveType, UserDefinedTypeKind};
+use crate::ast::{CVQualifiedExpression, EnumConstantDeclaration, EnumStatement, FunctionParameterDeclaration, MemberFunctionDeclaration};
+use gospel_typelib::type_model::{EnumKind, PrimitiveType, UserDefinedTypeKind};
 use gospel_vm::bytecode::GospelOpcode;
 use gospel_vm::module::GospelContainer;
 use gospel_vm::gospel::{GospelTargetProperty, GospelValueType};
 use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter, GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceObjectReference, GospelSourceStructDefinition, GospelSourceStructField};
-use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayTypeExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, BuiltinIdentifierExpression, BuiltinIdentifier, DeclarationAccessSpecifier, PrimitiveTypeExpression, ExpressionWithCondition};
+use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, ImportStatement, ModuleImportStatementType, ModuleSourceFile, TopLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayTypeExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, BuiltinIdentifierExpression, BuiltinIdentifier, DeclarationAccessSpecifier, PrimitiveTypeExpression, ExpressionWithCondition};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CompilerSourceContext {
@@ -907,19 +907,25 @@ impl CompilerFunctionBuilder {
         innermost_loop_statement.borrow_mut().loop_codegen_data.as_mut().unwrap().loop_start_fixups.push(continue_fixup);
         Ok({})
     }
-    fn compile_type_layout_initialization(&mut self, type_kind: UserDefinedTypeKind) -> CompilerResult<u32> {
+    fn compile_generic_type_initialization(&mut self, opcode: GospelOpcode, kind_str: &str) -> CompilerResult<u32> {
         let source_context = self.function_scope.source_context.clone();
         let slot_index = self.function_definition.add_slot().with_source_context(&source_context)?;
         let type_name = self.return_value_struct_name.as_ref().ok_or_else(|| compiler_error!(&source_context, "Return value struct name not set on function attempting to allocate UDT layout"))?;
 
-        self.function_definition.add_udt_allocate_instruction(type_name, type_kind.to_string().as_str(), Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        self.function_definition.add_type_allocate_instruction(opcode, type_name, kind_str, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
 
         self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         self.function_definition.add_simple_instruction(GospelOpcode::SetReturnValue, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         Ok(slot_index)
     }
-    fn compile_type_layout_metadata_struct_initialization(&mut self, struct_meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<u32> {
+    fn compile_udt_type_initialization(&mut self, type_kind: UserDefinedTypeKind) -> CompilerResult<u32> {
+      self.compile_generic_type_initialization(GospelOpcode::TypeUDTAllocate, type_kind.to_string().as_str())
+    }
+    fn compile_enum_type_initialization(&mut self, enum_kind: EnumKind) -> CompilerResult<u32> {
+        self.compile_generic_type_initialization(GospelOpcode::TypeEnumAllocate, enum_kind.to_string().as_str())
+    }
+    fn compile_udt_type_metadata_struct_initialization(&mut self, struct_meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<u32> {
         let source_context = self.function_scope.source_context.clone();
         let slot_index = self.function_definition.add_slot().with_source_context(&source_context)?;
 
@@ -968,12 +974,12 @@ impl CompilerFunctionBuilder {
         self.function_definition.fixup_control_flow_instruction(jump_to_end_fixup, end_instruction_index).with_source_context(source_context)?;
         Ok({})
     }
-    fn compile_type_layout_mark_partial_statement(&mut self, type_layout_slot_index: u32, source_context: &CompilerSourceContext) -> CompilerResult<()> {
+    fn compile_generic_type_mark_partial_statement(&mut self, type_layout_slot_index: u32, source_context: &CompilerSourceContext) -> CompilerResult<()> {
         self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(source_context)).with_source_context(source_context)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::TypeUDTMarkTypePartial, Self::get_line_number(source_context)).with_source_context(source_context)?;
+        self.function_definition.add_simple_instruction(GospelOpcode::TypeMarkPartial, Self::get_line_number(source_context)).with_source_context(source_context)?;
         Ok({})
     }
-    fn compile_type_layout_alignment_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, alignment_expression: &ExpressionWithCondition) -> CompilerResult<()> {
+    fn compile_udt_type_alignment_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, alignment_expression: &ExpressionWithCondition) -> CompilerResult<()> {
         self.compile_condition_wrapped_expression(scope, alignment_expression, |builder, expression, source_context| {
             builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             let expression_type = builder.compile_coerce_alignment_expression(scope, expression, source_context)?;
@@ -982,7 +988,7 @@ impl CompilerFunctionBuilder {
             Ok({})
         })
     }
-    fn compile_type_layout_member_pack_alignment_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, member_pack_alignment_expression: &ExpressionWithCondition) -> CompilerResult<()> {
+    fn compile_udt_type_member_pack_alignment_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, member_pack_alignment_expression: &ExpressionWithCondition) -> CompilerResult<()> {
         self.compile_condition_wrapped_expression(scope, member_pack_alignment_expression, |builder, expression, source_context| {
             builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             let expression_type = builder.compile_expression(scope, expression)?;
@@ -991,7 +997,7 @@ impl CompilerFunctionBuilder {
             Ok({})
         })
     }
-    fn compile_type_layout_base_class_statement_inner(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, base_class_expression: &ExpressionWithCondition, is_prototype_pass: bool) -> CompilerResult<()> {
+    fn compile_udt_type_base_class_statement_inner(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, base_class_expression: &ExpressionWithCondition, is_prototype_pass: bool) -> CompilerResult<()> {
         self.compile_condition_wrapped_expression(scope, base_class_expression, |builder, expression, source_context| {
             builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             let expression_type = builder.compile_expression(scope, expression)?;
@@ -1001,28 +1007,65 @@ impl CompilerFunctionBuilder {
             Ok({})
         })
     }
-    fn compile_type_layout_base_class_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, base_class_expression: &ExpressionWithCondition, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
+    fn compile_udt_type_base_class_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, base_class_expression: &ExpressionWithCondition, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
         if is_prototype_pass || allow_partial_types {
             let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: base_class_expression.source_context.clone()};
             self.compile_try_catch_wrapped_statement(&source_context, |inner_builder, _| {
-                inner_builder.compile_type_layout_base_class_statement_inner(scope, type_layout_slot_index, base_class_expression, is_prototype_pass)
+                inner_builder.compile_udt_type_base_class_statement_inner(scope, type_layout_slot_index, base_class_expression, is_prototype_pass)
             }, |inner_builder, source_context| {
                 if !is_prototype_pass {
-                    inner_builder.compile_type_layout_mark_partial_statement(type_layout_slot_index, source_context)?;
+                    inner_builder.compile_generic_type_mark_partial_statement(type_layout_slot_index, source_context)?;
                 }
                 Ok({})
             })
         } else {
-            self.compile_type_layout_base_class_statement_inner(scope, type_layout_slot_index, base_class_expression, is_prototype_pass)
+            self.compile_udt_type_base_class_statement_inner(scope, type_layout_slot_index, base_class_expression, is_prototype_pass)
         }
     }
-    fn compile_type_layout_finalization(&mut self, type_layout_slot_index: u32, type_layout_metadata_slot_index: u32, source_context: &CompilerSourceContext) -> CompilerResult<()> {
-        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
-        self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, type_layout_metadata_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::TypeUDTAttachMetadata, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+    fn compile_enum_underlying_type_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, underlying_type_expression: &ExpressionWithCondition) -> CompilerResult<()> {
+        self.compile_condition_wrapped_expression(scope, underlying_type_expression, |inner_builder, underlying_type_expression, source_context| {
+            inner_builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+            let underlying_expression_type = inner_builder.compile_expression(scope, underlying_type_expression)?;
+            Self::check_expression_type(source_context, ExpressionValueType::Typename, underlying_expression_type)?;
+            inner_builder.function_definition.add_simple_instruction(GospelOpcode::TypeEnumSetUnderlyingType, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+            Ok({})
+        })
+    }
+    fn compile_enum_constant_declaration(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, constant_declaration: &EnumConstantDeclaration) -> CompilerResult<()> {
+        // TODO: API could be improved here to not require dummy inner expression
+        let dummy_expression = PrimitiveTypeExpression{primitive_type: PrimitiveType::Void, source_context: constant_declaration.source_context.clone()};
+        let dummy_expression_with_condition = ExpressionWithCondition{condition_expression: constant_declaration.condition_expression.clone(),
+            expression: Expression::PrimitiveTypeExpression(Box::new(dummy_expression)), source_context: constant_declaration.source_context.clone()};
 
+        self.compile_condition_wrapped_expression(scope, &dummy_expression_with_condition, |inner_builder, _, source_context| {
+            inner_builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+            if let Some(explicit_constant_value) = &constant_declaration.value_expression {
+                let value_expression_type = inner_builder.compile_expression(scope, explicit_constant_value)?;
+                Self::check_expression_type(source_context, ExpressionValueType::Int, value_expression_type)?;
+                // TODO: This only allows defining 32-bit unsigned constants, VM and compiler need better support for integral types to allow defining other constants
+                inner_builder.function_definition.add_type_member_instruction(GospelOpcode::TypeEnumAddConstantWithValue, constant_declaration.name.as_ref(), 0, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+                Ok({})
+            } else {
+                inner_builder.function_definition.add_type_member_instruction(GospelOpcode::TypeEnumAddConstant, constant_declaration.name.as_ref(), 0, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+                Ok({})
+            }
+        })
+    }
+    fn compile_enum_constant_prototype_declaration(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, constant_declaration: &EnumConstantDeclaration) -> CompilerResult<()> {
+        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: constant_declaration.source_context.clone()};
         self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::TypeUDTFinalize, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        let constant_flags: u32 = 1 << 2;
+        self.function_definition.add_type_member_instruction(GospelOpcode::TypeEnumAddConstant, constant_declaration.name.as_ref(), constant_flags, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        Ok({})
+    }
+    fn compile_generic_type_layout_finalization(&mut self, type_layout_slot_index: u32, type_layout_metadata_slot_index: Option<u32>, source_context: &CompilerSourceContext) -> CompilerResult<()> {
+        if let Some(metadata_slot_index) = type_layout_metadata_slot_index {
+            self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+            self.function_definition.add_slot_instruction(GospelOpcode::TakeSlot, metadata_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+            self.function_definition.add_simple_instruction(GospelOpcode::TypeUDTAttachMetadata, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        }
+        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        self.function_definition.add_simple_instruction(GospelOpcode::TypeFinalize, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
 
         self.function_definition.add_simple_instruction(GospelOpcode::Return, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         Ok({})
@@ -1056,12 +1099,13 @@ pub trait CompilerModuleBuilder : CompilerModuleBuilderInternal {
         let file_scope = self.module_scope().declare_scope(&file_name_without_extension, CompilerLexicalScopeClass::SourceFile(CompilerSourceFileData{file_name: source_file.file_name.clone()}), DeclarationVisibility::Public, &ASTSourceContext::default())?;
 
         source_file.declarations.iter().map(|top_level_declaration| match top_level_declaration {
-            ModuleTopLevelDeclaration::EmptyStatement => { Ok({}) }
-            ModuleTopLevelDeclaration::ImportStatement(import_statement) => { CompilerInstance::pre_compile_import_statement(&file_scope, import_statement) }
-            ModuleTopLevelDeclaration::InputStatement(extern_statement) => { CompilerInstance::compile_input_statement(&file_scope, extern_statement) }
-            ModuleTopLevelDeclaration::NamespaceStatement(namespace_statement) => { CompilerInstance::compile_namespace_statement(&file_scope, namespace_statement, DeclarationVisibility::Public) }
-            ModuleTopLevelDeclaration::DataStatement(data_statement) => { CompilerInstance::pre_compile_data_statement(&file_scope, data_statement, DeclarationVisibility::Public)?; Ok({}) }
-            ModuleTopLevelDeclaration::StructStatement(struct_statement) => { CompilerInstance::compile_struct_statement(&file_scope, struct_statement, None, DeclarationVisibility::Public)?; Ok({}) }
+            TopLevelDeclaration::EmptyStatement => { Ok({}) }
+            TopLevelDeclaration::ImportStatement(import_statement) => { CompilerInstance::pre_compile_import_statement(&file_scope, import_statement) }
+            TopLevelDeclaration::InputStatement(extern_statement) => { CompilerInstance::compile_input_statement(&file_scope, extern_statement) }
+            TopLevelDeclaration::NamespaceStatement(namespace_statement) => { CompilerInstance::compile_namespace_statement(&file_scope, namespace_statement, DeclarationVisibility::Public) }
+            TopLevelDeclaration::DataStatement(data_statement) => { CompilerInstance::pre_compile_data_statement(&file_scope, data_statement, DeclarationVisibility::Public)?; Ok({}) }
+            TopLevelDeclaration::StructStatement(struct_statement) => { CompilerInstance::compile_struct_statement(&file_scope, struct_statement, None, DeclarationVisibility::Public)?; Ok({}) }
+            TopLevelDeclaration::EnumStatement(enum_statement) => { CompilerInstance::pre_compile_enum_statement(&file_scope, enum_statement, None, DeclarationVisibility::Public)?; Ok({}) }
         }).chain_compiler_result(|| compiler_error!(&file_scope.source_context, "Failed to compile source file"))
     }
     fn add_simple_function(&self, function_name: &str, return_value_type: ExpressionValueType, expression: &Expression) -> CompilerResult<GospelSourceObjectReference> {
@@ -1235,7 +1279,7 @@ impl CompilerStructConditionalFragment {
                 Ok({})
             }, |inner_builder, source_context| {
                 // If we failed to evaluate the condition, we do not run either branches, and just jump to the end of this fragment. Type layout in this case becomes partial
-                inner_builder.compile_type_layout_mark_partial_statement(type_layout_slot, source_context)?;
+                inner_builder.compile_generic_type_mark_partial_statement(type_layout_slot, source_context)?;
                 partial_type_jump_to_end_fixup = Some(inner_builder.function_definition.add_control_flow_instruction(GospelOpcode::Branch, CompilerFunctionBuilder::get_line_number(source_context)).with_source_context(source_context)?.1);
                 Ok({})
             })?;
@@ -1337,7 +1381,7 @@ impl CompilerStructFragmentGenerator for CompilerStructMetadataFragment {
                     Ok({})
                 }, |inner_builder, source_context| {
                     // Type without complete metadata is also considered incomplete
-                    inner_builder.compile_type_layout_mark_partial_statement(type_layout_slot, source_context)?;
+                    inner_builder.compile_generic_type_mark_partial_statement(type_layout_slot, source_context)?;
                     Ok({})
                 })?;
             } else {
@@ -1352,7 +1396,7 @@ impl CompilerStructFragmentGenerator for CompilerStructMetadataFragment {
 struct CompilerStructMemberFragment {
     source_context: CompilerSourceContext,
     scope: Rc<CompilerLexicalScope>,
-    member_name: String,
+    member_name: Option<String>,
     member_type_expression: Expression,
     alignment_expression: Option<ExpressionWithCondition>,
     array_size_expression: Option<Expression>,
@@ -1379,7 +1423,7 @@ impl CompilerStructMemberFragment {
             // If there is a bitfield width expression, this is a bitfield member
             let bitfield_width_expression_type = builder.compile_expression(&self.scope, bitfield_width_expression)?;
             CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Int, bitfield_width_expression_type)?;
-            builder.function_definition.add_udt_member_instruction(GospelOpcode::TypeUDTAddBitfield, self.member_name.as_str(), member_flags, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            builder.function_definition.add_type_member_instruction(GospelOpcode::TypeUDTAddBitfield, self.member_name.as_ref(), member_flags, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         } else {
             // If array size expression is present, we need to convert the given member type to an array implicitly
             if let Some(array_size_expression) = &self.array_size_expression {
@@ -1396,14 +1440,14 @@ impl CompilerStructMemberFragment {
                         self.compile_member_alignment_statement(inner_builder, alignment_expression)
                     }, |inner_builder, source_context| {
                         if !is_prototype_pass {
-                            inner_builder.compile_type_layout_mark_partial_statement(type_layout_slot, source_context)
+                            inner_builder.compile_generic_type_mark_partial_statement(type_layout_slot, source_context)
                         } else { Ok({}) }
                     })?;
                 } else {
                     self.compile_member_alignment_statement(builder, alignment_expression)?;
                 }
             }
-            builder.function_definition.add_udt_member_instruction(GospelOpcode::TypeUDTAddField, self.member_name.as_str(), member_flags, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            builder.function_definition.add_type_member_instruction(GospelOpcode::TypeUDTAddField, self.member_name.as_ref(), member_flags, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         }
         Ok({})
     }
@@ -1414,12 +1458,12 @@ impl CompilerStructMemberFragment {
         builder.function_definition.add_string_instruction(GospelOpcode::TypePrimitiveCreate, PrimitiveType::Void.to_string().as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         let member_flags = if is_prototype_pass { (1 << 2) as u32 } else { 0 };
         if self.bitfield_width_expression.is_some() {
-            builder.function_definition.add_udt_member_instruction(GospelOpcode::TypeUDTAddBitfield, self.member_name.as_str(), member_flags,
-                   CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            builder.function_definition.add_type_member_instruction(GospelOpcode::TypeUDTAddBitfield, self.member_name.as_ref(), member_flags,
+                                                                    CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         } else {
             builder.function_definition.add_int_constant_instruction(-1, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
-            builder.function_definition.add_udt_member_instruction(GospelOpcode::TypeUDTAddField, self.member_name.as_str(), member_flags,
-                   CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            builder.function_definition.add_type_member_instruction(GospelOpcode::TypeUDTAddField, self.member_name.as_ref(), member_flags,
+                                                                    CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         }
         Ok({})
     }
@@ -1432,7 +1476,7 @@ impl CompilerStructFragmentGenerator for CompilerStructMemberFragment {
             }, |inner_builder, source_context| {
                 self.compile_simplified_member_declaration(inner_builder, type_layout_slot, is_prototype_pass)?;
                 if !is_prototype_pass {
-                    inner_builder.compile_type_layout_mark_partial_statement(type_layout_slot, source_context)
+                    inner_builder.compile_generic_type_mark_partial_statement(type_layout_slot, source_context)
                 } else { Ok({}) }
             })
         } else {
@@ -1481,7 +1525,7 @@ impl CompilerStructFragmentGenerator for CompilerStructVirtualFunctionFragment {
                 self.compile_full_fragment(inner_builder, type_layout_slot, is_prototype_pass)
             }, |inner_builder, source_context| {
                 if !is_prototype_pass {
-                    inner_builder.compile_type_layout_mark_partial_statement(type_layout_slot, source_context)?;
+                    inner_builder.compile_generic_type_mark_partial_statement(type_layout_slot, source_context)?;
                 }
                 // Simplified virtual function declarations are not feasible due to the fact that virtual functions can be overloaded and name alone is not enough to identify them,
                 // as well as the fact that virtual functions require precise type information to generate callable thunks for them
@@ -1516,25 +1560,25 @@ struct CompilerStructFunctionGenerator {
 impl CompilerFunctionCodeGenerator for CompilerStructFunctionGenerator {
     fn generate(&self, function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<()> {
         let mut function_builder = CompilerFunctionBuilder::create(function_scope)?;
-        let type_layout_slot_index = function_builder.compile_type_layout_initialization(self.struct_kind)?;
-        let type_layout_metadata_slot_index = function_builder.compile_type_layout_metadata_struct_initialization(&self.struct_meta_layout)?;
+        let type_layout_slot_index = function_builder.compile_udt_type_initialization(self.struct_kind)?;
+        let type_layout_metadata_slot_index = function_builder.compile_udt_type_metadata_struct_initialization(&self.struct_meta_layout)?;
 
         if let Some(alignment_expression) = &self.alignment_expression {
             if self.allow_partial_types {
                 function_builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, _source_context| {
-                    inner_builder.compile_type_layout_alignment_expression(&inner_builder.function_scope.clone(), type_layout_slot_index, alignment_expression)
+                    inner_builder.compile_udt_type_alignment_expression(&inner_builder.function_scope.clone(), type_layout_slot_index, alignment_expression)
                 }, |inner_builder, source_context| {
-                    inner_builder.compile_type_layout_mark_partial_statement(type_layout_slot_index, source_context)
+                    inner_builder.compile_generic_type_mark_partial_statement(type_layout_slot_index, source_context)
                 })?;
             } else {
-                function_builder.compile_type_layout_alignment_expression(&function_builder.function_scope.clone(), type_layout_slot_index, alignment_expression)?;
+                function_builder.compile_udt_type_alignment_expression(&function_builder.function_scope.clone(), type_layout_slot_index, alignment_expression)?;
             }
         }
         if let Some(member_pack_alignment_expression) = &self.member_pack_alignment_expression {
-            function_builder.compile_type_layout_member_pack_alignment_expression(&function_builder.function_scope.clone(), type_layout_slot_index, member_pack_alignment_expression)?;
+            function_builder.compile_udt_type_member_pack_alignment_expression(&function_builder.function_scope.clone(), type_layout_slot_index, member_pack_alignment_expression)?;
         }
         for base_class_expression in &self.base_class_expressions {
-            function_builder.compile_type_layout_base_class_expression(&function_builder.function_scope.clone(), type_layout_slot_index, base_class_expression, false, self.allow_partial_types)?;
+            function_builder.compile_udt_type_base_class_expression(&function_builder.function_scope.clone(), type_layout_slot_index, base_class_expression, false, self.allow_partial_types)?;
         }
         // Main pass with UDT layout generation
         self.fragments.iter().map(|struct_fragment| {
@@ -1548,9 +1592,57 @@ impl CompilerFunctionCodeGenerator for CompilerStructFunctionGenerator {
             }).chain_compiler_result(|| compiler_error!(&self.source_context, "Failed to compile struct definition (prototype pass)"))?;
         }
         for base_class_expression in &self.base_class_expressions {
-            function_builder.compile_type_layout_base_class_expression(&function_builder.function_scope.clone(), type_layout_slot_index, base_class_expression, true, false)?;
+            function_builder.compile_udt_type_base_class_expression(&function_builder.function_scope.clone(), type_layout_slot_index, base_class_expression, true, false)?;
         }
-        function_builder.compile_type_layout_finalization(type_layout_slot_index, type_layout_metadata_slot_index, &self.source_context)?;
+        function_builder.compile_generic_type_layout_finalization(type_layout_slot_index, Some(type_layout_metadata_slot_index), &self.source_context)?;
+        function_builder.commit()
+    }
+}
+
+#[derive(Debug)]
+struct CompilerEnumFunctionGenerator {
+    enum_kind: EnumKind,
+    underlying_type_expression: Option<ExpressionWithCondition>,
+    allow_partial_types: bool,
+    generate_prototype_layout: bool,
+    source_context: CompilerSourceContext,
+    constants: Vec<EnumConstantDeclaration>,
+}
+impl CompilerFunctionCodeGenerator for CompilerEnumFunctionGenerator {
+    fn generate(&self, function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<()> {
+        let mut function_builder = CompilerFunctionBuilder::create(function_scope)?;
+        let type_layout_slot_index = function_builder.compile_enum_type_initialization(self.enum_kind)?;
+
+        if let Some(underlying_type_expression) = &self.underlying_type_expression {
+            if self.allow_partial_types {
+                function_builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, _source_context| {
+                    inner_builder.compile_enum_underlying_type_expression(&inner_builder.function_scope.clone(), type_layout_slot_index, underlying_type_expression)
+                }, |inner_builder, source_context| {
+                    inner_builder.compile_generic_type_mark_partial_statement(type_layout_slot_index, source_context)
+                })?;
+            } else {
+                function_builder.compile_enum_underlying_type_expression(&function_builder.function_scope.clone(), type_layout_slot_index, underlying_type_expression)?;
+            }
+        }
+
+        for enum_constant in &self.constants {
+            if self.allow_partial_types {
+                function_builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, _source_context| {
+                    inner_builder.compile_enum_constant_declaration(&inner_builder.function_scope.clone(), type_layout_slot_index, enum_constant)
+                }, |inner_builder, source_context| {
+                    inner_builder.compile_generic_type_mark_partial_statement(type_layout_slot_index, source_context)
+                })?;
+            } else {
+                function_builder.compile_enum_constant_declaration(&function_builder.function_scope.clone(), type_layout_slot_index, enum_constant)?;
+            }
+        }
+
+        if self.generate_prototype_layout {
+            for enum_constant in &self.constants {
+                function_builder.compile_enum_constant_prototype_declaration(&function_builder.function_scope.clone(), type_layout_slot_index, enum_constant)?;
+            }
+        }
+        function_builder.compile_generic_type_layout_finalization(type_layout_slot_index, None, &self.source_context)?;
         function_builder.commit()
     }
 }
@@ -1632,13 +1724,13 @@ impl CompilerInstance {
             DeclarationAccessSpecifier::Local => DeclarationVisibility::FileLocal,
         }
     }
-    fn pre_compile_import_statement(scope: &Rc<CompilerLexicalScope>, statement: &ModuleImportStatement) -> CompilerResult<()> {
+    fn pre_compile_import_statement(scope: &Rc<CompilerLexicalScope>, statement: &ImportStatement) -> CompilerResult<()> {
         // Right now import statements have no effect outside the module definitions since they are only resolved within function and struct bodies, so discard them if the current module is not generating any code
         if let Some(module_codegen_data) = scope.module_codegen() {
             module_codegen_data.push_delayed_import(scope, statement)
         } else { Ok({}) }
     }
-    fn compile_import_statement(scope: &Rc<CompilerLexicalScope>, statement: &ModuleImportStatement) -> CompilerResult<()> {
+    fn compile_import_statement(scope: &Rc<CompilerLexicalScope>, statement: &ImportStatement) -> CompilerResult<()> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
 
         // Imports are resolved against a scope with only module name, so they cannot access file local or scope local declarations from any files, including the one we are currently compiling
@@ -1699,10 +1791,13 @@ impl CompilerInstance {
         }
         statement.declarations.iter().map(|namespace_declaration| {
             match namespace_declaration {
-                NamespaceLevelDeclaration::EmptyStatement => { Ok({}) }
-                NamespaceLevelDeclaration::NamespaceStatement(nested_namespace) => { Self::compile_namespace_statement(&current_scope, nested_namespace, DeclarationVisibility::Public) }
-                NamespaceLevelDeclaration::DataStatement(data_statement) => { Self::pre_compile_data_statement(&current_scope, data_statement, DeclarationVisibility::Public)?; Ok({}) }
-                NamespaceLevelDeclaration::StructStatement(struct_statement) => { Self::compile_struct_statement(&current_scope, struct_statement, None, DeclarationVisibility::Public)?; Ok({}) }
+                TopLevelDeclaration::EmptyStatement => { Ok({}) }
+                TopLevelDeclaration::ImportStatement(import_statement) => { Self::compile_import_statement(&current_scope, import_statement) }
+                TopLevelDeclaration::InputStatement(input_statement) => { Self::compile_input_statement(&current_scope, input_statement) }
+                TopLevelDeclaration::NamespaceStatement(nested_namespace) => { Self::compile_namespace_statement(&current_scope, nested_namespace, DeclarationVisibility::Public) }
+                TopLevelDeclaration::DataStatement(data_statement) => { Self::pre_compile_data_statement(&current_scope, data_statement, DeclarationVisibility::Public)?; Ok({}) }
+                TopLevelDeclaration::StructStatement(struct_statement) => { Self::compile_struct_statement(&current_scope, struct_statement, None, DeclarationVisibility::Public)?; Ok({}) }
+                TopLevelDeclaration::EnumStatement(enum_statement) => { Self::pre_compile_enum_statement(&current_scope, enum_statement, None, DeclarationVisibility::Public)?; Ok({}) }
             }
         }).chain_compiler_result(|| compiler_error!(source_context, "Failed to compile namespace declaration"))
     }
@@ -1797,6 +1892,27 @@ impl CompilerInstance {
             module_codegen_data.push_delayed_function_definition(&function_scope, Box::new(CompilerSimpleExpressionFunctionGenerator{
                 source_context: statement.source_context.clone(),
                 return_value_expression: statement.initializer.clone(),
+            }))?;
+        }
+        Ok(function_closure.borrow().function_reference.clone())
+    }
+    fn pre_compile_enum_statement(scope: &Rc<CompilerLexicalScope>, statement: &EnumStatement, fallback_name: Option<&str>, default_visibility: DeclarationVisibility) -> CompilerResult<CompilerFunctionReference> {
+        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
+        let function_name = statement.name.as_ref().map(|x| x.as_str()).or(fallback_name)
+            .ok_or_else(|| compiler_error!(&source_context, "Unnamed enum declaration in top level scope. All top level enumerations must have a name"))?;
+
+        let visibility = statement.access_specifier.map(|x| Self::convert_access_specifier(x)).unwrap_or(default_visibility);
+        let (function_scope, function_closure) = Self::declare_function(scope, function_name, visibility,
+            ExpressionValueType::Typename, statement.template_declaration.as_ref(), true, &source_context.line_context)?;
+
+        let (allow_partial_types, generate_prototype_layouts) = scope.compiler().map(|x| (x.compiler_options.allow_partial_types, x.compiler_options.generate_prototype_layouts)).unwrap_or((false, false));
+        if let Some(module_codegen_data) = scope.module_codegen() {
+            module_codegen_data.push_delayed_function_definition(&function_scope, Box::new(CompilerEnumFunctionGenerator{
+                source_context,
+                enum_kind: statement.enum_kind,
+                underlying_type_expression: statement.underlying_type_expression.clone(),
+                allow_partial_types, generate_prototype_layout: generate_prototype_layouts,
+                constants: statement.constants.clone(),
             }))?;
         }
         Ok(function_closure.borrow().function_reference.clone())
@@ -2148,7 +2264,7 @@ trait CompilerFunctionCodeGenerator : Debug {
 #[derive(Debug)]
 struct CompilerDelayedImportResolutionData {
     scope: Rc<CompilerLexicalScope>,
-    statement: ModuleImportStatement,
+    statement: ImportStatement,
 }
 #[derive(Debug)]
 struct CompilerFunctionCodegenData {
@@ -2163,7 +2279,7 @@ struct CompilerModuleCodegenData {
     functions: RefCell<Vec<Option<CompilerFunctionCodegenData>>>,
 }
 impl CompilerModuleCodegenData {
-    fn push_delayed_import(&self, scope: &Rc<CompilerLexicalScope>, statement: &ModuleImportStatement) -> CompilerResult<()> {
+    fn push_delayed_import(&self, scope: &Rc<CompilerLexicalScope>, statement: &ImportStatement) -> CompilerResult<()> {
         self.imports.borrow_mut().push(Some(CompilerDelayedImportResolutionData{
             scope: scope.clone(), statement: statement.clone()
         }));

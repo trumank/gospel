@@ -142,7 +142,7 @@ pub enum GospelOpcode {
     #[strum(props(stack_in_count = "2"))]
     TypeUDTAttachMetadata = 0x7E, // ; [pop stack] [pop stack] ->
     #[strum(props(stack_in_count = "1"))]
-    TypeUDTFinalize = 0x7F, // [pop stack] ->
+    TypeFinalize = 0x7F, // [pop stack] ->
     // Array opcodes
     #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
     ArrayGetLength = 0x80, // ; [pop stack] -> [push stack]
@@ -187,7 +187,7 @@ pub enum GospelOpcode {
     #[strum(props(stack_in_count = "1", stack_out_count = "3"))]
     TypeUDTCalculateVTableSizeAndOffset = 0xA4, // [pop stack] -> [push stack] [push stack] [push stack]
     #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
-    TypeUDTCalculateBaseOffset = 0xA5, // [pop stack] [pop stack] -> [push stack]
+    TypeUDTCalculateBaseOffset = 0xA5, // ; [pop stack] [pop stack] -> [push stack]
     #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "2"))]
     TypeUDTCalculateVirtualFunctionOffset = 0xA6, // <imm>; [pop stack] -> [push stack] [push stack]
     #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
@@ -209,11 +209,29 @@ pub enum GospelOpcode {
     TypePointerCreateReference = 0xB5, // ; [pop stack] -> [push stack]
     #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
     TypePointerIsReference = 0xB6, // ; [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
+    TypeIsEnumType = 0xB7, // ; [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
+    TypeEnumIsScopedEnum = 0xB8, // ; [pop stack] -> [push stack]
+    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
+    TypeEnumGetUnderlyingType = 0xB9, // ; [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
+    TypeEnumHasConstantByName = 0xBA, // <imm>; [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "2"))]
+    TypeEnumConstantValueByName = 0xBB, // <imm>; [pop stack] -> [push stack] [push stack]
     // Type creation opcode extensions
     #[strum(props(stack_in_count = "2"))]
     TypeUDTSetMemberPackAlignment = 0xC0, // ; [pop stack] [pop stack] ->
     #[strum(props(stack_in_count = "1"))]
-    TypeUDTMarkTypePartial = 0xC1, // [pop stack] ->
+    TypeMarkPartial = 0xC1, // [pop stack] ->
+    #[strum(props(immediate_count = "2", stack_out_count = "1"))]
+    TypeEnumAllocate = 0xC2,  // <imm> <imm>; -> [push stack]
+    #[strum(props(stack_in_count = "2"))]
+    TypeEnumSetUnderlyingType = 0xC3, // ; [pop stack] [pop stack] ->
+    #[strum(props(immediate_count = "2", stack_in_count = "2"))]
+    TypeEnumAddConstantWithValue = 0xC4, // <imm> <imm>; [pop stack] [pop stack] ->
+    #[strum(props(immediate_count = "2", stack_in_count = "1"))]
+    TypeEnumAddConstant = 0xC5, // <imm> <imm>; [pop stack] ->
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]

@@ -1,12 +1,13 @@
-﻿use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ModuleImportStatement, ModuleImportStatementType, ModuleSourceFile, ModuleTopLevelDeclaration, NamespaceLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, BuiltinIdentifier, BuiltinIdentifierExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression, MemberFunctionDeclaration, FunctionParameterDeclaration};
+﻿use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ImportStatement, ModuleImportStatementType, ModuleSourceFile, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, BuiltinIdentifier, BuiltinIdentifierExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression, MemberFunctionDeclaration, FunctionParameterDeclaration, TopLevelDeclaration, EnumStatement, EnumConstantDeclaration};
 use crate::lex_util::get_line_number_and_offset_from_index;
 use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
 use std::fmt::{Display, Formatter};
 use strum::Display;
 use fancy_regex::{Captures, Regex};
+use itertools::Itertools;
 use crate::ast::ExpressionWithCondition;
-use gospel_typelib::type_model::{PrimitiveType, UserDefinedTypeKind};
+use gospel_typelib::type_model::{EnumKind, PrimitiveType, UserDefinedTypeKind};
 
 #[derive(Logos, Debug, Clone, PartialEq, Display)]
 #[logos(skip r"[ \r\t\n\u{feff}]+")]
@@ -47,6 +48,9 @@ enum CompilerToken {
     #[token("let")]
     #[strum(to_string = "let")]
     Let,
+    #[token("enum")]
+    #[strum(to_string = "enum")]
+    Enum,
     #[token("typename")]
     #[strum(to_string = "typename")]
     Typename,
@@ -251,8 +255,11 @@ enum CompilerToken {
     #[token(",")]
     #[strum(to_string = ",")]
     Separator,
+    #[token("_")]
+    #[strum(to_string = "_[A-Za-z0-9_]*")]
+    UnnamedIdentifier,
     // Identifiers and literals
-    #[regex("[A-Za-z_$][A-Za-z0-9_$]*", parse_identifier)]
+    #[regex("[A-Za-z][A-Za-z0-9_$]*", parse_identifier)]
     #[strum(to_string = "identifier")]
     Identifier(String),
     #[regex("-?(?:0x[A-Fa-f0-9]+)|(?:0b[0-1]+)|(?:(?:[1-9]+[0-9]*)|0)", parse_integer_literal)]
@@ -349,6 +356,13 @@ impl CompilerLexerContext<'_> {
             other => Err(self.fail(format!("Expected identifier, got {}", other)))
         }
     }
+    fn check_optional_identifier(&mut self, token: CompilerToken) -> anyhow::Result<Option<String>> {
+        match token {
+            CompilerToken::Identifier(value) => Ok(Some(value)),
+            CompilerToken::UnnamedIdentifier => Ok(None),
+            other => Err(self.fail(format!("Expected identifier or _, got {}", other)))
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -438,8 +452,7 @@ type AmbiguousExpression<'a> = AmbiguousParsingResult<'a, Expression>;
 type ExactExpressionCase<'a> = ExactParseCase<'a, Expression>;
 type ExactStatementCase<'a> = ExactParseCase<'a, Statement>;
 type ExactStructInnerDeclarationCase<'a> = ExactParseCase<'a, StructInnerDeclaration>;
-type ExactModuleTopLevelDeclarationCase<'a> = ExactParseCase<'a, ModuleTopLevelDeclaration>;
-type ExactNamespaceLevelDeclarationCase<'a> = ExactParseCase<'a, NamespaceLevelDeclaration>;
+type ExactTopLevelDeclarationCase<'a> = ExactParseCase<'a, TopLevelDeclaration>;
 
 #[derive(Clone, PartialEq, Eq)]
 enum AssociativeExpressionGroupOperand {
@@ -1373,7 +1386,7 @@ impl<'a> CompilerParserInstance<'a> {
             TemplateDeclaration{arguments}
         }))
     }
-    fn parse_import_statement(mut self) -> anyhow::Result<ExactModuleTopLevelDeclarationCase<'a>> {
+    fn parse_import_statement(mut self) -> anyhow::Result<ExactTopLevelDeclarationCase<'a>> {
         let import_statement_token = self.ctx.next()?;
         self.ctx.check_token(import_statement_token, CompilerToken::Import)?;
         let source_context = self.ctx.source_context();
@@ -1407,16 +1420,16 @@ impl<'a> CompilerParserInstance<'a> {
             let next_token = self.ctx.next()?;
             self.ctx.check_token(next_token, CompilerToken::Terminator)?;
 
-            let result_statement = ModuleImportStatement{statement_type: ModuleImportStatementType::CompositeImport(composite_import), source_context};
-            return Ok(ExactModuleTopLevelDeclarationCase::create(self, ModuleTopLevelDeclaration::ImportStatement(result_statement)));
+            let result_statement = ImportStatement {statement_type: ModuleImportStatementType::CompositeImport(composite_import), source_context};
+            return Ok(ExactTopLevelDeclarationCase::create(self, TopLevelDeclaration::ImportStatement(result_statement)));
         }
 
         // Normal qualified import ending with a statement terminator
         self.ctx.check_token(complex_import_start_or_terminator, CompilerToken::Terminator)?;
-        let result_statement = ModuleImportStatement{statement_type: ModuleImportStatementType::QualifiedImport(namespace_or_qualified_import), source_context};
-        Ok(ExactModuleTopLevelDeclarationCase::create(self, ModuleTopLevelDeclaration::ImportStatement(result_statement)))
+        let result_statement = ImportStatement {statement_type: ModuleImportStatementType::QualifiedImport(namespace_or_qualified_import), source_context};
+        Ok(ExactTopLevelDeclarationCase::create(self, TopLevelDeclaration::ImportStatement(result_statement)))
     }
-    fn parse_input_statement(mut self, access_specifier: Option<DeclarationAccessSpecifier>) -> anyhow::Result<ExactModuleTopLevelDeclarationCase<'a>> {
+    fn parse_input_statement(mut self, access_specifier: Option<DeclarationAccessSpecifier>) -> anyhow::Result<ExactTopLevelDeclarationCase<'a>> {
         let statement_token = self.ctx.next()?;
         self.ctx.check_token(statement_token, CompilerToken::Input)?;
         let source_context = self.ctx.source_context();
@@ -1435,7 +1448,7 @@ impl<'a> CompilerParserInstance<'a> {
 
                 // Input variable declaration with default value
                 let result_statement = InputStatement{source_context: source_context.clone(), global_name: global_name.clone(), access_specifier, value_type, default_value: Some(expression)};
-                Ok(AmbiguousParsingResult::unambiguous(parser, ModuleTopLevelDeclaration::InputStatement(result_statement)))
+                Ok(AmbiguousParsingResult::unambiguous(parser, TopLevelDeclaration::InputStatement(result_statement)))
             })?.disambiguate()?)
         } else {
             // Should end with a statement terminator
@@ -1444,7 +1457,7 @@ impl<'a> CompilerParserInstance<'a> {
 
             // Input variable declaration with no default value
             let result_statement = InputStatement{source_context, global_name, access_specifier, value_type, default_value: None};
-            Ok(ExactModuleTopLevelDeclarationCase::create(self, ModuleTopLevelDeclaration::InputStatement(result_statement)))
+            Ok(ExactTopLevelDeclarationCase::create(self, TopLevelDeclaration::InputStatement(result_statement)))
         }
     }
     fn parse_constexpr_statement(mut self, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>) -> anyhow::Result<ExactParseCase<'a, DataStatement>> {
@@ -1539,7 +1552,7 @@ impl<'a> CompilerParserInstance<'a> {
             })?
             .flat_map_result(|mut parser, (alignment_expression, member_type_expression)| {
                 let name_token = parser.ctx.next()?;
-                let name = parser.ctx.check_identifier(name_token)?;
+                let name = parser.ctx.check_optional_identifier(name_token)?;
                 let parsed_next_token = parser.ctx.next()?;
 
                 if parsed_next_token == CompilerToken::ArraySubscriptStart {
@@ -1800,77 +1813,102 @@ impl<'a> CompilerParserInstance<'a> {
             Ok(AmbiguousParsingResult::unambiguous(current_parser, result_statement))
         })?.disambiguate()
     }
-    fn parse_templated_access_specifier_namespace_level_statement(mut self, template_declaration: TemplateDeclaration, access_specifier: DeclarationAccessSpecifier) -> anyhow::Result<ExactNamespaceLevelDeclarationCase<'a>> {
-        // discard access specifier token
-        self.ctx.discard_next()?;
-        let statement_token = self.ctx.peek()?;
-        Ok(match statement_token {
-            // data and struct declarations
-            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
-            CompilerToken::Type => Ok(self.parse_type_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
-            CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
-            CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
-            CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, Some(template_declaration), Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
-            _ => Err(self.ctx.fail(format!("Expected data or struct declaration following template declaration and access specifier, got {}", statement_token))),
-        }?)
+    fn parse_enum_constant(mut self) -> anyhow::Result<AmbiguousParsingResult<'a, EnumConstantDeclaration>> {
+        let constant_name_token = self.ctx.next()?;
+        let constant_name = self.ctx.check_optional_identifier(constant_name_token)?;
+        let source_context = self.ctx.source_context();
+
+        let assignment_conditional_or_terminator_token = self.ctx.peek()?;
+        if assignment_conditional_or_terminator_token == CompilerToken::Assignment {
+            self.ctx.discard_next()?;
+            // This is an enum constant with explicit value, which we have to parse as an expression
+            self.parse_complete_expression()?.flat_map_result(|mut parser, value_expression| {
+                if parser.ctx.peek()? == CompilerToken::If {
+                    let condition_expression = parser.parse_postfix_conditional_expression()?;
+                    let result_declaration = EnumConstantDeclaration{condition_expression: Some(condition_expression.data), name: constant_name.clone(), value_expression: Some(value_expression), source_context: source_context.clone()};
+                    Ok(AmbiguousParsingResult::unambiguous(condition_expression.parser, result_declaration))
+                } else {
+                    let result_declaration = EnumConstantDeclaration{condition_expression: None, name: constant_name.clone(), value_expression: Some(value_expression), source_context: source_context.clone()};
+                    Ok(AmbiguousParsingResult::unambiguous(parser, result_declaration))
+                }
+            })
+        } else if assignment_conditional_or_terminator_token == CompilerToken::If {
+            // This is an enum constant with implicit value, but with a conditional postfix expression
+            let condition_expression = self.parse_postfix_conditional_expression()?;
+
+            let result_declaration = EnumConstantDeclaration{condition_expression: Some(condition_expression.data), name: constant_name, value_expression: None, source_context};
+            Ok(AmbiguousParsingResult::unambiguous(condition_expression.parser, result_declaration))
+        } else {
+            // This is an enum constant with no explicit value and no conditional postfix
+            let result_declaration = EnumConstantDeclaration{condition_expression: None, name: constant_name, value_expression: None, source_context};
+            Ok(AmbiguousParsingResult::unambiguous(self, result_declaration))
+        }
     }
-    fn parse_templated_namespace_level_statement(self) -> anyhow::Result<ExactNamespaceLevelDeclarationCase<'a>> {
-        self.parse_template_declaration()?.flat_map_result(|mut parser, template_declaration| {
-            let template_statement_token = parser.ctx.peek()?;
-            Ok(match template_statement_token {
-                // access specifiers
-                CompilerToken::Public => parser.parse_templated_access_specifier_namespace_level_statement(template_declaration, DeclarationAccessSpecifier::Public),
-                CompilerToken::Internal => parser.parse_templated_access_specifier_namespace_level_statement(template_declaration, DeclarationAccessSpecifier::Internal),
-                CompilerToken::Local => parser.parse_templated_access_specifier_namespace_level_statement(template_declaration, DeclarationAccessSpecifier::Local),
-                // data and struct declarations
-                CompilerToken::Constexpr => Ok(parser.parse_constexpr_statement(Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
-                CompilerToken::Type => Ok(parser.parse_type_statement(Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
-                CompilerToken::Struct => Ok(parser.parse_struct_statement(UserDefinedTypeKind::Struct, Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
-                CompilerToken::Class => Ok(parser.parse_struct_statement(UserDefinedTypeKind::Class, Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
-                CompilerToken::Union => Ok(parser.parse_struct_statement(UserDefinedTypeKind::Union, Some(template_declaration), None)?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
-                _ => Err(parser.ctx.fail(format!("Expected access access specifier, data or struct declaration following template declaration, got {}", template_statement_token))),
-            }?.to_parse_result())
+    fn parse_enum_statement(mut self, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>) -> anyhow::Result<ExactParseCase<'a, EnumStatement>> {
+        self.ctx.discard_next()?;
+        let enum_kind = if self.ctx.peek()? == CompilerToken::Class {
+            self.ctx.discard_next()?;
+            EnumKind::Scoped
+        } else { EnumKind::Unscoped };
+
+        let source_context = self.ctx.source_context();
+        let enum_name_token = self.ctx.next()?;
+        let name = self.ctx.check_identifier(enum_name_token)?;
+
+        ExactParseCase::create(self, ())
+        .map_result(|mut parser, _| {
+            // Parse underlying type if next token is a base class separator
+            let scope_enter_or_base_class_separator = parser.ctx.next()?;
+            if scope_enter_or_base_class_separator == CompilerToken::BaseClass {
+                Ok(parser.parse_complete_expression()?.flat_map_result(|mut inner_parser, expression| {
+                    let source_context = inner_parser.ctx.source_context();
+                    if inner_parser.ctx.peek()? == CompilerToken::If {
+                        let condition_expression = inner_parser.parse_postfix_conditional_expression()?;
+                        Ok(AmbiguousParsingResult::unambiguous(condition_expression.parser, Some(ExpressionWithCondition{expression, condition_expression: Some(condition_expression.data), source_context})))
+                    } else {
+                        Ok(AmbiguousParsingResult::unambiguous(inner_parser, Some(ExpressionWithCondition { expression, condition_expression: None, source_context})))
+                    }
+                })?.flat_map_result(|mut inner_parser, expression| {
+                    let scope_enter_token = inner_parser.ctx.next()?;
+                    inner_parser.ctx.check_token(scope_enter_token, CompilerToken::ScopeStart)?;
+                    Ok(AmbiguousParsingResult::unambiguous(inner_parser, expression))
+                })?)
+            } else {
+                // Next token should be scope enter if it is not a base class separator
+                parser.ctx.check_token(scope_enter_or_base_class_separator, CompilerToken::ScopeStart)?;
+                Ok(AmbiguousParsingResult::unambiguous(parser, None))
+            }
+        })?
+        .flat_map_result(|parser, underlying_type_expression| {
+            let mut constants: Vec<EnumConstantDeclaration> = Vec::new();
+
+            // Parse struct statements until we encounter the scope exit token
+            let mut current_parser = parser;
+            while current_parser.ctx.peek()? != CompilerToken::ScopeEnd {
+                let enum_constant_statement = current_parser.parse_enum_constant()?
+                    .flat_map_result(|mut inner_parser, constant| {
+                        // Should end with a comma or with a scope end
+                        let next_token = inner_parser.ctx.peek()?;
+                        if next_token == CompilerToken::ScopeEnd || next_token == CompilerToken::Separator {
+                            Ok(AmbiguousParsingResult::unambiguous(inner_parser, constant))
+                        } else { Err(inner_parser.ctx.fail(format!("Expected }} or , got {}", next_token))) }
+                    })?.disambiguate()?;
+                constants.push(enum_constant_statement.data);
+                current_parser = enum_constant_statement.parser;
+                // At this point we can have only separator or scope end as a next token, and if it is a separator we should digest it. Scope end will be digested later
+                if current_parser.ctx.peek()? == CompilerToken::Separator {
+                    current_parser.ctx.discard_next()?;
+                }
+            }
+            current_parser.ctx.discard_next()?;
+
+            let terminator_token = current_parser.ctx.next()?;
+            current_parser.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
+
+            let result_statement = EnumStatement{template_declaration: template_declaration.clone(), access_specifier: access_specifier.clone(),
+                enum_kind, underlying_type_expression, name: Some(name.clone()), constants, source_context: source_context.clone()};
+            Ok(AmbiguousParsingResult::unambiguous(current_parser, result_statement))
         })?.disambiguate()
-    }
-    fn parse_empty_namespace_level_statement(mut self) -> anyhow::Result<ExactNamespaceLevelDeclarationCase<'a>> {
-        let statement_token = self.ctx.next()?;
-        self.ctx.check_token(statement_token, CompilerToken::Terminator)?;
-        Ok(ExactNamespaceLevelDeclarationCase::create(self, NamespaceLevelDeclaration::EmptyStatement))
-    }
-    fn parse_access_specifier_namespace_level_statement(mut self, access_specifier: DeclarationAccessSpecifier) -> anyhow::Result<ExactNamespaceLevelDeclarationCase<'a>> {
-        // discard access specifier token
-        self.ctx.discard_next()?;
-        let statement_token = self.ctx.peek()?;
-        match statement_token {
-            // data, struct and namespace declarations
-            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
-            CompilerToken::Type => Ok(self.parse_type_statement(None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
-            CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
-            CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
-            CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, None, Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
-            CompilerToken::Namespace => Ok(self.parse_namespace_statement(Some(access_specifier))?.map_data(|x| NamespaceLevelDeclaration::NamespaceStatement(x))),
-            _ => Err(self.ctx.fail(format!("Expected data or struct declaration following access specifier, got {}", statement_token))),
-        }
-    }
-    fn parse_namespace_level_statement(mut self) -> anyhow::Result<ExactNamespaceLevelDeclarationCase<'a>> {
-        let statement_token = self.ctx.peek()?;
-        match statement_token {
-            // template declaration
-            CompilerToken::Template => self.parse_templated_namespace_level_statement(),
-            // access specifiers
-            CompilerToken::Public => self.parse_access_specifier_namespace_level_statement(DeclarationAccessSpecifier::Public),
-            CompilerToken::Internal => self.parse_access_specifier_namespace_level_statement(DeclarationAccessSpecifier::Internal),
-            CompilerToken::Local => self.parse_access_specifier_namespace_level_statement(DeclarationAccessSpecifier::Local),
-            // data, struct, namespace and blank declarations
-            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(None, None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
-            CompilerToken::Type => Ok(self.parse_type_statement(None, None)?.map_data(|x| NamespaceLevelDeclaration::DataStatement(x))),
-            CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, None, None)?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
-            CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, None, None)?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
-            CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, None, None)?.map_data(|x| NamespaceLevelDeclaration::StructStatement(x))),
-            CompilerToken::Namespace => Ok(self.parse_namespace_statement(None)?.map_data(|x| NamespaceLevelDeclaration::NamespaceStatement(x))),
-            CompilerToken::Terminator => self.parse_empty_namespace_level_statement(),
-            _ => Err(self.ctx.fail(format!("Expected empty statement, access specifier, namespace, data or struct declaration, got {}", statement_token))),
-        }
     }
     fn parse_namespace_statement(mut self, access_specifier: Option<DeclarationAccessSpecifier>) -> anyhow::Result<ExactParseCase<'a, NamespaceStatement>> {
         let namespace_statement_token = self.ctx.next()?;
@@ -1881,10 +1919,10 @@ impl<'a> CompilerParserInstance<'a> {
         let scope_enter_token = self.ctx.next()?;
         self.ctx.check_token(scope_enter_token, CompilerToken::ScopeStart)?;
 
-        let mut declarations: Vec<NamespaceLevelDeclaration> = Vec::new();
+        let mut declarations: Vec<TopLevelDeclaration> = Vec::new();
         let mut current_parser = self;
         while current_parser.ctx.peek()? != CompilerToken::ScopeEnd {
-            let declaration = current_parser.parse_namespace_level_statement()?;
+            let declaration = current_parser.parse_top_level_statement()?;
             declarations.push(declaration.data);
             current_parser = declaration.parser;
         }
@@ -1896,26 +1934,27 @@ impl<'a> CompilerParserInstance<'a> {
         let result_statement = NamespaceStatement{ source_context, access_specifier, name, declarations };
         Ok(ExactParseCase::create(current_parser, result_statement))
     }
-    fn parse_empty_top_level_statement(mut self) -> anyhow::Result<ExactModuleTopLevelDeclarationCase<'a>> {
+    fn parse_empty_top_level_statement(mut self) -> anyhow::Result<ExactTopLevelDeclarationCase<'a>> {
         let statement_token = self.ctx.next()?;
         self.ctx.check_token(statement_token, CompilerToken::Terminator)?;
-        Ok(ExactModuleTopLevelDeclarationCase::create(self, ModuleTopLevelDeclaration::EmptyStatement))
+        Ok(ExactTopLevelDeclarationCase::create(self, TopLevelDeclaration::EmptyStatement))
     }
-    fn parse_templated_access_specifier_top_level_statement(mut self, template_declaration: TemplateDeclaration, access_specifier: DeclarationAccessSpecifier)  -> anyhow::Result<ExactModuleTopLevelDeclarationCase<'a>> {
+    fn parse_templated_access_specifier_top_level_statement(mut self, template_declaration: TemplateDeclaration, access_specifier: DeclarationAccessSpecifier)  -> anyhow::Result<ExactTopLevelDeclarationCase<'a>> {
         // discard access specifier token
         self.ctx.discard_next()?;
         let statement_token = self.ctx.peek()?;
         Ok(match statement_token {
             // data and struct declarations
-            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
-            CompilerToken::Type => Ok(self.parse_type_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
-            CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
-            CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
-            CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, Some(template_declaration), Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
+            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| TopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Type => Ok(self.parse_type_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| TopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, Some(template_declaration), Some(access_specifier))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+            CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, Some(template_declaration), Some(access_specifier))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+            CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, Some(template_declaration), Some(access_specifier))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+            CompilerToken::Enum => Ok(self.parse_enum_statement(Some(template_declaration), Some(access_specifier))?.map_data(|x| TopLevelDeclaration::EnumStatement(x))),
             _ => Err(self.ctx.fail(format!("Expected data or struct declaration following template declaration and access specifier, got {}", statement_token))),
         }?)
     }
-    fn parse_templated_top_level_statement(self) -> anyhow::Result<ExactModuleTopLevelDeclarationCase<'a>> {
+    fn parse_templated_top_level_statement(self) -> anyhow::Result<ExactTopLevelDeclarationCase<'a>> {
         self.parse_template_declaration()?.flat_map_result(|mut parser, template_declaration| {
             let template_statement_token = parser.ctx.peek()?;
             Ok(match template_statement_token {
@@ -1924,31 +1963,33 @@ impl<'a> CompilerParserInstance<'a> {
                 CompilerToken::Internal => parser.parse_templated_access_specifier_top_level_statement(template_declaration, DeclarationAccessSpecifier::Internal),
                 CompilerToken::Local => parser.parse_templated_access_specifier_top_level_statement(template_declaration, DeclarationAccessSpecifier::Local),
                 // data and struct declarations
-                CompilerToken::Constexpr => Ok(parser.parse_constexpr_statement(Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
-                CompilerToken::Type => Ok(parser.parse_type_statement(Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
-                CompilerToken::Struct => Ok(parser.parse_struct_statement(UserDefinedTypeKind::Struct, Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
-                CompilerToken::Class => Ok(parser.parse_struct_statement(UserDefinedTypeKind::Class, Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
-                CompilerToken::Union => Ok(parser.parse_struct_statement(UserDefinedTypeKind::Union, Some(template_declaration), None)?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
+                CompilerToken::Constexpr => Ok(parser.parse_constexpr_statement(Some(template_declaration), None)?.map_data(|x| TopLevelDeclaration::DataStatement(x))),
+                CompilerToken::Type => Ok(parser.parse_type_statement(Some(template_declaration), None)?.map_data(|x| TopLevelDeclaration::DataStatement(x))),
+                CompilerToken::Struct => Ok(parser.parse_struct_statement(UserDefinedTypeKind::Struct, Some(template_declaration), None)?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+                CompilerToken::Class => Ok(parser.parse_struct_statement(UserDefinedTypeKind::Class, Some(template_declaration), None)?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+                CompilerToken::Union => Ok(parser.parse_struct_statement(UserDefinedTypeKind::Union, Some(template_declaration), None)?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+                CompilerToken::Enum => Ok(parser.parse_enum_statement(Some(template_declaration), None)?.map_data(|x| TopLevelDeclaration::EnumStatement(x))),
                 _ => Err(parser.ctx.fail(format!("Expected access specifier, data or struct declaration following template declaration, got {}", template_statement_token))),
             }?.to_parse_result())
         })?.disambiguate()
     }
-    fn parse_access_specifier_top_level_statement(mut self, access_specifier: DeclarationAccessSpecifier) -> anyhow::Result<ExactModuleTopLevelDeclarationCase<'a>> {
+    fn parse_access_specifier_top_level_statement(mut self, access_specifier: DeclarationAccessSpecifier) -> anyhow::Result<ExactTopLevelDeclarationCase<'a>> {
         // discard access specifier token
         self.ctx.discard_next()?;
         let statement_token = self.ctx.peek()?;
         match statement_token {
             CompilerToken::Input => self.parse_input_statement(Some(access_specifier)),
-            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
-            CompilerToken::Type => Ok(self.parse_type_statement(None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
-            CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
-            CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
-            CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, None, Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
-            CompilerToken::Namespace => Ok(self.parse_namespace_statement(Some(access_specifier))?.map_data(|x| ModuleTopLevelDeclaration::NamespaceStatement(x))),
+            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(None, Some(access_specifier))?.map_data(|x| TopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Type => Ok(self.parse_type_statement(None, Some(access_specifier))?.map_data(|x| TopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, None, Some(access_specifier))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+            CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, None, Some(access_specifier))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+            CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, None, Some(access_specifier))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+            CompilerToken::Enum => Ok(self.parse_enum_statement(None, Some(access_specifier))?.map_data(|x| TopLevelDeclaration::EnumStatement(x))),
+            CompilerToken::Namespace => Ok(self.parse_namespace_statement(Some(access_specifier))?.map_data(|x| TopLevelDeclaration::NamespaceStatement(x))),
             _ => Err(self.ctx.fail(format!("Expected extern, data or struct declaration following access specifier, got {}", statement_token))),
         }
     }
-    fn parse_top_level_statement(mut self) -> anyhow::Result<ExactModuleTopLevelDeclarationCase<'a>> {
+    fn parse_top_level_statement(mut self) -> anyhow::Result<ExactTopLevelDeclarationCase<'a>> {
         let statement_token = self.ctx.peek()?;
         match statement_token {
             // template declaration
@@ -1960,18 +2001,19 @@ impl<'a> CompilerParserInstance<'a> {
             // import, extern, data, struct, namespace or blank declarations
             CompilerToken::Import => self.parse_import_statement(),
             CompilerToken::Input => self.parse_input_statement(None),
-            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(None, None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
-            CompilerToken::Type => Ok(self.parse_type_statement(None, None)?.map_data(|x| ModuleTopLevelDeclaration::DataStatement(x))),
-            CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, None, None)?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
-            CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, None, None)?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
-            CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, None, None)?.map_data(|x| ModuleTopLevelDeclaration::StructStatement(x))),
-            CompilerToken::Namespace => Ok(self.parse_namespace_statement(None)?.map_data(|x| ModuleTopLevelDeclaration::NamespaceStatement(x))),
+            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(None, None)?.map_data(|x| TopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Type => Ok(self.parse_type_statement(None, None)?.map_data(|x| TopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, None, None)?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+            CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, None, None)?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+            CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, None, None)?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+            CompilerToken::Enum => Ok(self.parse_enum_statement( None, None)?.map_data(|x| TopLevelDeclaration::EnumStatement(x))),
+            CompilerToken::Namespace => Ok(self.parse_namespace_statement(None)?.map_data(|x| TopLevelDeclaration::NamespaceStatement(x))),
             CompilerToken::Terminator => self.parse_empty_top_level_statement(),
             _ => Err(self.ctx.fail(format!("Expected access specifier, import, template, data or struct declaration, got {}", statement_token))),
         }
     }
     fn parse_source_file(self) -> anyhow::Result<ModuleSourceFile> {
-        let mut declarations: Vec<ModuleTopLevelDeclaration> = Vec::new();
+        let mut declarations: Vec<TopLevelDeclaration> = Vec::new();
         let mut current_parser = self;
         while current_parser.ctx.peek_or_eof()?.is_some() {
             let declaration = current_parser.parse_top_level_statement()?;
@@ -2297,7 +2339,11 @@ impl<'a> CompilerParserInstance<'a> {
         }
         result_builder.push_str(Self::expression_to_source_text(&declaration.member_type_expression).as_str());
         result_builder.push(' ');
-        result_builder.push_str(declaration.name.as_str());
+        if let Some(member_name) = &declaration.name {
+            result_builder.push_str(member_name.as_str());
+        } else {
+            result_builder.push_str("_");
+        }
         if declaration.array_size_expression.is_some() {
             result_builder.push_str("[");
             result_builder.push_str(Self::expression_to_source_text(declaration.array_size_expression.as_ref().unwrap()).as_str());
@@ -2427,14 +2473,6 @@ impl<'a> CompilerParserInstance<'a> {
         result_builder.push_str("};");
         result_builder
     }
-    fn namespace_level_declaration_to_source_text(declaration: &NamespaceLevelDeclaration) -> String {
-        match declaration {
-            NamespaceLevelDeclaration::StructStatement(inner_declaration) => Self::struct_statement_to_source_text(inner_declaration),
-            NamespaceLevelDeclaration::DataStatement(inner_declaration) => Self::data_statement_to_source_text(inner_declaration),
-            NamespaceLevelDeclaration::NamespaceStatement(inner_declaration) => Self::namespace_statement_to_source_text(inner_declaration),
-            NamespaceLevelDeclaration::EmptyStatement => ";".to_string(),
-        }
-    }
     fn namespace_statement_to_source_text(statement: &NamespaceStatement) -> String {
         let mut result_builder = String::with_capacity(50);
         if let Some(access_specifier) = statement.access_specifier {
@@ -2445,7 +2483,7 @@ impl<'a> CompilerParserInstance<'a> {
         result_builder.push_str(Self::partial_identifier_to_source_text(&statement.name).as_str());
         result_builder.push_str(" {\n");
         for declaration in &statement.declarations {
-            result_builder.push_str(Self::namespace_level_declaration_to_source_text(declaration).as_str());
+            result_builder.push_str(Self::top_level_declaration_to_source_text(declaration).as_str());
             result_builder.push_str("\n");
         }
         result_builder.push_str("};");
@@ -2464,7 +2502,7 @@ impl<'a> CompilerParserInstance<'a> {
         result_builder.push(';');
         result_builder
     }
-    fn import_statement_to_source_text(statement: &ModuleImportStatement) -> String {
+    fn import_statement_to_source_text(statement: &ImportStatement) -> String {
         let mut result_builder = String::with_capacity(20);
         result_builder.push_str("import ");
         match &statement.statement_type {
@@ -2480,20 +2518,54 @@ impl<'a> CompilerParserInstance<'a> {
         result_builder.push(';');
         result_builder
     }
-    fn module_top_level_declaration_to_source_text(declaration: &ModuleTopLevelDeclaration) -> String {
+    fn enum_constant_to_source_text(constant: &EnumConstantDeclaration) -> String {
+        let mut result_builder = String::with_capacity(50);
+        if let Some(constant_name) = &constant.name {
+            result_builder.push_str(constant_name.as_str());
+        } else {
+            result_builder.push_str("_");
+        }
+        if let Some(value_expression) = &constant.value_expression {
+            result_builder.push_str(" = ");
+            result_builder.push_str(Self::expression_to_source_text(value_expression).as_str());
+        }
+        if let Some(condition_expression) = &constant.condition_expression {
+            result_builder.push_str(" ");
+            result_builder.push_str(Self::postfix_conditional_expression_to_source_text(condition_expression).as_str());
+        }
+        result_builder
+    }
+    fn enum_statement_to_source_text(statement: &EnumStatement) -> String {
+        let mut result_builder = String::with_capacity(50);
+        match statement.enum_kind {
+            EnumKind::Scoped => { result_builder.push_str("enum class "); }
+            EnumKind::Unscoped => { result_builder.push_str("enum "); }
+        };
+        if let Some(enum_name) = &statement.name {
+            result_builder.push_str(enum_name.as_str());
+            result_builder.push_str(" ");
+        }
+        result_builder.push_str("{");
+        let declarations_list = statement.constants.iter().map(|x| Self::enum_constant_to_source_text(x)).join(", ");
+        result_builder.push_str(declarations_list.as_str());
+        result_builder.push_str("};");
+        result_builder
+    }
+    fn top_level_declaration_to_source_text(declaration: &TopLevelDeclaration) -> String {
         match declaration {
-            ModuleTopLevelDeclaration::StructStatement(inner_declaration) => Self::struct_statement_to_source_text(inner_declaration),
-            ModuleTopLevelDeclaration::DataStatement(inner_declaration) => Self::data_statement_to_source_text(inner_declaration),
-            ModuleTopLevelDeclaration::InputStatement(inner_declaration) => Self::extern_statement_to_source_text(inner_declaration),
-            ModuleTopLevelDeclaration::ImportStatement(inner_declaration) => Self::import_statement_to_source_text(inner_declaration),
-            ModuleTopLevelDeclaration::NamespaceStatement(inner_declaration) => Self::namespace_statement_to_source_text(inner_declaration),
-            ModuleTopLevelDeclaration::EmptyStatement => ";".to_string(),
+            TopLevelDeclaration::StructStatement(inner_declaration) => Self::struct_statement_to_source_text(inner_declaration),
+            TopLevelDeclaration::DataStatement(inner_declaration) => Self::data_statement_to_source_text(inner_declaration),
+            TopLevelDeclaration::InputStatement(inner_declaration) => Self::extern_statement_to_source_text(inner_declaration),
+            TopLevelDeclaration::ImportStatement(inner_declaration) => Self::import_statement_to_source_text(inner_declaration),
+            TopLevelDeclaration::NamespaceStatement(inner_declaration) => Self::namespace_statement_to_source_text(inner_declaration),
+            TopLevelDeclaration::EnumStatement(inner_declaration) => Self::enum_statement_to_source_text(inner_declaration),
+            TopLevelDeclaration::EmptyStatement => ";".to_string(),
         }
     }
     fn module_source_file_to_source_text(source_file: &ModuleSourceFile) -> String {
         let mut result_builder = String::with_capacity(20);
         for declaration in &source_file.declarations {
-            result_builder.push_str(Self::module_top_level_declaration_to_source_text(declaration).as_str());
+            result_builder.push_str(Self::top_level_declaration_to_source_text(declaration).as_str());
             result_builder.push_str("\n");
         }
         result_builder
@@ -2556,19 +2628,24 @@ impl Display for StructStatement {
         write!(f, "{}", CompilerParserInstance::struct_statement_to_source_text(self))
     }
 }
+impl Display for EnumConstantDeclaration {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", CompilerParserInstance::enum_constant_to_source_text(self))
+    }
+}
+impl Display for EnumStatement {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", CompilerParserInstance::enum_statement_to_source_text(self))
+    }
+}
 impl Display for NamespaceStatement {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", CompilerParserInstance::namespace_statement_to_source_text(self))
     }
 }
-impl Display for NamespaceLevelDeclaration {
+impl Display for TopLevelDeclaration {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", CompilerParserInstance::namespace_level_declaration_to_source_text(self))
-    }
-}
-impl Display for ModuleTopLevelDeclaration {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", CompilerParserInstance::module_top_level_declaration_to_source_text(self))
+        write!(f, "{}", CompilerParserInstance::top_level_declaration_to_source_text(self))
     }
 }
 impl Display for ModuleSourceFile {
