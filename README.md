@@ -1,4 +1,4 @@
-# Gospel Type Layout Language Toolkit
+# Gospel Type Markup language
 
 Gospel is a Domain Specific Language (DSL) for describing C and C++ data structure layouts and their relations to each other.
 Type definitions in Gospel are evaluated dynamically in runtime based on the inputs provided to the source code 
