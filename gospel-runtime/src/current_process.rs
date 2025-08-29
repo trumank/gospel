@@ -2,7 +2,7 @@ use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
 use gospel_typelib::type_model::{TargetArchitecture, TargetOperatingSystem};
 use crate::memory_access::{DataEndianness, Memory};
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct CurrentProcessMemory {}
 impl Memory for CurrentProcessMemory {
     fn target_arch(&self) -> anyhow::Result<Option<TargetArchitecture>> {

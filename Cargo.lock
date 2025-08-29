@@ -293,6 +293,8 @@ dependencies = [
  "anyhow",
  "gospel-bindings-gen",
  "gospel-runtime",
+ "gospel-typelib",
+ "gospel-vm",
 ]
 
 [[package]]

@@ -8,7 +8,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-gospel-runtime = { version = "0.1.0", path = "../gospel-runtime" }
+gospel-runtime = { version = "0.1.0", path = "../gospel-runtime", features = ["all"] }
+gospel-vm = { version = "0.1.0", path = "../gospel-vm" }
+gospel-typelib = { version = "0.1.0", path = "../gospel-typelib" }
 anyhow = "1.0.93"
 
 [build-dependencies]
