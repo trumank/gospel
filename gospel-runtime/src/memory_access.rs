@@ -112,14 +112,15 @@ macro_rules! impl_memory_access {
 
 /// Interface for reading and writing memory at arbitrary addresses. Address in this context can refer to either relative or absolute address located within this process or another process address space
 pub trait Memory {
-    /// Returns the target architecture for the backend of this memory
-    fn target_arch(&self) -> anyhow::Result<Option<TargetArchitecture>>;
-    /// Returns the target architecture for the backend of this memory
-    fn target_os(&self) -> anyhow::Result<Option<TargetOperatingSystem>>;
-    /// Returns the address width for the memory backend. Address width determines the size of the pointer type
+    /// Returns the address width in bytes for the memory backend. Address width determines the size of the pointer type
     fn address_width(&self) -> anyhow::Result<usize>;
     /// Returns the endianness of this memory backend
     fn data_endianness(&self) -> anyhow::Result<DataEndianness>;
+
+    /// Returns the target architecture for the backend of this memory. This is optional to implement and is just a hint
+    fn target_arch(&self) -> anyhow::Result<Option<TargetArchitecture>> { Ok(None) }
+    /// Returns the target architecture for the backend of this memory. This is optional to implement and is just a hint
+    fn target_os(&self) -> anyhow::Result<Option<TargetOperatingSystem>> { Ok(None) }
 
     impl_memory_access!(u16);
     impl_memory_access!(u32);

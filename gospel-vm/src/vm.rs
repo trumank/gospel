@@ -142,7 +142,20 @@ impl GospelVMRunContext {
     /// Returns the type container for the type at the given index. Type container contains additional metadata tracked by the VM that might be useful in some cases
     pub fn type_container_by_index(&self, type_index: usize) -> &GospelVMTypeContainer {
         &self.types[type_index]
-    } 
+    }
+    /// Stores type to the VM run context. This can be used to pass external types constructed outside to the VM
+    pub fn store_type(&mut self, type_data: Type) -> usize {
+        if let Some(existing_type_index) = self.simple_type_lookup.get(&type_data) {
+            *existing_type_index
+        } else {
+            let new_type_index = self.types.len();
+            // Simple types cannot have VM metadata assigned to them
+            self.types.push(GospelVMTypeContainer {wrapped_type: type_data.clone(), base_class_prototypes: None, member_prototypes: None, enum_constant_prototypes: None,
+                vm_metadata: None, owner_stack_frame_token: 0, size_has_been_validated: false, partial_type: false});
+            self.simple_type_lookup.insert(type_data, new_type_index);
+            new_type_index
+        }
+    }
     fn read_global_value(&self, global_name: &str, default_value: Option<i32>) -> Option<i32> {
         if let Some(global_value_override) = self.options.globals.get(global_name) {
             Some(*global_value_override)
@@ -154,18 +167,6 @@ impl GospelVMRunContext {
         let result_stack_frame_token = self.stack_frame_counter;
         self.stack_frame_counter += 1;
         result_stack_frame_token
-    }
-    fn store_type(&mut self, type_data: Type) -> usize {
-        if let Some(existing_type_index) = self.simple_type_lookup.get(&type_data) {
-            *existing_type_index
-        } else {
-            let new_type_index = self.types.len();
-            // Simple types cannot have VM metadata assigned to them
-            self.types.push(GospelVMTypeContainer {wrapped_type: type_data.clone(), base_class_prototypes: None, member_prototypes: None, enum_constant_prototypes: None,
-                vm_metadata: None, owner_stack_frame_token: 0, size_has_been_validated: false, partial_type: false});
-            self.simple_type_lookup.insert(type_data, new_type_index);
-            new_type_index
-        }
     }
     fn store_unique_named_type(&mut self, type_data: Type, stack_frame_token: usize) -> usize {
         let new_type_index = self.types.len();
@@ -2045,6 +2046,7 @@ impl GospelVMContainer {
 /// Global variables can be defined to supply additional information to the type definitions.
 /// Function definitions can be retrieved with find_named_function
 /// WARNING: VM instances are NOT thread safe, and must be wrapped into RWLock to be safely usable concurrently
+#[derive(Debug)]
 pub struct GospelVMState {
     containers: Vec<Rc<GospelVMContainer>>,
     containers_by_name: HashMap<String, Rc<GospelVMContainer>>,

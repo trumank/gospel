@@ -6,3 +6,5 @@ pub mod process;
 #[cfg(feature = "minidump")]
 pub mod minidump;
 pub mod static_type_wrappers;
+#[cfg(feature = "vm")]
+pub mod vm_integration;

@@ -13,7 +13,13 @@ anyhow = "1.0.93"
 paste = "1.0.15"
 minidump = { version = "0.26.0", optional = true }
 process-memory = { version = "0.5.0", optional = true }
+gospel-vm = { version = "0.1.0", path = "../gospel-vm", optional = true }
+gospel-compiler = { version = "0.1.0", path = "../gospel-compiler", optional = true }
 
 [features]
 minidump = ["dep:minidump"]
 process = ["dep:process-memory"]
+vm = ["dep:gospel-vm"]
+compiler = ["vm", "dep:gospel-compiler"]
+all = ["minidump", "process", "vm", "compiler"]
+default = ["all"]

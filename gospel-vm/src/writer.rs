@@ -1,5 +1,6 @@
 ﻿use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
+use std::str::FromStr;
 use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
 use crate::bytecode::{GospelInstruction, GospelOpcode};
@@ -15,6 +16,15 @@ pub struct GospelSourceObjectReference {
 impl Display for GospelSourceObjectReference {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.module_name, self.local_name)
+    }
+}
+impl FromStr for GospelSourceObjectReference {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let module_split_index = s.find(':').ok_or_else(|| anyhow!("Expected module:name format"))?;
+        let module_name = s[0..module_split_index].to_string();
+        let local_name = s[module_split_index + 1..].to_string();
+        Ok(Self{module_name, local_name})
     }
 }
 

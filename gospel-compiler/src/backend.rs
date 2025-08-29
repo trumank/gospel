@@ -2548,7 +2548,13 @@ impl CompilerLexicalScope {
     }
     /// Returns the full mangled (:: replaced with $) name of this scope
     pub fn full_scope_name(self: &Rc<Self>) -> String {
-        self.iterate_scope_chain_outer_first().map(|x| x.name.clone()).join("$")
+        let scope_name_chain: Vec<String> = self.iterate_scope_chain_outer_first().map(|x| x.name.clone()).collect();
+        if scope_name_chain.len() == 1 {
+            scope_name_chain[0].clone()
+        } else {
+            let module_relative_name = scope_name_chain.iter().skip(1).join("$");
+            format!("{}:{}", scope_name_chain[0], module_relative_name)
+        }
     }
     /// Returns the full user-facing display name (with :: as a separator) of this scope. Includes the module name
     fn full_scope_display_name(self: &Rc<Self>) -> String {
