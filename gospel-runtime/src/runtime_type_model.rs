@@ -123,32 +123,32 @@ macro_rules! implement_dynamic_ptr_numeric_access {
 }
 
 #[derive(Clone)]
-pub struct DynamicPtr {
-    pub opaque_ptr: OpaquePtr,
+pub struct DynamicPtr<'a> {
+    pub opaque_ptr: OpaquePtr<'a>,
     pub metadata: TypePtrMetadata,
 }
-impl PartialEq for DynamicPtr {
+impl PartialEq for DynamicPtr<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.opaque_ptr == other.opaque_ptr
     }
 }
-impl Eq for DynamicPtr {}
-impl PartialOrd for DynamicPtr {
+impl Eq for DynamicPtr<'_> {}
+impl PartialOrd for DynamicPtr<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.opaque_ptr.partial_cmp(&other.opaque_ptr)
     }
 }
-impl Ord for DynamicPtr {
+impl Ord for DynamicPtr<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.opaque_ptr.cmp(&other.opaque_ptr)
     }
 }
-impl Hash for DynamicPtr {
+impl Hash for DynamicPtr<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.opaque_ptr.hash(state)
     }
 }
-impl DynamicPtr {
+impl DynamicPtr<'_> {
     /// Offsets this pointer towards lower addresses by the given number of elements
     pub fn add_unchecked(&self, count: usize) -> anyhow::Result<Self> {
         Ok(Self{opaque_ptr: self.opaque_ptr.clone() + (count * self.metadata.size_and_alignment()?.0), metadata: self.metadata.clone() })
@@ -170,13 +170,13 @@ impl DynamicPtr {
         } else { Ok(None) }
     }
     /// Attempts to read this dynamic pointer as a pointer
-    pub fn read_ptr(&self) -> anyhow::Result<Option<DynamicPtr>> {
+    pub fn read_ptr(&self) -> anyhow::Result<Option<DynamicPtr<'_>>> {
         if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? {
             let pointee_opaque_ptr = self.opaque_ptr.read_ptr()?;
             Ok(Some(DynamicPtr{opaque_ptr: pointee_opaque_ptr, metadata: self.metadata.with_type_index(pointee_type_index)}))
         } else { Ok(None) }
     }
-    pub fn read_ptr_slice_unchecked(&self, len: usize) -> anyhow::Result<Option<Vec<DynamicPtr>>> {
+    pub fn read_ptr_slice_unchecked(&self, len: usize) -> anyhow::Result<Option<Vec<DynamicPtr<'_>>>> {
         if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? {
             let element_metadata = self.metadata.with_type_index(pointee_type_index);
             Ok(Some(self.opaque_ptr.read_ptr_array(len)?.into_iter().map(|x| DynamicPtr{opaque_ptr: x, metadata: element_metadata.clone()}).collect()))

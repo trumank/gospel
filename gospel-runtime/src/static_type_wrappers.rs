@@ -20,19 +20,19 @@ pub struct UnsignedLongInt(u64);
 pub struct WideChar(u32);
 
 /// Represents a statically typed wrapper around DynamicPtr with runtime type checking
-pub trait TypedDynamicPtrWrapper where Self: Sized {
-    fn from_ptr_unchecked(ptr: DynamicPtr) -> Self;
-    fn get_inner_ptr(&self) -> &DynamicPtr;
+pub trait TypedDynamicPtrWrapper<'a> where Self: Sized {
+    fn from_ptr_unchecked<'b: 'a>(ptr: DynamicPtr<'b>) -> Self;
+    fn get_inner_ptr(&self) -> &DynamicPtr<'a>;
     fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool>;
-    fn cast(ptr: DynamicPtr) -> anyhow::Result<Option<Self>> {
+    fn cast<'b: 'a>(ptr: DynamicPtr<'b>) -> anyhow::Result<Option<Self>> {
         if Self::can_typecast(&ptr.metadata)? { Ok(Some(Self::from_ptr_unchecked(ptr))) } else { Ok(None) }
     }
 }
 
 /// Implemented for type pointers with statically known types (e.g. pointers to primitive types or complex types composed of primitive types)
-pub trait StaticallyTypedPtr : TypedDynamicPtrWrapper {
+pub trait StaticallyTypedPtr<'a> : TypedDynamicPtrWrapper<'a> {
     fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata>;
-    fn from_raw_ptr(ptr: OpaquePtr, namespace: &TypePtrNamespace) -> anyhow::Result<Self> {
+    fn from_raw_ptr(ptr: OpaquePtr<'a>, namespace: &TypePtrNamespace) -> anyhow::Result<Self> {
         let type_ptr_metadata = Self::store_type_descriptor(namespace)?;
         Ok(Self::from_ptr_unchecked(DynamicPtr{opaque_ptr: ptr, metadata: type_ptr_metadata}))
     }
@@ -222,11 +222,11 @@ impl TrivialValue for bool {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct TrivialPtr<T : TrivialValue> {
-    pub inner_ptr: DynamicPtr,
+pub struct TrivialPtr<'a, T : TrivialValue> {
+    pub inner_ptr: DynamicPtr<'a>,
     pub phantom_data: PhantomData<T>,
 }
-impl<T : TrivialValue> TrivialPtr<T> {
+impl<T : TrivialValue> TrivialPtr<'_, T> {
     pub fn read(&self) -> anyhow::Result<T> { T::read(self) }
     pub fn write(&self, value: T) -> anyhow::Result<()> { T::write(self, value) }
     pub fn read_slice_unchecked(&self, len: usize) -> anyhow::Result<Vec<T>> {
@@ -238,29 +238,29 @@ impl<T : TrivialValue> TrivialPtr<T> {
         T::write_slice_unchecked(self, slice)
     }
 }
-impl<T : TrivialValue> TypedDynamicPtrWrapper for TrivialPtr<T> {
-    fn from_ptr_unchecked(ptr: DynamicPtr) -> Self {
+impl<'a, T : TrivialValue> TypedDynamicPtrWrapper<'a> for TrivialPtr<'a, T> {
+    fn from_ptr_unchecked<'b: 'a>(ptr: DynamicPtr<'b>) -> Self {
         Self{inner_ptr: ptr, phantom_data: PhantomData::default()}
     }
-    fn get_inner_ptr(&self) -> &DynamicPtr {
+    fn get_inner_ptr(&self) -> &DynamicPtr<'a> {
         &self.inner_ptr
     }
     fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
         T::can_typecast(ptr_metadata)
     }
 }
-impl<T : TrivialValue> StaticallyTypedPtr for TrivialPtr<T> {
+impl<'a, T : TrivialValue> StaticallyTypedPtr<'a> for TrivialPtr<'a, T> {
     fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
         T::store_type_descriptor(namespace)
     }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct StaticArrayPtr<T : TypedDynamicPtrWrapper> {
-    pub inner_ptr: DynamicPtr,
+pub struct StaticArrayPtr<'a, T : TypedDynamicPtrWrapper<'a>> {
+    pub inner_ptr: DynamicPtr<'a>,
     pub phantom_data: PhantomData<T>,
 }
-impl<T : TypedDynamicPtrWrapper> StaticArrayPtr<T> {
+impl<'a, T : TypedDynamicPtrWrapper<'a>> StaticArrayPtr<'a, T> {
     pub fn static_len(&self) -> anyhow::Result<usize> {
         self.inner_ptr.metadata.array_static_array_length()?.ok_or_else(|| anyhow!("Ptr does not point to a statically sized array"))
     }
@@ -271,7 +271,7 @@ impl<T : TypedDynamicPtrWrapper> StaticArrayPtr<T> {
         Ok(T::from_ptr_unchecked(self.inner_ptr.get_array_element_ptr(index)?.ok_or_else(|| anyhow!("Ptr does not point to a statically sized array"))?))
     }
 }
-impl<T : TrivialValue> StaticArrayPtr<TrivialPtr<T>> {
+impl<'a, T : TrivialValue> StaticArrayPtr<'a, TrivialPtr<'a, T>> {
     pub fn read_element(&self, index: usize) -> anyhow::Result<T> {
         self.element_ptr(index)?.read()
     }
@@ -290,8 +290,8 @@ impl<T : TrivialValue> StaticArrayPtr<TrivialPtr<T>> {
         T::write_slice_unchecked(&self.element_ptr(0)?, array)
     }
 }
-impl<T : TypedDynamicPtrWrapper + StaticallyTypedPtr> StaticArrayPtr<T> {
-    pub fn from_raw_ptr(ptr: OpaquePtr, namespace: &TypePtrNamespace, array_length: usize) -> anyhow::Result<StaticArrayPtr<T>> {
+impl<'a, T : TypedDynamicPtrWrapper<'a> + StaticallyTypedPtr<'a>> StaticArrayPtr<'a, T> {
+    pub fn from_raw_ptr(ptr: OpaquePtr<'a>, namespace: &TypePtrNamespace, array_length: usize) -> anyhow::Result<StaticArrayPtr<'a, T>> {
         let type_ptr_metadata = Self::store_type_descriptor(namespace, array_length)?;
         Ok(Self::from_ptr_unchecked(DynamicPtr{opaque_ptr: ptr, metadata: type_ptr_metadata}))
     }
@@ -302,11 +302,11 @@ impl<T : TypedDynamicPtrWrapper + StaticallyTypedPtr> StaticArrayPtr<T> {
         Ok(TypePtrMetadata{namespace: namespace.clone(), type_index})
     }
 }
-impl<T : TypedDynamicPtrWrapper> TypedDynamicPtrWrapper for StaticArrayPtr<T> {
-    fn from_ptr_unchecked(ptr: DynamicPtr) -> Self {
+impl<'a, T : TypedDynamicPtrWrapper<'a>> TypedDynamicPtrWrapper<'a> for StaticArrayPtr<'a, T> {
+    fn from_ptr_unchecked<'b: 'a>(ptr: DynamicPtr<'b>) -> Self {
         Self{inner_ptr: ptr, phantom_data: PhantomData::default()}
     }
-    fn get_inner_ptr(&self) -> &DynamicPtr {
+    fn get_inner_ptr(&self) -> &DynamicPtr<'a> {
         &self.inner_ptr
     }
     fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
@@ -318,12 +318,12 @@ impl<T : TypedDynamicPtrWrapper> TypedDynamicPtrWrapper for StaticArrayPtr<T> {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct IndirectPtr<T : TypedDynamicPtrWrapper> {
-    pub inner_ptr: DynamicPtr,
+pub struct IndirectPtr<'a, T : TypedDynamicPtrWrapper<'a>> {
+    pub inner_ptr: DynamicPtr<'a>,
     pub phantom_data: PhantomData<T>,
 }
-impl<T : TypedDynamicPtrWrapper> IndirectPtr<T> {
-    pub fn read(&self) -> anyhow::Result<T> {
+impl<'a, T : TypedDynamicPtrWrapper<'a>> IndirectPtr<'a, T> {
+    pub fn read(&'a self) -> anyhow::Result<T> {
         let result_ptr = self.inner_ptr.read_ptr()?.ok_or_else(|| anyhow!("Ptr does not point to a ptr"))?;
         Ok(T::from_ptr_unchecked(result_ptr))
     }
@@ -331,11 +331,11 @@ impl<T : TypedDynamicPtrWrapper> IndirectPtr<T> {
         self.inner_ptr.write_ptr(value.get_inner_ptr())
     }
 }
-impl<T : TypedDynamicPtrWrapper> TypedDynamicPtrWrapper for IndirectPtr<T> {
-    fn from_ptr_unchecked(ptr: DynamicPtr) -> Self {
+impl<'a, T : TypedDynamicPtrWrapper<'a>> TypedDynamicPtrWrapper<'a> for IndirectPtr<'a, T> {
+    fn from_ptr_unchecked<'b: 'a>(ptr: DynamicPtr<'b>) -> Self {
         Self{inner_ptr: ptr, phantom_data: PhantomData::default()}
     }
-    fn get_inner_ptr(&self) -> &DynamicPtr {
+    fn get_inner_ptr(&self) -> &DynamicPtr<'a> {
         &self.inner_ptr
     }
     fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
@@ -345,7 +345,7 @@ impl<T : TypedDynamicPtrWrapper> TypedDynamicPtrWrapper for IndirectPtr<T> {
         } else { Ok(false) }
     }
 }
-impl<T : TypedDynamicPtrWrapper + StaticallyTypedPtr> StaticallyTypedPtr for IndirectPtr<T> {
+impl<'a, T : TypedDynamicPtrWrapper<'a> + StaticallyTypedPtr<'a>> StaticallyTypedPtr<'a> for IndirectPtr<'a, T> {
     fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
         let pointee_type = T::store_type_descriptor(namespace)?;
         let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
@@ -355,26 +355,26 @@ impl<T : TypedDynamicPtrWrapper + StaticallyTypedPtr> StaticallyTypedPtr for Ind
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct VoidPtr {
-    pub inner_ptr: DynamicPtr,
+pub struct VoidPtr<'a> {
+    pub inner_ptr: DynamicPtr<'a>,
 }
-impl VoidPtr {
-    pub fn raw_ptr(&self) -> &OpaquePtr {
+impl<'a> VoidPtr<'a> {
+    pub fn raw_ptr(&self) -> &OpaquePtr<'_> {
         &self.inner_ptr.opaque_ptr
     }
 }
-impl TypedDynamicPtrWrapper for VoidPtr {
-    fn from_ptr_unchecked(ptr: DynamicPtr) -> Self {
+impl<'a> TypedDynamicPtrWrapper<'a> for VoidPtr<'a> {
+    fn from_ptr_unchecked<'b: 'a>(ptr: DynamicPtr<'b>) -> Self {
         Self{inner_ptr: ptr}
     }
-    fn get_inner_ptr(&self) -> &DynamicPtr {
+    fn get_inner_ptr(&self) -> &DynamicPtr<'a> {
         &self.inner_ptr
     }
     fn can_typecast(_: &TypePtrMetadata) -> anyhow::Result<bool> {
         Ok(true)
     }
 }
-impl StaticallyTypedPtr for VoidPtr {
+impl<'a> StaticallyTypedPtr<'a> for VoidPtr<'a> {
     fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
         let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
         let type_index = type_graph.store_type(Type::Primitive(PrimitiveType::Void));

@@ -209,62 +209,62 @@ pub trait Memory {
 
 /// Opaque pointer represents a pointer to memory at specific address
 #[derive(Clone)]
-pub struct OpaquePtr {
-    pub memory: Arc<dyn Memory>,
+pub struct OpaquePtr<'a> {
+    pub memory: Arc<dyn Memory + 'a>,
     pub address: u64,
 }
-impl PartialEq for OpaquePtr {
+impl PartialEq for OpaquePtr<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.address == other.address && Arc::ptr_eq(&self.memory, &other.memory)
     }
 }
-impl Eq for OpaquePtr {}
-impl PartialOrd for OpaquePtr {
+impl Eq for OpaquePtr<'_> {}
+impl PartialOrd for OpaquePtr<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.address.partial_cmp(&other.address)
     }
 }
-impl Ord for OpaquePtr {
+impl Ord for OpaquePtr<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.address.cmp(&other.address)
     }
 }
-impl Hash for OpaquePtr {
+impl Hash for OpaquePtr<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.address.hash(state)
     }
 }
-impl Add<i64> for OpaquePtr {
-    type Output = OpaquePtr;
+impl Add<i64> for OpaquePtr<'_> {
+    type Output = Self;
     fn add(self, rhs: i64) -> Self::Output {
         Self{memory: self.memory, address: self.address.checked_add_signed(rhs).unwrap()}
     }
 }
-impl Add<u64> for OpaquePtr {
-    type Output = OpaquePtr;
+impl Add<u64> for OpaquePtr<'_> {
+    type Output = Self;
     fn add(self, rhs: u64) -> Self::Output {
         Self{memory: self.memory, address: self.address.checked_add(rhs).unwrap()}
     }
 }
-impl Add<usize> for OpaquePtr {
-    type Output = OpaquePtr;
+impl Add<usize> for OpaquePtr<'_> {
+    type Output = Self;
     fn add(self, rhs: usize) -> Self::Output {
         Self{memory: self.memory, address: self.address.checked_add(rhs as u64).unwrap()}
     }
 }
-impl Sub<u64> for OpaquePtr {
-    type Output = OpaquePtr;
+impl Sub<u64> for OpaquePtr<'_> {
+    type Output = Self;
     fn sub(self, rhs: u64) -> Self::Output {
         Self{memory: self.memory, address: self.address.checked_sub(rhs).unwrap()}
     }
 }
-impl Sub<usize> for OpaquePtr {
-    type Output = OpaquePtr;
+impl Sub<usize> for OpaquePtr<'_> {
+    type Output = Self;
     fn sub(self, rhs: usize) -> Self::Output {
         Self{memory: self.memory, address: self.address.checked_sub(rhs as u64).unwrap()}
     }
 }
-impl OpaquePtr {
+impl OpaquePtr<'_> {
     /// Reads data of various sizes from the memory location pointed to by this pointer
     pub fn read_u8(&self) -> anyhow::Result<u8> { self.memory.read_u8(self.address) }
     pub fn read_u8_array(&self, buffer: &mut [u8]) -> anyhow::Result<()> { self.memory.read_u8_array(self.address, buffer) }
@@ -286,9 +286,9 @@ impl OpaquePtr {
     pub fn read_f32_array(&self, buffer: &mut [f32]) -> anyhow::Result<()> { self.memory.read_f32_array(self.address, buffer) }
     pub fn read_f64(&self) -> anyhow::Result<f64> { self.memory.read_f64(self.address) }
     pub fn read_f64_array(&self, buffer: &mut [f64]) -> anyhow::Result<()> { self.memory.read_f64_array(self.address, buffer) }
-    pub fn read_ptr(&self) -> anyhow::Result<OpaquePtr> { Ok(OpaquePtr{memory: self.memory.clone(), address: self.memory.read_raw_ptr(self.address)?}) }
-    pub fn read_ptr_array(&self, len: usize) -> anyhow::Result<Vec<OpaquePtr>> {
-        let mut result: Vec<OpaquePtr> = Vec::with_capacity(len);
+    pub fn read_ptr(&self) -> anyhow::Result<Self> { Ok(OpaquePtr{memory: self.memory.clone(), address: self.memory.read_raw_ptr(self.address)?}) }
+    pub fn read_ptr_array(&self, len: usize) -> anyhow::Result<Vec<Self>> {
+        let mut result: Vec<Self> = Vec::with_capacity(len);
         let mut raw_ptr_buffer: Box<[u64]> = vec![0; len].into_boxed_slice();
         self.memory.read_u64_array(self.address, raw_ptr_buffer.deref_mut())?;
         for pointer_index in 0..len {
