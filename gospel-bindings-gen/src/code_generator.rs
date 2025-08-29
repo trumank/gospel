@@ -121,7 +121,7 @@ impl CodeGenerationContext {
             } else {
                 quote! {
                     pub fn #field_name(&self) -> anyhow::Result<#generated_field_type> {
-                        let raw_field_ptr = self.inner_ptr.get_struct_field_ptr(stringify!(x))?
+                        let raw_field_ptr = self.inner_ptr.get_struct_field_ptr(stringify!(#field_name))?
                             .ok_or_else(|| anyhow::anyhow!("Struct missing field: {}:{}", stringify!(#type_name), stringify!(#field_name)))?;
                         use gospel_runtime::static_type_wrappers::TypedDynamicPtrWrapper;
                         Ok(#generated_field_type::cast(raw_field_ptr)?
