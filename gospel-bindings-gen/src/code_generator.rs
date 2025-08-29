@@ -106,26 +106,26 @@ impl CodeGenerationContext {
             *primitive_type == PrimitiveType::Void
         } else { false }
     }
-    fn generate_type_field_definition(&self, type_name: &Ident, field_name: &Ident, maybe_field_type_index: Option<usize>, is_prototype_field: bool) -> TokenStream {
+    fn generate_type_field_definition(&self, type_name: &Ident, source_file_name: &str, field_name: &Ident, maybe_field_type_index: Option<usize>, is_prototype_field: bool) -> TokenStream {
         if let Some(field_type_index) = maybe_field_type_index && !self.is_opaque_type_index(field_type_index) &&
             let Ok(generated_field_type) = self.generate_type_reference(field_type_index) {
             if is_prototype_field {
                 quote! {
                     pub fn #field_name(&self) -> anyhow::Result<Option<#generated_field_type>> {
-                        if let Some(raw_field_ptr) = self.inner_ptr.get_struct_field_ptr(stringify!(#field_name))? {
+                        if let Some(raw_field_ptr) = self.inner_ptr.get_struct_field_ptr(#source_file_name)? {
                             use gospel_runtime::static_type_wrappers::TypedDynamicPtrWrapper;
-                            Ok(Some(#generated_field_type::cast(raw_field_ptr)?.ok_or_else(|| anyhow::anyhow!("Struct field is of incompatible type: {}:{}", stringify!(#type_name), stringify!(#field_name)))?))
+                            Ok(Some(#generated_field_type::cast(raw_field_ptr)?.ok_or_else(|| anyhow::anyhow!("Struct field is of incompatible type: {}:{}", stringify!(#type_name), #source_file_name))?))
                         } else { Ok(None) }
                     }
                 }
             } else {
                 quote! {
                     pub fn #field_name(&self) -> anyhow::Result<#generated_field_type> {
-                        let raw_field_ptr = self.inner_ptr.get_struct_field_ptr(stringify!(#field_name))?
-                            .ok_or_else(|| anyhow::anyhow!("Struct missing field: {}:{}", stringify!(#type_name), stringify!(#field_name)))?;
+                        let raw_field_ptr = self.inner_ptr.get_struct_field_ptr(#source_file_name)?
+                            .ok_or_else(|| anyhow::anyhow!("Struct missing field: {}:{}", stringify!(#type_name), #source_file_name))?;
                         use gospel_runtime::static_type_wrappers::TypedDynamicPtrWrapper;
                         Ok(#generated_field_type::cast(raw_field_ptr)?
-                            .ok_or_else(|| anyhow::anyhow!("Struct field is of incompatible type: {}:{}", stringify!(#type_name), stringify!(#field_name)))?)
+                            .ok_or_else(|| anyhow::anyhow!("Struct field is of incompatible type: {}:{}", stringify!(#type_name), #source_file_name))?)
                     }
                 }
             }
@@ -134,13 +134,13 @@ impl CodeGenerationContext {
             if is_prototype_field {
                 quote! {
                     pub fn #field_name(&self) -> anyhow::Result<Option<gospel_runtime::runtime_type_model::DynamicPtr>> {
-                        self.inner_ptr.get_struct_field_ptr(stringify!(#field_name))
+                        self.inner_ptr.get_struct_field_ptr(#source_file_name)
                     }
                 }
             } else {
                 quote! {
                     pub fn #field_name(&self) -> anyhow::Result<gospel_runtime::runtime_type_model::DynamicPtr> {
-                        self.inner_ptr.get_struct_field_ptr(stringify!(#field_name))?.ok_or_else(|| anyhow::anyhow!("Struct missing field: {}:{}", stringify!(#type_name), stringify!(#field_name)))
+                        self.inner_ptr.get_struct_field_ptr(#source_file_name)?.ok_or_else(|| anyhow::anyhow!("Struct missing field: {}:{}", stringify!(#type_name), #source_file_name))
                     }
                 }
             }
@@ -162,7 +162,7 @@ impl CodeGenerationContext {
         // Generate non-prototype members first
         for udt_member in &user_defined_type.members {
             if let UserDefinedTypeMember::Field(field) = udt_member && let Some(field_name) = field.name.as_ref() && !field_name.contains("@") {
-                let field_tokens = self.generate_type_field_definition(&type_name, &Ident::new(&Self::convert_field_name_to_snake_case(field_name), Span::call_site()), Some(field.member_type_index), false);
+                let field_tokens = self.generate_type_field_definition(&type_name, field_name, &Ident::new(&Self::convert_field_name_to_snake_case(field_name), Span::call_site()), Some(field.member_type_index), false);
                 generated_field_names.insert(field_name.clone());
                 generated_fields.push(field_tokens);
             }
@@ -194,7 +194,7 @@ impl CodeGenerationContext {
             if let UserDefinedTypeMember::Field(field) = prototype_udt_member &&
                 let Some(field_name) = field.name.as_ref() && !generated_field_names.contains(field_name) {
                 let field_type = if prototype_fields_with_conflicting_types.contains(field_name) { None } else { Some(field.member_type_index) };
-                let field_tokens = self.generate_type_field_definition(&type_name, &Ident::new(&Self::convert_field_name_to_snake_case(field_name), Span::call_site()), field_type, true);
+                let field_tokens = self.generate_type_field_definition(&type_name, field_name, &Ident::new(&Self::convert_field_name_to_snake_case(field_name), Span::call_site()), field_type, true);
                 generated_field_names.insert(field_name.clone());
                 generated_fields.push(field_tokens);
             }
