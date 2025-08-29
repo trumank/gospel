@@ -3,6 +3,7 @@ use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
+use std::ops::DerefMut;
 use std::rc::{Rc};
 use std::str::FromStr;
 use anyhow::{anyhow, bail};
@@ -521,6 +522,8 @@ struct GospelVMExecutionState<'a> {
     return_value_slot: Rc<RefCell<Option<GospelVMValue>>>,
     stack_frame_token: usize,
     previous_frame: Option<&'a GospelVMExecutionState<'a>>,
+    collapsed_call_chain: RefCell<HashSet<GospelVMClosure>>,
+    type_count_at_function_start: usize,
     recursion_counter: usize,
     max_stack_size: usize,
     max_loop_jumps: usize,
@@ -1935,40 +1938,12 @@ impl GospelVMContainer {
             }
         }
     }
-    fn execute_function_cached_internal(self: &Rc<Self>, index: u32, args: &Vec<GospelVMValue>, run_context: &mut GospelVMRunContext, previous_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<GospelVMValue> {
-        let key_closure = GospelVMClosure{container: self.clone(), function_index: index, arguments: args.clone()};
-
-        // Check if we have previously called this function with the same argument list
-        if let Some(existing_return_value_slot) = run_context.call_result_lookup.get(&key_closure) &&
-            let Some(existing_return_value) = existing_return_value_slot.borrow().clone() {
-            return Ok(existing_return_value)
-        };
-
-        // We have not previously called this function with the matching argument list, so prepare the stack frame and run the bytecode
-        let return_value_slot = Rc::new(RefCell::new(None));
-        run_context.call_result_lookup.insert(key_closure.clone(), return_value_slot.clone());
-        let execution_result = self.execute_function_direct_internal(index, args, &return_value_slot, run_context, previous_frame);
-
-        // Cleanup the cached call result if we actually failed to call this function to not leave it lingering as empty
-        if let Err(execution_error) = execution_result {
-            run_context.call_result_lookup.remove(&key_closure);
-            return Err(execution_error);
-        }
-        // Copy the value from the return value slot
-        return_value_slot.borrow().clone().ok_or_else(|| vm_error!(previous_frame, "Function failed to return a value"))
-    }
-    fn execute_function_direct_internal(self: &Rc<Self>, index: u32, args: &Vec<GospelVMValue>, return_value_slot: &Rc<RefCell<Option<GospelVMValue>>>, run_context: &mut GospelVMRunContext, previous_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<()> {
-        if index as usize >= self.container.functions.len() {
-            vm_bail!(previous_frame, "Invalid function index #{} out of bounds (num functions in container: {})", index, self.container.functions.len());
-        }
-        let function_definition = &self.container.functions[index as usize];
-
-        // Construct a fresh VM state
+    fn allocate_new_stack_frame<'a>(self: &'a Rc<Self>, run_context: &mut GospelVMRunContext, function_definition: &'a GospelFunctionDefinition, closure: &'a GospelVMClosure, previous_frame: Option<&'a GospelVMExecutionState>, return_value_slot: &Rc<RefCell<Option<GospelVMValue>>>) -> GospelVMExecutionState<'a> {
         let stack_frame_token = run_context.new_stack_frame_token();
-        let mut vm_state = GospelVMExecutionState{
+        GospelVMExecutionState{
             owner_container: self,
             function_definition: &function_definition,
-            argument_values: args,
+            argument_values: &closure.arguments,
             slots: vec![None; function_definition.num_slots as usize],
             referenced_strings: Vec::with_capacity(function_definition.referenced_strings.len()),
             referenced_structs: Vec::with_capacity(function_definition.referenced_structs.len()),
@@ -1979,28 +1954,85 @@ impl GospelVMContainer {
             current_loop_jump_count: 0,
             recursion_counter: previous_frame.map(|x| x.recursion_counter).unwrap_or(0),
             return_value_slot: return_value_slot.clone(),
+            collapsed_call_chain: RefCell::new(HashSet::new()),
+            type_count_at_function_start: run_context.types.len(),
             stack_frame_token,
             previous_frame,
             max_stack_size: 256, // TODO: Make limits configurable
             max_loop_jumps: 8192,
             max_recursion_depth: 128,
             max_exception_handler_depth: 128,
+        }
+    }
+    fn execute_function_cached_internal(self: &Rc<Self>, index: u32, args: &Vec<GospelVMValue>, run_context: &mut GospelVMRunContext, previous_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<GospelVMValue> {
+        let key_closure = GospelVMClosure{container: self.clone(), function_index: index, arguments: args.clone()};
+
+        // Check if we have previously called this function with the same argument list
+        if let Some(existing_return_value_slot) = run_context.call_result_lookup.get(&key_closure) &&
+            let Some(existing_return_value) = existing_return_value_slot.borrow().clone() {
+            return Ok(existing_return_value)
         };
 
+        // Retrieve function definition with the given index
+        if index as usize >= self.container.functions.len() {
+            vm_bail!(previous_frame, "Invalid function index #{} out of bounds (num functions in container: {})", index, self.container.functions.len());
+        }
+        let return_value_slot = Rc::new(RefCell::new(None));
+        let function_definition = &self.container.functions[index as usize];
+        let mut new_call_stack_frame = self.allocate_new_stack_frame(run_context, function_definition, &key_closure, previous_frame, &return_value_slot);
+
+        new_call_stack_frame.collapsed_call_chain.borrow_mut().insert(key_closure.clone());
+        run_context.call_result_lookup.insert(key_closure.clone(), return_value_slot.clone());
+        match self.execute_function_on_stack_frame(run_context, &mut new_call_stack_frame) {
+            Ok(_) => {
+                // Function call was successful, however we need to copy the information about the call chain to the previous frame so it can be rolled back later if necessary
+                if let Some(previous_stack_frame) = previous_frame {
+                    let borrowed_call_chain = std::mem::replace(new_call_stack_frame.collapsed_call_chain.borrow_mut().deref_mut(), HashSet::new());
+                    previous_stack_frame.collapsed_call_chain.borrow_mut().extend(borrowed_call_chain.into_iter());
+                }
+
+                // Function call would not succeed if the function did not return a value, so unwrap here is safe
+                Ok(return_value_slot.borrow().clone().unwrap())
+            }
+            Err(function_call_error) => {
+                // Function call resulted in an error. That means we have to roll back cached call results for all functions this function might have called
+                for function_call_chain_entry in new_call_stack_frame.collapsed_call_chain.borrow().iter() {
+                    run_context.call_result_lookup.remove(function_call_chain_entry);
+                }
+
+                // Now that there can be no references to the types created by this function call hierarchy, we can purge all of these types
+                let invalidated_type_range = new_call_stack_frame.type_count_at_function_start..run_context.types.len();
+                for type_index in invalidated_type_range.clone() {
+                    run_context.simple_type_lookup.remove(&run_context.types[type_index].wrapped_type);
+                }
+                run_context.types.drain(invalidated_type_range);
+
+                // Pass the function call error to the caller now
+                Err(function_call_error)
+            }
+        }
+    }
+    fn execute_function_on_stack_frame<'a>(self: &'a Rc<Self>, run_context: &mut GospelVMRunContext, stack_frame: &mut GospelVMExecutionState<'a>) -> GospelVMResult<()> {
         // Populate referenced strings
-        for string_index in &function_definition.referenced_strings {
-            vm_state.referenced_strings.push(self.container.strings.get(*string_index).with_frame_context(previous_frame)?);
+        for string_index in &stack_frame.function_definition.referenced_strings {
+            stack_frame.referenced_strings.push(self.container.strings.get(*string_index).with_frame_context(Some(&stack_frame))?);
         }
         // Populate referenced structs
-        for struct_index in &function_definition.referenced_structs {
-            vm_state.referenced_structs.push(self.resolve_struct_template(struct_index).with_frame_context(previous_frame)?);
+        for struct_index in &stack_frame.function_definition.referenced_structs {
+            stack_frame.referenced_structs.push(self.resolve_struct_template(struct_index).with_frame_context(Some(&stack_frame))?);
         }
         // Populate referenced functions
-        for function_index in &function_definition.referenced_functions {
-            vm_state.referenced_functions.push(self.resolve_function_index(*function_index).with_frame_context(previous_frame)?);
+        for function_index in &stack_frame.function_definition.referenced_functions {
+            stack_frame.referenced_functions.push(self.resolve_function_index(*function_index).with_frame_context(Some(&stack_frame))?);
         }
         // Run the VM now to calculate the result of the function
-        GospelVMExecutionState::run(&mut vm_state, run_context)
+        GospelVMExecutionState::run(stack_frame, run_context)?;
+
+        // Successful function execution must always yield a value
+        if stack_frame.return_value_slot.borrow().is_none() {
+            vm_bail!(Some(&stack_frame), "Function failed to return a value");
+        }
+        Ok({})
     }
     /// Creates a module reflector from this container
     pub fn reflect(self: &Rc<Self>) -> anyhow::Result<Box<dyn GospelModuleReflector>> {
