@@ -6,6 +6,7 @@ use quote::quote;
 use std::collections::{HashMap, HashSet};
 use convert_case::{Case, Casing};
 use syn::{parse2, parse_str, File};
+use gospel_vm::vm::GospelVMClosure;
 
 #[derive(Debug)]
 pub(crate) struct CodeGenerationContext {
@@ -49,6 +50,15 @@ impl CodeGenerationContext {
         let short_type_name = Ident::new(&Self::generate_short_udt_name(type_name), Span::call_site());
         let mod_name = Ident::new(&self.bindings_mod_name, Span::call_site());
         quote! { #crate_name::#mod_name::#short_type_name }
+    }
+    fn generate_doc_comment(function_closure: &Option<GospelVMClosure>, doc_metadata: &str) -> Option<TokenStream> {
+        let documentation_attributes: Vec<TokenStream> = function_closure.as_ref()
+            .and_then(|x| x.function_metadata(doc_metadata)).into_iter()
+            .flat_map(|x| x.lines())
+            .filter(|x| !x.is_empty())
+            .map(|doc_comment_line| quote! { #[doc = #doc_comment_line] })
+            .collect();
+        if documentation_attributes.is_empty() { None } else { Some(quote!{ #(#documentation_attributes)* }) }
     }
     fn generate_type_reference(&self, type_index: usize) -> anyhow::Result<TokenStream> {
         let base_type_index = self.module_context.run_context.base_type_index(type_index);
@@ -110,24 +120,25 @@ impl CodeGenerationContext {
             *primitive_type == PrimitiveType::Void
         } else { false }
     }
-    fn generate_type_field_definition(&self, type_name: &Ident, source_file_name: &str, field_name: &Ident, maybe_field_type_index: Option<usize>, is_prototype_field: bool) -> TokenStream {
+    fn generate_type_field_definition(&self, type_name: &Ident, source_file_name: &str, field_name: &Ident, maybe_field_type_index: Option<usize>, is_prototype_field: bool, function_closure: &Option<GospelVMClosure>) -> TokenStream {
+        let field_doc_comment = Self::generate_doc_comment(function_closure, &format!("doc_{}", source_file_name));
         if let Some(field_type_index) = maybe_field_type_index && !self.is_opaque_type_index(field_type_index) &&
             let Ok(generated_field_type) = self.generate_type_reference(field_type_index) {
             if is_prototype_field {
-                quote! { gsb_codegen_implement_field!(#type_name, #field_name, #source_file_name, optional, #generated_field_type); }
+                quote! { gsb_codegen_implement_field!(#type_name, #field_name, #source_file_name, optional, { #field_doc_comment }, #generated_field_type); }
             } else {
-                quote! { gsb_codegen_implement_field!(#type_name, #field_name, #source_file_name, required, #generated_field_type); }
+                quote! { gsb_codegen_implement_field!(#type_name, #field_name, #source_file_name, required, { #field_doc_comment }, #generated_field_type); }
             }
         } else {
             // We cannot generate an accurate field type, so just return DynamicPtr as-is
             if is_prototype_field {
-                quote! { gsb_codegen_implement_field!(#type_name, #field_name, #source_file_name, optional); }
+                quote! { gsb_codegen_implement_field!(#type_name, #field_name, #source_file_name, optional, { #field_doc_comment }); }
             } else {
-                quote! { gsb_codegen_implement_field!(#type_name, #field_name, #source_file_name, required); }
+                quote! { gsb_codegen_implement_field!(#type_name, #field_name, #source_file_name, required, { #field_doc_comment }); }
             }
         }
     }
-    fn generate_type_definition(&self, type_index: usize, is_parameterless_type: bool) -> anyhow::Result<TokenStream> {
+    fn generate_type_definition(&self, type_index: usize, is_parameterless_type: bool, function_closure: &Option<GospelVMClosure>) -> anyhow::Result<TokenStream> {
         let base_type_index = self.module_context.run_context.base_type_index(type_index);
         let type_container = self.module_context.run_context.type_container_by_index(base_type_index);
 
@@ -137,13 +148,14 @@ impl CodeGenerationContext {
 
         let full_type_name = user_defined_type.name.clone().ok_or_else(|| anyhow!("Cannot generate bindings for unnamed UDTs"))?;
         let type_name = Ident::new(&Self::generate_short_udt_name(&full_type_name), Span::call_site());
+        let type_doc_comment = Self::generate_doc_comment(function_closure, "doc");
         let mut generated_field_names: HashSet<String> = HashSet::new();
         let mut generated_fields: Vec<TokenStream> = Vec::new();
 
         // Generate non-prototype members first
         for udt_member in &user_defined_type.members {
             if let UserDefinedTypeMember::Field(field) = udt_member && let Some(field_name) = field.name.as_ref() && !field_name.contains("@") {
-                let field_tokens = self.generate_type_field_definition(&type_name, field_name, &Ident::new(&Self::convert_field_name_to_snake_case(field_name), Span::call_site()), Some(field.member_type_index), false);
+                let field_tokens = self.generate_type_field_definition(&type_name, field_name, &Ident::new(&Self::convert_field_name_to_snake_case(field_name), Span::call_site()), Some(field.member_type_index), false, function_closure);
                 generated_field_names.insert(field_name.clone());
                 generated_fields.push(field_tokens);
             }
@@ -175,7 +187,7 @@ impl CodeGenerationContext {
             if let UserDefinedTypeMember::Field(field) = prototype_udt_member &&
                 let Some(field_name) = field.name.as_ref() && !generated_field_names.contains(field_name) {
                 let field_type = if prototype_fields_with_conflicting_types.contains(field_name) { None } else { Some(field.member_type_index) };
-                let field_tokens = self.generate_type_field_definition(&type_name, field_name, &Ident::new(&Self::convert_field_name_to_snake_case(field_name), Span::call_site()), field_type, true);
+                let field_tokens = self.generate_type_field_definition(&type_name, field_name, &Ident::new(&Self::convert_field_name_to_snake_case(field_name), Span::call_site()), field_type, true, function_closure);
                 generated_field_names.insert(field_name.clone());
                 generated_fields.push(field_tokens);
             }
@@ -184,7 +196,7 @@ impl CodeGenerationContext {
             Some(quote! { gsb_codegen_implement_static_type!(#type_name, #full_type_name); })
         } else { None };
         Ok(quote! {
-            gsb_codegen_generate_type_struct!(#type_name, #full_type_name);
+            gsb_codegen_generate_type_struct!(#type_name, #full_type_name, { #type_doc_comment });
             #static_type_impl
             impl<M: gospel_runtime::memory_access::Memory> #type_name<M> {
                 #(#generated_fields)*
@@ -197,8 +209,8 @@ impl CodeGenerationContext {
     }
     pub(crate) fn generate_bindings_file(self) -> anyhow::Result<String> {
         let mut type_definitions: Vec<TokenStream> = Vec::new();
-        for (type_name, maybe_type_index, is_parameterless_type) in &self.module_context.type_name_to_type_index {
-            if let Some(type_index) = maybe_type_index.clone() && let Ok(result_type_definition) = self.generate_type_definition(type_index, *is_parameterless_type) {
+        for (type_name, maybe_type_index, is_parameterless_type, function_closure) in &self.module_context.type_name_to_type_index {
+            if let Some(type_index) = maybe_type_index.clone() && let Ok(result_type_definition) = self.generate_type_definition(type_index, *is_parameterless_type, function_closure) {
                 type_definitions.push(result_type_definition.clone());
             } else {
                 let fallback_type_definition = self.generate_fallback_type_definition(type_name);

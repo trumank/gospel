@@ -44,6 +44,12 @@ pub(crate) struct GospelFunctionDebugData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct GospelFunctionMetadata {
+    pub(crate) metadata_key: u32, // key for the metadata entry; index to the string table
+    pub(crate) metadata_value: u32, // value of this metadata entry; index to the string table
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct GospelFunctionDefinition {
     pub(crate) name: u32, // name of the function
     pub(crate) exported: bool, // true if function is visible by name outside its container
@@ -55,6 +61,7 @@ pub(crate) struct GospelFunctionDefinition {
     pub(crate) referenced_structs: Vec<GospelObjectIndex>, // indices of structures referenced by the bytecode
     pub(crate) referenced_functions: Vec<GospelObjectIndex>, // indices of functions referenced by the bytecode
     pub(crate) debug_data: Option<GospelFunctionDebugData>, // optional debug data for the function
+    pub(crate) metadata: Vec<GospelFunctionMetadata>, // additional metadata included with the function definition
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash, EnumString, Serialize, Deserialize)]

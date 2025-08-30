@@ -11,7 +11,8 @@ pub mod vm_integration;
 
 #[macro_export]
 macro_rules! gsb_codegen_generate_type_struct {
-    ($type_name:ident, $full_type_name:literal) => {
+    ($type_name:ident, $full_type_name:literal, {$(#[$type_attributes:meta])*}) => {
+        $(#[$type_attributes])*
         #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub struct $type_name<M: gospel_runtime::memory_access::Memory> {
             inner_ptr: gospel_runtime::runtime_type_model::DynamicPtr<M>,
@@ -33,7 +34,8 @@ macro_rules! gsb_codegen_generate_type_struct {
 }
 #[macro_export]
 macro_rules! gsb_codegen_implement_field {
-    ($type_name:ty, $field_name:ident, $source_file_name:literal, required, $generated_field_type:ty) => {
+    ($type_name:ty, $field_name:ident, $source_file_name:literal, required, {$(#[$field_attributes:meta])*}, $generated_field_type:ty) => {
+        $(#[$field_attributes])*
         pub fn $field_name(&self) -> anyhow::Result<$generated_field_type> {
             let raw_field_ptr = self.inner_ptr.get_struct_field_ptr($source_file_name)?
                 .ok_or_else(|| anyhow::anyhow!("Struct missing field: {}:{}", stringify!($type_name), $source_file_name))?;
@@ -42,7 +44,8 @@ macro_rules! gsb_codegen_implement_field {
                 .ok_or_else(|| anyhow::anyhow!("Struct field is of incompatible type: {}:{}", stringify!($type_name), $source_file_name))?)
         }
     };
-    ($type_name:ty, $field_name:ident, $source_file_name:literal, optional, $generated_field_type:ty) => {
+    ($type_name:ty, $field_name:ident, $source_file_name:literal, optional, {$(#[$field_attributes:meta])*}, $generated_field_type:ty) => {
+        $(#[$field_attributes])*
         pub fn $field_name(&self) -> anyhow::Result<Option<$generated_field_type>> {
             if let Some(raw_field_ptr) = self.inner_ptr.get_struct_field_ptr($source_file_name)? {
                 use gospel_runtime::static_type_wrappers::TypedDynamicPtrWrapper;
@@ -50,12 +53,14 @@ macro_rules! gsb_codegen_implement_field {
             } else { Ok(None) }
         }
     };
-    ($type_name:ty, $field_name:ident, $source_file_name:literal, required) => {
+    ($type_name:ty, $field_name:ident, $source_file_name:literal, required, {$(#[$field_attributes:meta])*}) => {
+        $(#[$field_attributes])*
         pub fn $field_name(&self) -> anyhow::Result<gospel_runtime::runtime_type_model::DynamicPtr<M>> {
             self.inner_ptr.get_struct_field_ptr($source_file_name)?.ok_or_else(|| anyhow::anyhow!("Struct missing field: {}:{}", stringify!($type_name), $source_file_name))
         }
     };
-    ($type_name:ty, $field_name:ident, $source_file_name:literal, optional) => {
+    ($type_name:ty, $field_name:ident, $source_file_name:literal, optional, {$(#[$field_attributes:meta])*}) => {
+        $(#[$field_attributes])*
         pub fn $field_name(&self) -> anyhow::Result<Option<gospel_runtime::runtime_type_model::DynamicPtr<M>>> {
             self.inner_ptr.get_struct_field_ptr($source_file_name)
         }

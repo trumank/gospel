@@ -302,6 +302,14 @@ impl GospelVMClosure {
             self.container.container.strings.get(self.container.container.functions[self.function_index as usize].name).ok()
         } else { None }
     }
+    /// Returns metadata for the function this closure is created from by the metadata key. Returns none if metadata with that key is not available
+    pub fn function_metadata(&self, key: &str) -> Option<&str> {
+        if (self.function_index as usize) < self.container.container.functions.len() {
+            let function_definition = &self.container.container.functions[self.function_index as usize];
+            let metadata_entry = function_definition.metadata.iter().find(|x| self.container.container.strings.get(x.metadata_key).ok() == Some(key));
+            metadata_entry.and_then(|x| self.container.container.strings.get(x.metadata_value).ok())
+        } else { None }
+    }
     /// Attempts to execute this closure and returns the result
     pub fn execute(&self, args: Vec<GospelVMValue>, run_context: &mut GospelVMRunContext) -> GospelVMResult<GospelVMValue> {
         let execution_result = self.execute_internal(args, run_context, None)?;

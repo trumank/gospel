@@ -6,13 +6,13 @@ use gospel_compiler::ast::ExpressionValueType;
 use gospel_compiler::backend::{CompilerFunctionReference, CompilerInstance, CompilerLexicalNode, CompilerLexicalScope, CompilerLexicalScopeClass, CompilerOptions};
 use gospel_compiler::module_definition::resolve_module_dependencies;
 use gospel_vm::module::GospelContainer;
-use gospel_vm::vm::{GospelVMOptions, GospelVMRunContext, GospelVMState, GospelVMValue};
+use gospel_vm::vm::{GospelVMClosure, GospelVMOptions, GospelVMRunContext, GospelVMState, GospelVMValue};
 
 #[derive(Debug)]
 pub(crate) struct ResolvedBindingsModuleContext {
     pub(crate) run_context: GospelVMRunContext,
     pub(crate) type_name_to_dependency_crate_name: HashMap<String, Option<String>>,
-    pub(crate) type_name_to_type_index: Vec<(String, Option<usize>, bool)>,
+    pub(crate) type_name_to_type_index: Vec<(String, Option<usize>, bool, Option<GospelVMClosure>)>,
 }
 
 pub(crate) fn process_module_context(main_module_path: &PathBuf, additional_dependencies: &Vec<PathBuf>, extra_modules_to_include: &HashSet<String>, module_to_bindings_crate: &HashMap<String, String>) -> anyhow::Result<ResolvedBindingsModuleContext> {
@@ -72,16 +72,16 @@ pub(crate) fn process_module_context(main_module_path: &PathBuf, additional_depe
 
     // Run the VM to generate type hierarchy for types that we want to generate
     let mut run_context = GospelVMRunContext::create(GospelVMOptions::default().no_default_globals());
-    let mut type_name_to_type_index: Vec<(String, Option<usize>, bool)> = Vec::new();
+    let mut type_name_to_type_index: Vec<(String, Option<usize>, bool, Option<GospelVMClosure>)> = Vec::new();
     for function_reference in &type_definition_functions {
         let type_name = function_reference.return_value_type_name.as_ref().unwrap().clone();
         if let Some(type_function) = vm_state.find_function_by_reference(&function_reference.function) &&
             let execution_result = type_function.execute(Vec::new(), &mut run_context).map_err(|x| anyhow!("Failed to evaluate type {}: {}", &type_name, x))? &&
             let GospelVMValue::TypeReference(type_index) = execution_result {
             let is_parameterless_type = function_reference.signature.explicit_parameters.is_none() && function_reference.signature.implicit_parameters.is_empty();
-            type_name_to_type_index.push((type_name, Some(type_index), is_parameterless_type));
+            type_name_to_type_index.push((type_name, Some(type_index), is_parameterless_type, Some(type_function.clone())));
         } else {
-            type_name_to_type_index.push((type_name, None, false));
+            type_name_to_type_index.push((type_name, None, false, None));
         }
     }
 

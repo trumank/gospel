@@ -1,4 +1,5 @@
 use std::fmt::{Display, Formatter};
+use std::iter::{empty, once};
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
 use gospel_typelib::type_model::{EnumKind, PrimitiveType, UserDefinedTypeKind};
@@ -379,6 +380,25 @@ pub enum StructInnerDeclaration {
     BlockDeclaration(Box<BlockDeclaration>),
     FunctionDeclaration(Box<MemberFunctionDeclaration>),
     EmptyDeclaration,
+}
+impl StructInnerDeclaration {
+    /// Iterates this inner declaration and all of its children declarations. This will NOT recurse into nested struct declaration members
+    pub fn iterate_recursive<'a>(&'a self) -> Box<dyn Iterator<Item = &'a StructInnerDeclaration> + 'a> {
+        match self {
+            StructInnerDeclaration::BlockDeclaration(block_declaration) => {
+                Box::new(once(self)
+                    .chain(block_declaration.declarations.iter().flat_map(|x| x.iterate_recursive())))
+            }
+            StructInnerDeclaration::ConditionalDeclaration(conditional_declaration) => {
+                Box::new(once(self)
+                    .chain(conditional_declaration.then_branch.iterate_recursive())
+                    .chain(conditional_declaration.else_branch.as_ref().map(|x| x.iterate_recursive()).unwrap_or(Box::new(empty()))))
+            }
+            _ => {
+                Box::new(once(self))
+            },
+        }
+    }
 }
 
 /// Represents a declaration for a struct that might be gated behind a condition

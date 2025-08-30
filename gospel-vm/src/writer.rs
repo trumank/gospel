@@ -1,11 +1,11 @@
-﻿use std::collections::{HashMap, HashSet};
+﻿use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
 use std::str::FromStr;
 use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
 use crate::bytecode::{GospelInstruction, GospelOpcode};
 use crate::module::{GospelContainer, GospelContainerImport, GospelContainerVersion, GospelGlobalDefinition};
-use crate::gospel::{GospelExternalObjectReference, GospelFunctionArgument, GospelFunctionDefinition, GospelObjectIndex, GospelValueType, GospelStructDefinition, GospelFunctionDebugData, GospelStructFieldDefinition};
+use crate::gospel::{GospelExternalObjectReference, GospelFunctionArgument, GospelFunctionDefinition, GospelObjectIndex, GospelValueType, GospelStructDefinition, GospelFunctionDebugData, GospelStructFieldDefinition, GospelFunctionMetadata};
 
 /// Represents a reference to a function
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -110,6 +110,7 @@ pub struct GospelSourceFunctionDefinition {
     referenced_structs_lookup: HashMap<GospelSourceObjectReference, u32>,
     referenced_functions_lookup: HashMap<GospelSourceObjectReference, u32>,
     debug_instruction_line_numbers: Vec<i32>,
+    pub metadata: BTreeMap<String, String>,
 }
 impl GospelSourceFunctionDefinition {
     /// Creates a named function from a declaration
@@ -443,6 +444,7 @@ impl GospelModuleVisitor for GospelContainerWriter {
                 referenced_structs: Vec::new(),
                 referenced_functions: Vec::new(),
                 debug_data: None,
+                metadata: Vec::new(),
             };
             let function_index = self.container.functions.len() as u32;
             self.container.functions.push(placeholder_function_definition);
@@ -483,6 +485,11 @@ impl GospelModuleVisitor for GospelContainerWriter {
             source_file_name: self.store_string(source.declaration.source_file_name.as_str()),
             instruction_line_numbers: source.debug_instruction_line_numbers,
         };
+        let function_metadata: Vec<GospelFunctionMetadata> = source.metadata.iter().map(|(key, value)| {
+            let metadata_key = self.store_string(key);
+            let metadata_value = self.store_string(value);
+            GospelFunctionMetadata{metadata_key, metadata_value}
+        }).collect();
 
         let result_function_definition = GospelFunctionDefinition {
             name: function_name, arguments,
@@ -494,6 +501,7 @@ impl GospelModuleVisitor for GospelContainerWriter {
             referenced_structs,
             referenced_functions,
             debug_data: Some(debug_data),
+            metadata: function_metadata,
         };
 
         if let Some(existing_function_index) = self.function_lookup.get(&source.declaration.function_name.local_name) {

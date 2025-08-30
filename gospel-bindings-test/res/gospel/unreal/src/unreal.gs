@@ -616,8 +616,10 @@ type EObjectFlags = int32_t;
 type EClassFlags = int32_t;
 type EClassCastFlags = uint64_t;
 
+/// Core class in the Unreal Engine object system. All reflection-enabled types are derived from this class
 class UObject {
     uint64_t VTable;
+    /// Flags assigned to this object. Flags define the logical state of the object
     EObjectFlags ObjectFlags;
     int32_t InternalIndex;
     UClass* ClassPrivate;

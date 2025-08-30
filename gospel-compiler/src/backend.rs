@@ -1,5 +1,5 @@
 ﻿use std::cell::{Ref, RefCell, RefMut};
-use std::collections::{HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Debug, Display, Formatter};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
@@ -1117,6 +1117,7 @@ pub trait CompilerModuleBuilder : CompilerModuleBuilderInternal {
             module_codegen_data.push_delayed_function_definition(&function_scope, Box::new(CompilerSimpleExpressionFunctionGenerator{
                 source_context: source_context.line_context.clone(),
                 return_value_expression: expression.clone(),
+                function_metadata: Vec::new(),
             }))?;
         }
         Ok(function_closure.borrow().function_reference.function.clone())
@@ -1228,10 +1229,14 @@ pub struct CompilerStructMetaLayoutReference {
 struct CompilerSimpleExpressionFunctionGenerator {
     source_context: ASTSourceContext,
     return_value_expression: Expression,
+    function_metadata: Vec<(String, String)>
 }
 impl CompilerFunctionCodeGenerator for CompilerSimpleExpressionFunctionGenerator {
     fn generate(&self, function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<()> {
         let mut function_builder = CompilerFunctionBuilder::create(function_scope)?;
+        for (metadata_key, metadata_value) in &self.function_metadata {
+            function_builder.function_definition.metadata.insert(metadata_key.clone(), metadata_value.clone());
+        }
         function_builder.compile_return_value_expression(&function_builder.function_scope.clone(), &self.source_context, &self.return_value_expression)?;
         function_builder.commit()
     }
@@ -1556,10 +1561,15 @@ struct CompilerStructFunctionGenerator {
     generate_prototype_layout: bool,
     source_context: CompilerSourceContext,
     fragments: Vec<Box<dyn CompilerStructFragmentGenerator>>,
+    function_metadata: Vec<(String, String)>
 }
 impl CompilerFunctionCodeGenerator for CompilerStructFunctionGenerator {
     fn generate(&self, function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<()> {
         let mut function_builder = CompilerFunctionBuilder::create(function_scope)?;
+        for (metadata_key, metadata_value) in &self.function_metadata {
+            function_builder.function_definition.metadata.insert(metadata_key.clone(), metadata_value.clone());
+        }
+
         let type_layout_slot_index = function_builder.compile_udt_type_initialization(self.struct_kind)?;
         let type_layout_metadata_slot_index = function_builder.compile_udt_type_metadata_struct_initialization(&self.struct_meta_layout)?;
 
@@ -1607,10 +1617,15 @@ struct CompilerEnumFunctionGenerator {
     generate_prototype_layout: bool,
     source_context: CompilerSourceContext,
     constants: Vec<EnumConstantDeclaration>,
+    function_metadata: Vec<(String, String)>
 }
 impl CompilerFunctionCodeGenerator for CompilerEnumFunctionGenerator {
     fn generate(&self, function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<()> {
         let mut function_builder = CompilerFunctionBuilder::create(function_scope)?;
+        for (metadata_key, metadata_value) in &self.function_metadata {
+            function_builder.function_definition.metadata.insert(metadata_key.clone(), metadata_value.clone());
+        }
+
         let type_layout_slot_index = function_builder.compile_enum_type_initialization(self.enum_kind)?;
 
         if let Some(underlying_type_expression) = &self.underlying_type_expression {
@@ -1844,6 +1859,7 @@ impl CompilerInstance {
                 module_codegen_data.push_delayed_function_definition(&default_value_function_scope, Box::new(CompilerSimpleExpressionFunctionGenerator{
                     source_context: default_value_function_scope.source_context.line_context.clone(),
                     return_value_expression: argument_default_value_expression.clone(),
+                    function_metadata: Vec::new(),
                 }))?;
             }
             Some(function_closure.borrow().function_reference.clone())
@@ -1888,10 +1904,15 @@ impl CompilerInstance {
         let visibility = statement.access_specifier.map(|x| Self::convert_access_specifier(x)).unwrap_or(default_visibility);
         let (function_scope, function_closure) = Self::declare_function(scope, statement.name.as_str(), visibility, statement.value_type, statement.template_declaration.as_ref(), false, &statement.source_context)?;
 
+        let mut function_metadata: Vec<(String, String)> = Vec::new();
+        if let Some(doc_comment) = &statement.doc_comment {
+            function_metadata.push((String::from("doc"), doc_comment.clone()))
+        }
         if let Some(module_codegen_data) = function_scope.module_codegen() {
             module_codegen_data.push_delayed_function_definition(&function_scope, Box::new(CompilerSimpleExpressionFunctionGenerator{
                 source_context: statement.source_context.clone(),
                 return_value_expression: statement.initializer.clone(),
+                function_metadata,
             }))?;
         }
         Ok(function_closure.borrow().function_reference.clone())
@@ -1905,6 +1926,21 @@ impl CompilerInstance {
         let (function_scope, function_closure) = Self::declare_function(scope, function_name, visibility,
             ExpressionValueType::Typename, statement.template_declaration.as_ref(), true, &source_context.line_context)?;
 
+        let mut constant_doc_comment_lookup: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for constant in &statement.constants {
+            if let Some(constant_name) = &constant.name && let Some(constant_doc_comment) = &constant.doc_comment {
+                constant_doc_comment_lookup.entry(constant_name.clone()).or_default().push(constant_doc_comment.clone());
+            }
+        }
+        let mut function_metadata: Vec<(String, String)> = Vec::new();
+        if let Some(doc_comment) = &statement.doc_comment {
+            function_metadata.push((String::from("doc"), doc_comment.clone()))
+        }
+        function_metadata.extend(constant_doc_comment_lookup.into_iter().map(|(constant_name, constant_doc_list)| {
+            let constant_doc = constant_doc_list.join("\n");
+            (format!("doc_{}", constant_name), constant_doc)
+        }));
+
         let (allow_partial_types, generate_prototype_layouts) = scope.compiler().map(|x| (x.compiler_options.allow_partial_types, x.compiler_options.generate_prototype_layouts)).unwrap_or((false, false));
         if let Some(module_codegen_data) = scope.module_codegen() {
             module_codegen_data.push_delayed_function_definition(&function_scope, Box::new(CompilerEnumFunctionGenerator{
@@ -1913,6 +1949,7 @@ impl CompilerInstance {
                 underlying_type_expression: statement.underlying_type_expression.clone(),
                 allow_partial_types, generate_prototype_layout: generate_prototype_layouts,
                 constants: statement.constants.clone(),
+                function_metadata,
             }))?;
         }
         Ok(function_closure.borrow().function_reference.clone())
@@ -2101,6 +2138,23 @@ impl CompilerInstance {
             Some(DeclarationVisibility::Private)
         } else { None };
 
+        let mut member_doc_comment_lookup: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for declaration in statement.declarations.iter().flat_map(|x| x.iterate_recursive()) {
+            if let StructInnerDeclaration::MemberDeclaration(member) = declaration && 
+                let Some(constant_name) = &member.name && 
+                let Some(constant_doc_comment) = &member.doc_comment {
+                member_doc_comment_lookup.entry(constant_name.clone()).or_default().push(constant_doc_comment.clone());
+            }
+        }
+        let mut function_metadata: Vec<(String, String)> = Vec::new();
+        if let Some(doc_comment) = &statement.doc_comment {
+            function_metadata.push((String::from("doc"), doc_comment.clone()))
+        }
+        function_metadata.extend(member_doc_comment_lookup.into_iter().map(|(constant_name, constant_doc_list)| {
+            let constant_doc = constant_doc_list.join("\n");
+            (format!("doc_{}", constant_name), constant_doc)
+        }));
+
         let meta_layout = Self::compile_struct_meta_layout(&function_scope, statement)?;
         let fragments = statement.declarations.iter().map(|struct_inner_declaration| {
             Self::pre_compile_type_layout_inner_declaration(&function_scope, struct_inner_declaration, visibility_override)
@@ -2117,6 +2171,7 @@ impl CompilerInstance {
                 base_class_expressions: statement.base_class_expressions.clone(),
                 allow_partial_types, generate_prototype_layout: generate_prototype_layouts,
                 fragments,
+                function_metadata,
             }))?;
         }
         Ok(function_closure.borrow().function_reference.clone())
