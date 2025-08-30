@@ -185,10 +185,10 @@ impl CodeGenerationContext {
         } else { None };
         Ok(quote! {
             gsb_codegen_generate_type_struct!(#type_name, #full_type_name);
+            #static_type_impl
             impl<M: gospel_runtime::memory_access::Memory> #type_name<M> {
                 #(#generated_fields)*
             }
-            #static_type_impl
         })
     }
     fn generate_fallback_type_definition(&self, raw_type_name: &str) -> TokenStream {
