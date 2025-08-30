@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use anyhow::anyhow;
 use paste::paste;
 use gospel_typelib::type_model::{MutableTypeGraph, PrimitiveType, ResolvedUDTMemberLayout, Type, TypeLayoutCache, UserDefinedTypeMember};
-use crate::memory_access::OpaquePtr;
+use crate::memory_access::{Memory, OpaquePtr};
 
 /// Type ptr namespace represents a type hierarchy used by a hierarchy of related type pointers
 #[derive(Clone)]
@@ -122,34 +122,41 @@ macro_rules! implement_dynamic_ptr_numeric_access {
     };
 }
 
-#[derive(Clone)]
-pub struct DynamicPtr<'a> {
-    pub opaque_ptr: OpaquePtr<'a>,
+pub struct DynamicPtr<M: Memory> {
+    pub opaque_ptr: OpaquePtr<M>,
     pub metadata: TypePtrMetadata,
 }
-impl PartialEq for DynamicPtr<'_> {
+impl<M: Memory> Clone for DynamicPtr<M> {
+    fn clone(&self) -> Self {
+        Self {
+            opaque_ptr: self.opaque_ptr.clone(),
+            metadata: self.metadata.clone(),
+        }
+    }
+}
+impl<M: Memory> PartialEq for DynamicPtr<M> {
     fn eq(&self, other: &Self) -> bool {
         self.opaque_ptr == other.opaque_ptr
     }
 }
-impl Eq for DynamicPtr<'_> {}
-impl PartialOrd for DynamicPtr<'_> {
+impl<M: Memory> Eq for DynamicPtr<M> {}
+impl<M: Memory> PartialOrd for DynamicPtr<M> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.opaque_ptr.partial_cmp(&other.opaque_ptr)
     }
 }
-impl Ord for DynamicPtr<'_> {
+impl<M: Memory> Ord for DynamicPtr<M> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.opaque_ptr.cmp(&other.opaque_ptr)
     }
 }
-impl Hash for DynamicPtr<'_> {
+impl<M: Memory> Hash for DynamicPtr<M> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.opaque_ptr.hash(state)
     }
 }
-impl DynamicPtr<'_> {
-    /// Offsets this pointer towards higher addresses by the given number of elements
+impl<M: Memory> DynamicPtr<M> {
+    /// Offsets this pointer towards lower addresses by the given number of elements
     pub fn add_unchecked(&self, count: usize) -> anyhow::Result<Self> {
         Ok(Self{opaque_ptr: self.opaque_ptr.clone() + (count * self.metadata.size_and_alignment()?.0), metadata: self.metadata.clone() })
     }
@@ -170,27 +177,27 @@ impl DynamicPtr<'_> {
         } else { Ok(None) }
     }
     /// Attempts to read this dynamic pointer as a pointer
-    pub fn read_ptr(&self) -> anyhow::Result<Option<DynamicPtr<'_>>> {
+    pub fn read_ptr(&self) -> anyhow::Result<Option<Self>> {
         if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? {
             let pointee_opaque_ptr = self.opaque_ptr.read_ptr()?;
-            Ok(Some(DynamicPtr{opaque_ptr: pointee_opaque_ptr, metadata: self.metadata.with_type_index(pointee_type_index)}))
+            Ok(Some(Self{opaque_ptr: pointee_opaque_ptr, metadata: self.metadata.with_type_index(pointee_type_index)}))
         } else { Ok(None) }
     }
-    pub fn read_ptr_slice_unchecked(&self, len: usize) -> anyhow::Result<Option<Vec<DynamicPtr<'_>>>> {
+    pub fn read_ptr_slice_unchecked(&self, len: usize) -> anyhow::Result<Option<Vec<Self>>> {
         if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? {
             let element_metadata = self.metadata.with_type_index(pointee_type_index);
-            Ok(Some(self.opaque_ptr.read_ptr_array(len)?.into_iter().map(|x| DynamicPtr{opaque_ptr: x, metadata: element_metadata.clone()}).collect()))
+            Ok(Some(self.opaque_ptr.read_ptr_array(len)?.into_iter().map(|x| Self{opaque_ptr: x, metadata: element_metadata.clone()}).collect()))
         } else { Ok(None) }
     }
     /// Attempts to write this dynamic pointer as a pointer
-    pub fn write_ptr(&self, value: &DynamicPtr) -> anyhow::Result<()> {
+    pub fn write_ptr(&self, value: &Self) -> anyhow::Result<()> {
         if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? && self.metadata.are_types_compatible(pointee_type_index, value.metadata.type_index)? {
             self.opaque_ptr.write_ptr(&value.opaque_ptr)
         } else { Err(anyhow!("Not a pointer of a compatible type")) }
     }
-    pub fn write_ptr_slice_unchecked(&self, buffer: &[DynamicPtr]) -> anyhow::Result<()> {
+    pub fn write_ptr_slice_unchecked(&self, buffer: &[Self]) -> anyhow::Result<()> {
         if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? && !buffer.is_empty() && self.metadata.are_types_compatible(pointee_type_index, buffer[0].metadata.type_index)? {
-            let raw_ptr_array: Vec<OpaquePtr> = buffer.iter().map(|x| x.opaque_ptr.clone()).collect();
+            let raw_ptr_array: Vec<OpaquePtr<M>> = buffer.iter().map(|x| x.opaque_ptr.clone()).collect();
             self.opaque_ptr.write_ptr_array(raw_ptr_array.as_slice())
         } else { Err(anyhow!("Not a pointer of a compatible type")) }
     }

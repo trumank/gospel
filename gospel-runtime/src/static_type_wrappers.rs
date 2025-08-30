@@ -3,7 +3,7 @@ use anyhow::bail;
 use std::marker::PhantomData;
 use anyhow::anyhow;
 use paste::paste;
-use crate::runtime_type_model::{DynamicPtr, TypePtrMetadata, TypePtrNamespace};
+use crate::{memory_access::Memory, runtime_type_model::{DynamicPtr, TypePtrMetadata, TypePtrNamespace}};
 use gospel_typelib::type_model::{ArrayType, PointerType, PrimitiveType, Type};
 use crate::memory_access::OpaquePtr;
 
@@ -20,19 +20,19 @@ pub struct UnsignedLongInt(u64);
 pub struct WideChar(u32);
 
 /// Represents a statically typed wrapper around DynamicPtr with runtime type checking
-pub trait TypedDynamicPtrWrapper<'a> where Self: Sized {
-    fn from_ptr_unchecked<'b: 'a>(ptr: DynamicPtr<'b>) -> Self;
-    fn get_inner_ptr(&self) -> &DynamicPtr<'a>;
+pub trait TypedDynamicPtrWrapper<M: Memory> where Self: Sized {
+    fn from_ptr_unchecked(ptr: DynamicPtr<M>) -> Self;
+    fn get_inner_ptr(&self) -> &DynamicPtr<M>;
     fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool>;
-    fn try_cast<'b: 'a>(ptr: &DynamicPtr<'b>) -> anyhow::Result<Option<Self>> {
+    fn try_cast(ptr: &DynamicPtr<M>) -> anyhow::Result<Option<Self>> {
         if Self::can_typecast(&ptr.metadata)? { Ok(Some(Self::from_ptr_unchecked(ptr.clone()))) } else { Ok(None) }
     }
     /// Casts pointer of this type to pointer of another type, returns None if cast is not possible
-    fn cast<T: TypedDynamicPtrWrapper<'a>>(&self) -> anyhow::Result<Option<T>> {
+    fn cast<T: TypedDynamicPtrWrapper<M>>(&self) -> anyhow::Result<Option<T>> {
         T::try_cast(self.get_inner_ptr())
     }
     /// Casts pointer of this type to pointer of another type, returns an error if cast is not possible
-    fn cast_checked<T : TypedDynamicPtrWrapper<'a>>(&self) -> anyhow::Result<T> {
+    fn cast_checked<T : TypedDynamicPtrWrapper<M>>(&self) -> anyhow::Result<T> {
         self.cast::<T>()?.ok_or_else(|| anyhow!("Cast failed"))
     }
     /// Offsets this pointer towards higher addresses by the given number of elements
@@ -44,22 +44,22 @@ pub trait TypedDynamicPtrWrapper<'a> where Self: Sized {
         Ok(Self::from_ptr_unchecked(self.get_inner_ptr().sub_unchecked(count)?))
     }
 }
-impl<'a> DynamicPtr<'a> {
+impl<M: Memory> DynamicPtr<M> {
     /// Casts pointer of this type to pointer of another type, returns None if cast is not possible
-    pub fn cast<T: TypedDynamicPtrWrapper<'a>>(&self) -> anyhow::Result<Option<T>> {
+    pub fn cast<T: TypedDynamicPtrWrapper<M>>(&self) -> anyhow::Result<Option<T>> {
         T::try_cast(self)
     }
     /// Casts pointer of this type to pointer of another type, returns an error if cast is not possible
-    pub fn cast_checked<T : TypedDynamicPtrWrapper<'a>>(&self) -> anyhow::Result<T> {
+    pub fn cast_checked<T : TypedDynamicPtrWrapper<M>>(&self) -> anyhow::Result<T> {
         self.cast::<T>()?.ok_or_else(|| anyhow!("Cast failed"))
     }
 }
 
 /// Implemented for type pointers with statically known types (e.g. pointers to primitive types or complex types composed of primitive types)
-pub trait StaticallyTypedPtr<'a> : TypedDynamicPtrWrapper<'a> {
+pub trait StaticallyTypedPtr<M: Memory> : TypedDynamicPtrWrapper<M> {
     fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata>;
     /// Constructs typed pointer from raw pointer and type namespace
-    fn from_raw_ptr(ptr: OpaquePtr<'a>, namespace: &TypePtrNamespace) -> anyhow::Result<Self> {
+    fn from_raw_ptr(ptr: OpaquePtr<M>, namespace: &TypePtrNamespace) -> anyhow::Result<Self> {
         let type_ptr_metadata = Self::store_type_descriptor(namespace)?;
         Ok(Self::from_ptr_unchecked(DynamicPtr{opaque_ptr: ptr, metadata: type_ptr_metadata}))
     }
@@ -67,10 +67,10 @@ pub trait StaticallyTypedPtr<'a> : TypedDynamicPtrWrapper<'a> {
 
 pub trait TrivialValue : Copy + Default {
     fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool>;
-    fn read(ptr: &TrivialPtr<Self>) -> anyhow::Result<Self>;
-    fn write(ptr: &TrivialPtr<Self>, value: Self) -> anyhow::Result<()>;
-    fn read_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &mut [Self]) -> anyhow::Result<()>;
-    fn write_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &[Self]) -> anyhow::Result<()>;
+    fn read<M: Memory>(ptr: &TrivialPtr<M, Self>) -> anyhow::Result<Self>;
+    fn write<M: Memory>(ptr: &TrivialPtr<M, Self>, value: Self) -> anyhow::Result<()>;
+    fn read_slice_unchecked<M: Memory>(ptr: &TrivialPtr<M, Self>, buffer: &mut [Self]) -> anyhow::Result<()>;
+    fn write_slice_unchecked<M: Memory>(ptr: &TrivialPtr<M, Self>, buffer: &[Self]) -> anyhow::Result<()>;
     fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata>;
 }
 
@@ -82,24 +82,24 @@ macro_rules! implement_numeric_trivial_value {
                    Ok(primitive_type.is_integral() == $is_integral && primitive_type.is_floating_point() == $is_floating_point && primitive_size == size_of::<Self>())
                } else { Ok(false) }
             }
-            fn read(ptr: &TrivialPtr<Self>) -> anyhow::Result<Self> {
+            fn read<M: Memory>(ptr: &TrivialPtr<M, Self>) -> anyhow::Result<Self> {
                 paste! {
                     ptr.inner_ptr.[<read_ $value_type>]()?.ok_or_else(|| anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))
                 }
             }
-            fn write(ptr: &TrivialPtr<Self>, value: Self) -> anyhow::Result<()> {
+            fn write<M: Memory>(ptr: &TrivialPtr<M, Self>, value: Self) -> anyhow::Result<()> {
                 paste! {
                     ptr.inner_ptr.[<write_ $value_type>](value)
                 }
             }
-            fn read_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &mut [$value_type]) -> anyhow::Result<()> {
+            fn read_slice_unchecked<M: Memory>(ptr: &TrivialPtr<M, Self>, buffer: &mut [$value_type]) -> anyhow::Result<()> {
                  paste! {
                     if !ptr.inner_ptr.[<read_ $value_type _slice_unchecked>](buffer)? {
                         Err(anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))
                     } else { Ok({}) }
                 }
             }
-            fn write_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &[$value_type]) -> anyhow::Result<()> {
+            fn write_slice_unchecked<M: Memory>(ptr: &TrivialPtr<M, Self>, buffer: &[$value_type]) -> anyhow::Result<()> {
                 paste! {
                     ptr.inner_ptr.[<write_ $value_type _slice_unchecked>](buffer)
                 }
@@ -132,7 +132,7 @@ macro_rules! implement_variable_size_trivial_value {
                         Ok(primitive_type_local_name == $primitive_type || primitive_type_local_name == $secondary_primitive_type)
                     } else { Ok(false) }
                 }
-                fn read(ptr: &TrivialPtr<Self>) -> anyhow::Result<Self> {
+                fn read<M: Memory>(ptr: &TrivialPtr<M, Self>) -> anyhow::Result<Self> {
                     let (_, primitive_size) = ptr.inner_ptr.metadata.primitive_type_and_size()?
                         .ok_or_else(|| anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))?;
                     if primitive_size == size_of::<$small_underlying_type>() {
@@ -143,7 +143,7 @@ macro_rules! implement_variable_size_trivial_value {
                         Err(anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))
                     }
                 }
-                fn write(ptr: &TrivialPtr<Self>, value: Self) -> anyhow::Result<()> {
+                fn write<M: Memory>(ptr: &TrivialPtr<M, Self>, value: Self) -> anyhow::Result<()> {
                    let (_, primitive_size) = ptr.inner_ptr.metadata.primitive_type_and_size()?
                         .ok_or_else(|| anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))?;
                    if primitive_size == size_of::<$small_underlying_type>() {
@@ -154,7 +154,7 @@ macro_rules! implement_variable_size_trivial_value {
                        Err(anyhow!("Failed to write: value is not compatible with {} type", core::stringify!($value_type)))
                    }
                 }
-                fn read_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &mut [$value_type]) -> anyhow::Result<()> {
+                fn read_slice_unchecked<M: Memory>(ptr: &TrivialPtr<M, Self>, buffer: &mut [$value_type]) -> anyhow::Result<()> {
                     let (_, primitive_size) = ptr.inner_ptr.metadata.primitive_type_and_size()?
                         .ok_or_else(|| anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))?;
                     if primitive_size == size_of::<$small_underlying_type>() {
@@ -179,7 +179,7 @@ macro_rules! implement_variable_size_trivial_value {
                        Err(anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))
                     }
                 }
-                fn write_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &[Self]) -> anyhow::Result<()> {
+                fn write_slice_unchecked<M: Memory>(ptr: &TrivialPtr<M, Self>, buffer: &[Self]) -> anyhow::Result<()> {
                     let (_, primitive_size) = ptr.inner_ptr.metadata.primitive_type_and_size()?
                         .ok_or_else(|| anyhow!("Failed to write: value is not compatible with {} type", core::stringify!($value_type)))?;
                     if primitive_size == size_of::<$small_underlying_type>() {
@@ -218,13 +218,13 @@ impl TrivialValue for bool {
             Ok(primitive_type == PrimitiveType::Bool || primitive_type == PrimitiveType::Char || primitive_type == PrimitiveType::UnsignedChar)
         } else { Ok(false) }
     }
-    fn read(ptr: &TrivialPtr<Self>) -> anyhow::Result<Self> {
+    fn read<M: Memory>(ptr: &TrivialPtr<M, Self>) -> anyhow::Result<Self> {
         Ok(ptr.inner_ptr.read_u8()?.ok_or_else(|| anyhow!("Failed to read: value is not compatible with bool type"))? != 0)
     }
-    fn write(ptr: &TrivialPtr<Self>, value: Self) -> anyhow::Result<()> {
+    fn write<M: Memory>(ptr: &TrivialPtr<M, Self>, value: Self) -> anyhow::Result<()> {
         ptr.inner_ptr.write_u8(if value { 1 } else { 0 })
     }
-    fn read_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &mut [Self]) -> anyhow::Result<()> {
+    fn read_slice_unchecked<M: Memory>(ptr: &TrivialPtr<M, Self>, buffer: &mut [Self]) -> anyhow::Result<()> {
         let mut byte_buffer: Box<[u8]> = vec![0; buffer.len()].into_boxed_slice();
         if !ptr.inner_ptr.read_u8_slice_unchecked(byte_buffer.deref_mut())? {
             bail!("Failed to read: value is not compatible with bool type");
@@ -234,7 +234,7 @@ impl TrivialValue for bool {
         }
         Ok({})
     }
-    fn write_slice_unchecked(ptr: &TrivialPtr<Self>, buffer: &[Self]) -> anyhow::Result<()> {
+    fn write_slice_unchecked<M: Memory>(ptr: &TrivialPtr<M, Self>, buffer: &[Self]) -> anyhow::Result<()> {
         let mut byte_buffer: Box<[u8]> = vec![0; buffer.len()].into_boxed_slice();
         for index in 0..buffer.len() {
             byte_buffer[index] = if buffer[index] { 1 } else { 0 };
@@ -249,11 +249,11 @@ impl TrivialValue for bool {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct TrivialPtr<'a, T : TrivialValue> {
-    pub inner_ptr: DynamicPtr<'a>,
+pub struct TrivialPtr<M: Memory, T: TrivialValue> {
+    pub inner_ptr: DynamicPtr<M>,
     pub phantom_data: PhantomData<T>,
 }
-impl<T : TrivialValue> TrivialPtr<'_, T> {
+impl<M: Memory, T :TrivialValue> TrivialPtr<M, T> {
     pub fn read(&self) -> anyhow::Result<T> { T::read(self) }
     pub fn write(&self, value: T) -> anyhow::Result<()> { T::write(self, value) }
     pub fn read_slice_unchecked(&self, len: usize) -> anyhow::Result<Vec<T>> {
@@ -265,29 +265,29 @@ impl<T : TrivialValue> TrivialPtr<'_, T> {
         T::write_slice_unchecked(self, slice)
     }
 }
-impl<'a, T : TrivialValue> TypedDynamicPtrWrapper<'a> for TrivialPtr<'a, T> {
-    fn from_ptr_unchecked<'b: 'a>(ptr: DynamicPtr<'b>) -> Self {
+impl<M: Memory, T : TrivialValue> TypedDynamicPtrWrapper<M> for TrivialPtr<M, T> {
+    fn from_ptr_unchecked(ptr: DynamicPtr<M>) -> Self {
         Self{inner_ptr: ptr, phantom_data: PhantomData::default()}
     }
-    fn get_inner_ptr(&self) -> &DynamicPtr<'a> {
+    fn get_inner_ptr(&self) -> &DynamicPtr<M> {
         &self.inner_ptr
     }
     fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
         T::can_typecast(ptr_metadata)
     }
 }
-impl<'a, T : TrivialValue> StaticallyTypedPtr<'a> for TrivialPtr<'a, T> {
+impl<M: Memory, T : TrivialValue> StaticallyTypedPtr<M> for TrivialPtr<M, T> {
     fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
         T::store_type_descriptor(namespace)
     }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct StaticArrayPtr<'a, T : TypedDynamicPtrWrapper<'a>> {
-    pub inner_ptr: DynamicPtr<'a>,
+pub struct StaticArrayPtr<M: Memory, T : TypedDynamicPtrWrapper<M>> {
+    pub inner_ptr: DynamicPtr<M>,
     pub phantom_data: PhantomData<T>,
 }
-impl<'a, T : TypedDynamicPtrWrapper<'a>> StaticArrayPtr<'a, T> {
+impl<M: Memory, T : TypedDynamicPtrWrapper<M>> StaticArrayPtr<M, T> {
     pub fn static_len(&self) -> anyhow::Result<usize> {
         self.inner_ptr.metadata.array_static_array_length()?.ok_or_else(|| anyhow!("Ptr does not point to a statically sized array"))
     }
@@ -298,7 +298,7 @@ impl<'a, T : TypedDynamicPtrWrapper<'a>> StaticArrayPtr<'a, T> {
         Ok(T::from_ptr_unchecked(self.inner_ptr.get_array_element_ptr(index)?.ok_or_else(|| anyhow!("Ptr does not point to a statically sized array"))?))
     }
 }
-impl<'a, T : TrivialValue> StaticArrayPtr<'a, TrivialPtr<'a, T>> {
+impl<M: Memory, T : TrivialValue> StaticArrayPtr<M, TrivialPtr<M, T>> {
     pub fn read_element(&self, index: usize) -> anyhow::Result<T> {
         self.element_ptr(index)?.read()
     }
@@ -317,8 +317,8 @@ impl<'a, T : TrivialValue> StaticArrayPtr<'a, TrivialPtr<'a, T>> {
         T::write_slice_unchecked(&self.element_ptr(0)?, array)
     }
 }
-impl<'a, T : TypedDynamicPtrWrapper<'a> + StaticallyTypedPtr<'a>> StaticArrayPtr<'a, T> {
-    pub fn from_raw_ptr(ptr: OpaquePtr<'a>, namespace: &TypePtrNamespace, array_length: usize) -> anyhow::Result<StaticArrayPtr<'a, T>> {
+impl<M: Memory, T : TypedDynamicPtrWrapper<M> + StaticallyTypedPtr<M>> StaticArrayPtr<M, T> {
+    pub fn from_raw_ptr(ptr: OpaquePtr<M>, namespace: &TypePtrNamespace, array_length: usize) -> anyhow::Result<StaticArrayPtr<M, T>> {
         let type_ptr_metadata = Self::store_type_descriptor(namespace, array_length)?;
         Ok(Self::from_ptr_unchecked(DynamicPtr{opaque_ptr: ptr, metadata: type_ptr_metadata}))
     }
@@ -329,11 +329,11 @@ impl<'a, T : TypedDynamicPtrWrapper<'a> + StaticallyTypedPtr<'a>> StaticArrayPtr
         Ok(TypePtrMetadata{namespace: namespace.clone(), type_index})
     }
 }
-impl<'a, T : TypedDynamicPtrWrapper<'a>> TypedDynamicPtrWrapper<'a> for StaticArrayPtr<'a, T> {
-    fn from_ptr_unchecked<'b: 'a>(ptr: DynamicPtr<'b>) -> Self {
+impl<M: Memory, T : TypedDynamicPtrWrapper<M>> TypedDynamicPtrWrapper<M> for StaticArrayPtr<M, T> {
+    fn from_ptr_unchecked(ptr: DynamicPtr<M>) -> Self {
         Self{inner_ptr: ptr, phantom_data: PhantomData::default()}
     }
-    fn get_inner_ptr(&self) -> &DynamicPtr<'a> {
+    fn get_inner_ptr(&self) -> &DynamicPtr<M> {
         &self.inner_ptr
     }
     fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
@@ -345,12 +345,12 @@ impl<'a, T : TypedDynamicPtrWrapper<'a>> TypedDynamicPtrWrapper<'a> for StaticAr
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct IndirectPtr<'a, T : TypedDynamicPtrWrapper<'a>> {
-    pub inner_ptr: DynamicPtr<'a>,
+pub struct IndirectPtr<M: Memory, T : TypedDynamicPtrWrapper<M>> {
+    pub inner_ptr: DynamicPtr<M>,
     pub phantom_data: PhantomData<T>,
 }
-impl<'a, T : TypedDynamicPtrWrapper<'a>> IndirectPtr<'a, T> {
-    pub fn read(&'a self) -> anyhow::Result<T> {
+impl<M: Memory, T : TypedDynamicPtrWrapper<M>> IndirectPtr<M, T> {
+    pub fn read(&self) -> anyhow::Result<T> {
         let result_ptr = self.inner_ptr.read_ptr()?.ok_or_else(|| anyhow!("Ptr does not point to a ptr"))?;
         Ok(T::from_ptr_unchecked(result_ptr))
     }
@@ -358,11 +358,11 @@ impl<'a, T : TypedDynamicPtrWrapper<'a>> IndirectPtr<'a, T> {
         self.inner_ptr.write_ptr(value.get_inner_ptr())
     }
 }
-impl<'a, T : TypedDynamicPtrWrapper<'a>> TypedDynamicPtrWrapper<'a> for IndirectPtr<'a, T> {
-    fn from_ptr_unchecked<'b: 'a>(ptr: DynamicPtr<'b>) -> Self {
+impl<M: Memory, T : TypedDynamicPtrWrapper<M>> TypedDynamicPtrWrapper<M> for IndirectPtr<M, T> {
+    fn from_ptr_unchecked(ptr: DynamicPtr<M>) -> Self {
         Self{inner_ptr: ptr, phantom_data: PhantomData::default()}
     }
-    fn get_inner_ptr(&self) -> &DynamicPtr<'a> {
+    fn get_inner_ptr(&self) -> &DynamicPtr<M> {
         &self.inner_ptr
     }
     fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
@@ -372,7 +372,7 @@ impl<'a, T : TypedDynamicPtrWrapper<'a>> TypedDynamicPtrWrapper<'a> for Indirect
         } else { Ok(false) }
     }
 }
-impl<'a, T : TypedDynamicPtrWrapper<'a> + StaticallyTypedPtr<'a>> StaticallyTypedPtr<'a> for IndirectPtr<'a, T> {
+impl<M: Memory, T : TypedDynamicPtrWrapper<M> + StaticallyTypedPtr<M>> StaticallyTypedPtr<M> for IndirectPtr<M, T> {
     fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
         let pointee_type = T::store_type_descriptor(namespace)?;
         let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
@@ -382,26 +382,26 @@ impl<'a, T : TypedDynamicPtrWrapper<'a> + StaticallyTypedPtr<'a>> StaticallyType
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct VoidPtr<'a> {
-    pub inner_ptr: DynamicPtr<'a>,
+pub struct VoidPtr<M: Memory> {
+    pub inner_ptr: DynamicPtr<M>,
 }
-impl<'a> VoidPtr<'a> {
-    pub fn raw_ptr(&self) -> &OpaquePtr<'_> {
+impl<M: Memory> VoidPtr<M> {
+    pub fn raw_ptr(&self) -> &OpaquePtr<M> {
         &self.inner_ptr.opaque_ptr
     }
 }
-impl<'a> TypedDynamicPtrWrapper<'a> for VoidPtr<'a> {
-    fn from_ptr_unchecked<'b: 'a>(ptr: DynamicPtr<'b>) -> Self {
+impl<M: Memory> TypedDynamicPtrWrapper<M> for VoidPtr<M> {
+    fn from_ptr_unchecked(ptr: DynamicPtr<M>) -> Self {
         Self{inner_ptr: ptr}
     }
-    fn get_inner_ptr(&self) -> &DynamicPtr<'a> {
+    fn get_inner_ptr(&self) -> &DynamicPtr<M> {
         &self.inner_ptr
     }
     fn can_typecast(_: &TypePtrMetadata) -> anyhow::Result<bool> {
         Ok(true)
     }
 }
-impl<'a> StaticallyTypedPtr<'a> for VoidPtr<'a> {
+impl<M: Memory> StaticallyTypedPtr<M> for VoidPtr<M> {
     fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
         let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
         let type_index = type_graph.store_type(Type::Primitive(PrimitiveType::Void));

@@ -57,33 +57,33 @@ impl CodeGenerationContext {
         match type_definition {
             Type::Array(array_type) => {
                 let pointee_type = self.generate_type_reference(array_type.element_type_index)?;
-                Ok(quote! {gospel_runtime::static_type_wrappers::StaticArrayPtr::<'a, #pointee_type>})
+                Ok(quote! {gospel_runtime::static_type_wrappers::StaticArrayPtr::<M, #pointee_type>})
             },
             Type::Pointer(pointer_type) => {
                 let pointee_type = self.generate_type_reference(pointer_type.pointee_type_index)?;
-                Ok(quote! {gospel_runtime::static_type_wrappers::IndirectPtr::<'a, #pointee_type>})
+                Ok(quote! {gospel_runtime::static_type_wrappers::IndirectPtr::<M, #pointee_type>})
             }
             Type::CVQualified(cv_qualified_type) => {
                 self.generate_type_reference(cv_qualified_type.base_type_index)
             }
             Type::Primitive(primitive_type) => {
                 if let Some(primitive_inner_type) = Self::generate_primitive_type(primitive_type) {
-                    Ok(quote! {gospel_runtime::static_type_wrappers::TrivialPtr::<'a, #primitive_inner_type>})
+                    Ok(quote! {gospel_runtime::static_type_wrappers::TrivialPtr::<M, #primitive_inner_type>})
                 } else {
-                    Ok(quote! { gospel_runtime::static_type_wrappers::VoidPtr::<'a> })
+                    Ok(quote! { gospel_runtime::static_type_wrappers::VoidPtr::<M> })
                 }
             }
             Type::Function(_) => {
                 // TODO: Implement function pointer static type wrapper and related code generation (will likely need unique type per function signature)
-                Ok(quote! { gospel_runtime::static_type_wrappers::VoidPtr::<'a> })
+                Ok(quote! { gospel_runtime::static_type_wrappers::VoidPtr::<M> })
             }
             Type::UDT(user_defined_type) => {
                 // TODO: We could generate more accurate bindings based not just on the name of the type but also on the template parameters
                 if let Some(udt_name) = &user_defined_type.name && let Some(source_crate_name) = self.module_context.type_name_to_dependency_crate_name.get(udt_name) {
                     let full_type_name = self.generate_type_qualified_name(source_crate_name, udt_name);
-                    Ok(quote! { #full_type_name::<'a> })
+                    Ok(quote! { #full_type_name::<M> })
                 } else {
-                    Ok(quote! { gospel_runtime::static_type_wrappers::VoidPtr::<'a> })
+                    Ok(quote! { gospel_runtime::static_type_wrappers::VoidPtr::<M> })
                 }
             }
             Type::Enum(enum_type) => {
@@ -91,10 +91,10 @@ impl CodeGenerationContext {
                 // If it does, we can generate the pointer to the value of this enum as a trivial pointer with the known primitive type
                 if let Some(underlying_type) = enum_type.underlying_type_no_target_no_constants() &&
                     let Some(underlying_inner_type) = Self::generate_primitive_type(&underlying_type) {
-                    Ok(quote! {gospel_runtime::static_type_wrappers::TrivialPtr::<'a, #underlying_inner_type>})
+                    Ok(quote! {gospel_runtime::static_type_wrappers::TrivialPtr::<M, #underlying_inner_type>})
                 } else {
                     // Otherwise, we have to generate it as a void ptr
-                    Ok(quote! { gospel_runtime::static_type_wrappers::VoidPtr::<'a> })
+                    Ok(quote! { gospel_runtime::static_type_wrappers::VoidPtr::<M> })
                 }
             }
         }
@@ -133,13 +133,13 @@ impl CodeGenerationContext {
             // We cannot generate an accurate field type, so just return DynamicPtr as-is
             if is_prototype_field {
                 quote! {
-                    pub fn #field_name(&self) -> anyhow::Result<Option<gospel_runtime::runtime_type_model::DynamicPtr<'_>>> {
+                    pub fn #field_name(&self) -> anyhow::Result<Option<gospel_runtime::runtime_type_model::DynamicPtr<M>>> {
                         self.inner_ptr.get_struct_field_ptr(#source_file_name)
                     }
                 }
             } else {
                 quote! {
-                    pub fn #field_name(&self) -> anyhow::Result<gospel_runtime::runtime_type_model::DynamicPtr<'_>> {
+                    pub fn #field_name(&self) -> anyhow::Result<gospel_runtime::runtime_type_model::DynamicPtr<M>> {
                         self.inner_ptr.get_struct_field_ptr(#source_file_name)?.ok_or_else(|| anyhow::anyhow!("Struct missing field: {}:{}", stringify!(#type_name), #source_file_name))
                     }
                 }
@@ -201,7 +201,7 @@ impl CodeGenerationContext {
         }
         let static_type_impl = if is_parameterless_type {
             Some(quote! {
-                impl<'a> gospel_runtime::static_type_wrappers::StaticallyTypedPtr<'a> for #type_name<'a> {
+                impl<M: gospel_runtime::memory_access::Memory> gospel_runtime::static_type_wrappers::StaticallyTypedPtr<M> for #type_name<M> {
                     fn store_type_descriptor(namespace: &gospel_runtime::runtime_type_model::TypePtrNamespace) -> anyhow::Result<gospel_runtime::runtime_type_model::TypePtrMetadata> {
                         let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow::anyhow!(x.to_string()))?;
                         let type_index = type_graph.find_create_named_udt_type(#full_type_name)?.ok_or_else(|| anyhow::anyhow!("Named struct not found: {}", #full_type_name))?;
@@ -212,17 +212,17 @@ impl CodeGenerationContext {
         } else { None };
         Ok(quote! {
             #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-            pub struct #type_name<'a> {
-                inner_ptr: gospel_runtime::runtime_type_model::DynamicPtr<'a>,
+            pub struct #type_name<M: gospel_runtime::memory_access::Memory> {
+                inner_ptr: gospel_runtime::runtime_type_model::DynamicPtr<M>,
             }
-            impl<'a> #type_name<'a> {
+            impl<M: gospel_runtime::memory_access::Memory> #type_name<M> {
                 #(#generated_fields)*
             }
-            impl<'a> gospel_runtime::static_type_wrappers::TypedDynamicPtrWrapper<'a> for #type_name<'a> {
-                fn from_ptr_unchecked<'b: 'a>(ptr: gospel_runtime::runtime_type_model::DynamicPtr<'b>) -> Self {
+            impl<M: gospel_runtime::memory_access::Memory> gospel_runtime::static_type_wrappers::TypedDynamicPtrWrapper<M> for #type_name<M> {
+                fn from_ptr_unchecked(ptr: gospel_runtime::runtime_type_model::DynamicPtr<M>) -> Self {
                     Self{inner_ptr: ptr}
                 }
-                fn get_inner_ptr(&self) -> &gospel_runtime::runtime_type_model::DynamicPtr<'a> {
+                fn get_inner_ptr(&self) -> &gospel_runtime::runtime_type_model::DynamicPtr<M> {
                     &self.inner_ptr
                 }
                 fn can_typecast(ptr_metadata: &gospel_runtime::runtime_type_model::TypePtrMetadata) -> anyhow::Result<bool> {
@@ -236,7 +236,7 @@ impl CodeGenerationContext {
     }
     fn generate_fallback_type_definition(&self, raw_type_name: &str) -> TokenStream {
         let type_name = Ident::new(&Self::generate_short_udt_name(&raw_type_name), Span::call_site());
-        quote! { type #type_name = gospel_runtime::static_type_wrappers::VoidPtr; }
+        quote! { type #type_name<M: gospel_runtime::memory_access::Memory> = gospel_runtime::static_type_wrappers::VoidPtr<M>; }
     }
     pub(crate) fn generate_bindings_file(self) -> anyhow::Result<String> {
         let mut type_definitions: Vec<TokenStream> = Vec::new();
