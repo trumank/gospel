@@ -284,6 +284,7 @@ pub struct InputStatement {
     pub global_name: String,
     pub value_type: ExpressionValueType,
     pub default_value: Option<Expression>,
+    pub doc_comment: Option<String>,
     #[serde(default)]
     pub source_context: ASTSourceContext,
 }
@@ -311,6 +312,7 @@ pub struct DataStatement {
     pub value_type: ExpressionValueType,
     pub name: String,
     pub initializer: Expression,
+    pub doc_comment: Option<String>,
     #[serde(default)]
     pub source_context: ASTSourceContext,
 }
@@ -323,6 +325,7 @@ pub struct MemberDeclaration {
     pub name: Option<String>,
     pub array_size_expression: Option<Expression>,
     pub bitfield_width_expression: Option<Expression>,
+    pub doc_comment: Option<String>,
     #[serde(default)]
     pub source_context: ASTSourceContext,
 }
@@ -361,6 +364,7 @@ pub struct MemberFunctionDeclaration {
     pub parameters: Vec<FunctionParameterDeclaration>,
     pub constant: bool,
     pub is_override: bool,
+    pub doc_comment: Option<String>,
     #[serde(default)]
     pub source_context: ASTSourceContext,
 }
@@ -397,6 +401,7 @@ pub struct StructStatement {
     pub name: Option<String>,
     pub base_class_expressions: Vec<ExpressionWithCondition>,
     pub declarations: Vec<StructInnerDeclaration>,
+    pub doc_comment: Option<String>,
     #[serde(default)]
     pub source_context: ASTSourceContext,
 }
@@ -407,6 +412,7 @@ pub struct EnumConstantDeclaration {
     pub condition_expression: Option<Expression>,
     pub name: Option<String>,
     pub value_expression: Option<Expression>,
+    pub doc_comment: Option<String>,
     #[serde(default)]
     pub source_context: ASTSourceContext,
 }
@@ -420,6 +426,7 @@ pub struct EnumStatement {
     pub underlying_type_expression: Option<ExpressionWithCondition>,
     pub name: Option<String>,
     pub constants: Vec<EnumConstantDeclaration>,
+    pub doc_comment: Option<String>,
     #[serde(default)]
     pub source_context: ASTSourceContext,
 }

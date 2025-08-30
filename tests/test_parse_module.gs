@@ -14,8 +14,16 @@ namespace A::B {
     };
 };
 
+/// Simple struct doc comment
 struct FNameEntryId {
+    /// Member documentation - Value
     uint32 Value;
+};
+
+/// Enum documentation
+enum TestEnum {
+    /// Enum constant documentation
+    EnumConstant,
 };
 
 struct FName {
@@ -67,6 +75,7 @@ struct FWrapperStruct {
     type Inner = InInnerType;
 };
 
+/// Type alias comment
 type DynamicTemplateInstantiationTest = FWrapperStruct<FVector>::typename Inner<float>;
 
 constexpr int ComplexExpressionTest = {
@@ -86,19 +95,26 @@ constexpr int ComplexExpressionTest = {
     (Result[10])::int Variable
 };
 
+/// Single line doc comment on constexpr
 constexpr int SizeOfVector = sizeof(FVector);
 constexpr int AlignmentOfVector = alignof(FVector);
 
+// Discarded comment
 template<typename T>
 struct TTypeCompatibleBytes {
     alignas(T) char Pad[sizeof(T)];
 };
 
+/**
+ * Multi line doc comment on templated struct
+ * Look there are multiple lines this is crazy
+ */
 template<typename ElementType>
 struct THeapAllocator {
     ElementType* Data;
 };
 
+/// Single line doc comment on templated struct
 template<typename ElementType, int InlineElementCount, typename SecondaryAllocator = THeapAllocator<ElementType>>
 struct TInlineAllocator {
     TTypeCompatibleBytes<ElementType> InlineData[InlineElementCount];
