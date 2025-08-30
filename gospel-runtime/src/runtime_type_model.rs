@@ -149,11 +149,11 @@ impl Hash for DynamicPtr<'_> {
     }
 }
 impl DynamicPtr<'_> {
-    /// Offsets this pointer towards lower addresses by the given number of elements
+    /// Offsets this pointer towards higher addresses by the given number of elements
     pub fn add_unchecked(&self, count: usize) -> anyhow::Result<Self> {
         Ok(Self{opaque_ptr: self.opaque_ptr.clone() + (count * self.metadata.size_and_alignment()?.0), metadata: self.metadata.clone() })
     }
-    /// Offsets this pointer towards higher addresses by the given number of elements
+    /// Offsets this pointer towards lower addresses by the given number of elements
     pub fn sub_unchecked(&self, count: usize) -> anyhow::Result<Self> {
         Ok(Self{opaque_ptr: self.opaque_ptr.clone() - (count * self.metadata.size_and_alignment()?.0), metadata: self.metadata.clone() })
     }

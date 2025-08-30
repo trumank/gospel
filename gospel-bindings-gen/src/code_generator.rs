@@ -114,7 +114,7 @@ impl CodeGenerationContext {
                     pub fn #field_name(&self) -> anyhow::Result<Option<#generated_field_type>> {
                         if let Some(raw_field_ptr) = self.inner_ptr.get_struct_field_ptr(#source_file_name)? {
                             use gospel_runtime::static_type_wrappers::TypedDynamicPtrWrapper;
-                            Ok(Some(#generated_field_type::cast(raw_field_ptr)?.ok_or_else(|| anyhow::anyhow!("Struct field is of incompatible type: {}:{}", stringify!(#type_name), #source_file_name))?))
+                            Ok(Some(#generated_field_type::try_cast(&raw_field_ptr)?.ok_or_else(|| anyhow::anyhow!("Struct field is of incompatible type: {}:{}", stringify!(#type_name), #source_file_name))?))
                         } else { Ok(None) }
                     }
                 }
@@ -124,7 +124,7 @@ impl CodeGenerationContext {
                         let raw_field_ptr = self.inner_ptr.get_struct_field_ptr(#source_file_name)?
                             .ok_or_else(|| anyhow::anyhow!("Struct missing field: {}:{}", stringify!(#type_name), #source_file_name))?;
                         use gospel_runtime::static_type_wrappers::TypedDynamicPtrWrapper;
-                        Ok(#generated_field_type::cast(raw_field_ptr)?
+                        Ok(#generated_field_type::try_cast(&raw_field_ptr)?
                             .ok_or_else(|| anyhow::anyhow!("Struct field is of incompatible type: {}:{}", stringify!(#type_name), #source_file_name))?)
                     }
                 }

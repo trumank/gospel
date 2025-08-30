@@ -1,4 +1,3 @@
-use std::env::current_dir;
 use std::path::PathBuf;
 use std::ptr::null;
 use std::str::FromStr;

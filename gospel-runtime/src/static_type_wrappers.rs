@@ -24,14 +24,41 @@ pub trait TypedDynamicPtrWrapper<'a> where Self: Sized {
     fn from_ptr_unchecked<'b: 'a>(ptr: DynamicPtr<'b>) -> Self;
     fn get_inner_ptr(&self) -> &DynamicPtr<'a>;
     fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool>;
-    fn cast<'b: 'a>(ptr: DynamicPtr<'b>) -> anyhow::Result<Option<Self>> {
-        if Self::can_typecast(&ptr.metadata)? { Ok(Some(Self::from_ptr_unchecked(ptr))) } else { Ok(None) }
+    fn try_cast<'b: 'a>(ptr: &DynamicPtr<'b>) -> anyhow::Result<Option<Self>> {
+        if Self::can_typecast(&ptr.metadata)? { Ok(Some(Self::from_ptr_unchecked(ptr.clone()))) } else { Ok(None) }
+    }
+    /// Casts pointer of this type to pointer of another type, returns None if cast is not possible
+    fn cast<T: TypedDynamicPtrWrapper<'a>>(&self) -> anyhow::Result<Option<T>> {
+        T::try_cast(self.get_inner_ptr())
+    }
+    /// Casts pointer of this type to pointer of another type, returns an error if cast is not possible
+    fn cast_checked<T : TypedDynamicPtrWrapper<'a>>(&self) -> anyhow::Result<T> {
+        self.cast::<T>()?.ok_or_else(|| anyhow!("Cast failed"))
+    }
+    /// Offsets this pointer towards higher addresses by the given number of elements
+    fn add_unchecked(&self, count: usize) -> anyhow::Result<Self> {
+        Ok(Self::from_ptr_unchecked(self.get_inner_ptr().add_unchecked(count)?))
+    }
+    /// Offsets this pointer towards lower addresses by the given number of elements
+    fn sub_unchecked(&self, count: usize) -> anyhow::Result<Self> {
+        Ok(Self::from_ptr_unchecked(self.get_inner_ptr().sub_unchecked(count)?))
+    }
+}
+impl<'a> DynamicPtr<'a> {
+    /// Casts pointer of this type to pointer of another type, returns None if cast is not possible
+    pub fn cast<T: TypedDynamicPtrWrapper<'a>>(&self) -> anyhow::Result<Option<T>> {
+        T::try_cast(self)
+    }
+    /// Casts pointer of this type to pointer of another type, returns an error if cast is not possible
+    pub fn cast_checked<T : TypedDynamicPtrWrapper<'a>>(&self) -> anyhow::Result<T> {
+        self.cast::<T>()?.ok_or_else(|| anyhow!("Cast failed"))
     }
 }
 
 /// Implemented for type pointers with statically known types (e.g. pointers to primitive types or complex types composed of primitive types)
 pub trait StaticallyTypedPtr<'a> : TypedDynamicPtrWrapper<'a> {
     fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata>;
+    /// Constructs typed pointer from raw pointer and type namespace
     fn from_raw_ptr(ptr: OpaquePtr<'a>, namespace: &TypePtrNamespace) -> anyhow::Result<Self> {
         let type_ptr_metadata = Self::store_type_descriptor(namespace)?;
         Ok(Self::from_ptr_unchecked(DynamicPtr{opaque_ptr: ptr, metadata: type_ptr_metadata}))
