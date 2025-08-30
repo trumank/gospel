@@ -40,11 +40,11 @@ impl TypePtrMetadata {
             Ok(Some((underlying_primitive_type, underlying_primitive_type.size_and_alignment(&layout_cache.target_triplet)?)))
         } else { Ok(None) }
     }
-    pub fn pointer_pointee_type_index(&self) -> anyhow::Result<Option<usize>> {
+    pub fn pointer_pointee_type_index_and_is_reference(&self) -> anyhow::Result<Option<(usize, bool)>> {
         let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
         let type_data = type_graph.base_type_by_index(self.type_index);
         if let Type::Pointer(pointer_type) = type_data {
-            Ok(Some(pointer_type.pointee_type_index))
+            Ok(Some((pointer_type.pointee_type_index, pointer_type.is_reference)))
         } else { Ok(None) }
     }
     pub fn array_element_type_index(&self) -> anyhow::Result<Option<usize>> {
@@ -181,27 +181,57 @@ impl<M: Memory> DynamicPtr<M> {
         } else { Ok(None) }
     }
     /// Attempts to read this dynamic pointer as a pointer
-    pub fn read_ptr(&self) -> anyhow::Result<Option<Self>> {
-        if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? {
+    pub fn read_ptr(&self) -> anyhow::Result<Option<Option<Self>>> {
+        if let Some((pointee_type_index, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference()? {
             let pointee_opaque_ptr = self.opaque_ptr.read_ptr()?;
-            Ok(Some(Self{opaque_ptr: pointee_opaque_ptr, metadata: self.metadata.with_type_index(pointee_type_index)}))
+            if pointee_opaque_ptr.is_nullptr() {
+                if is_reference_type {
+                    Err(anyhow!("Reference type has illegal value of nullptr"))
+                } else { Ok(Some(None)) }
+            } else {
+                Ok(Some(Some(Self{opaque_ptr: pointee_opaque_ptr, metadata: self.metadata.with_type_index(pointee_type_index)})))
+            }
         } else { Ok(None) }
     }
-    pub fn read_ptr_slice_unchecked(&self, len: usize) -> anyhow::Result<Option<Vec<Self>>> {
-        if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? {
+    pub fn read_ptr_slice_unchecked(&self, len: usize) -> anyhow::Result<Option<Vec<Option<Self>>>> {
+        if let Some((pointee_type_index, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference()? {
             let element_metadata = self.metadata.with_type_index(pointee_type_index);
-            Ok(Some(self.opaque_ptr.read_ptr_array(len)?.into_iter().map(|x| Self{opaque_ptr: x, metadata: element_metadata.clone()}).collect()))
+            Ok(Some(self.opaque_ptr.read_ptr_array(len)?.into_iter().map(|x| {
+                if x.is_nullptr() {
+                    if is_reference_type {
+                        Err(anyhow!("Reference type has illegal value of nullptr"))
+                    } else { Ok(None) }
+                } else {
+                    Ok(Some(Self{opaque_ptr: x, metadata: element_metadata.clone()}))
+                }
+            }).collect::<anyhow::Result<Vec<Option<Self>>>>()?))
         } else { Ok(None) }
     }
-    /// Attempts to write this dynamic pointer as a pointer
+    /// Attempts to write this dynamic pointer as a pointer value. Writes address of given ptr as a value
     pub fn write_ptr(&self, value: &Self) -> anyhow::Result<()> {
-        if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? && self.metadata.are_types_compatible(pointee_type_index, value.metadata.type_index)? {
-            self.opaque_ptr.write_ptr(&value.opaque_ptr)
+        if let Some((pointee_type_index, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference()? &&
+            self.metadata.are_types_compatible(pointee_type_index, value.metadata.type_index)? {
+            if value.is_nullptr() && is_reference_type {
+                Err(anyhow!("Cannot write value of nullptr to reference type"))
+            } else { self.opaque_ptr.write_ptr(&value.opaque_ptr) }
         } else { Err(anyhow!("Not a pointer of a compatible type")) }
     }
+    /// Attempts to write this dynamic pointer as a pointer value. Writes 0 address (nullptr) as a value
+    pub fn write_nullptr(&self) -> anyhow::Result<()> {
+        if let Some((_, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference()? {
+            if is_reference_type {
+                Err(anyhow!("Cannot write value of nullptr to reference type"))
+            } else { self.opaque_ptr.write_nullptr() }
+        } else { Err(anyhow!("Not a pointer type")) }
+    }
     pub fn write_ptr_slice_unchecked(&self, buffer: &[Self]) -> anyhow::Result<()> {
-        if let Some(pointee_type_index) = self.metadata.pointer_pointee_type_index()? && !buffer.is_empty() && self.metadata.are_types_compatible(pointee_type_index, buffer[0].metadata.type_index)? {
-            let raw_ptr_array: Vec<OpaquePtr<M>> = buffer.iter().map(|x| x.opaque_ptr.clone()).collect();
+        if let Some((pointee_type_index, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference()? && !buffer.is_empty() &&
+            self.metadata.are_types_compatible(pointee_type_index, buffer[0].metadata.type_index)? {
+            let raw_ptr_array: Vec<OpaquePtr<M>> = buffer.iter().map(|x| {
+                if x.is_nullptr() && is_reference_type {
+                    Err(anyhow!("Cannot write value of nullptr to reference type"))
+                } else { Ok(x.opaque_ptr.clone()) }
+            }).collect::<anyhow::Result<Vec<OpaquePtr<M>>>>()?;
             self.opaque_ptr.write_ptr_array(raw_ptr_array.as_slice())
         } else { Err(anyhow!("Not a pointer of a compatible type")) }
     }

@@ -330,6 +330,7 @@ impl<M: Memory> OpaquePtr<M> {
     pub fn write_f64(&self, value: f64) -> anyhow::Result<()> { self.memory.write_f64(self.address, value) }
     pub fn write_f64_array(&self, buffer: &[f64]) -> anyhow::Result<()> { self.memory.write_f64_array(self.address, buffer) }
     pub fn write_ptr(&self, value: &Self) -> anyhow::Result<()> { self.memory.write_raw_ptr(self.address, value.address) }
+    pub fn write_nullptr(&self) -> anyhow::Result<()> { self.memory.write_raw_ptr(self.address, 0) }
     pub fn write_ptr_array(&self, buffer: &[Self]) -> anyhow::Result<()> {
         let mut raw_ptr_buffer: Box<[u64]> = vec![0; buffer.len()].into_boxed_slice();
         for pointer_index in 0..buffer.len() {

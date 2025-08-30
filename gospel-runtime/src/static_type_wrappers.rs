@@ -354,12 +354,14 @@ pub struct IndirectPtr<M: Memory, T : TypedDynamicPtrWrapper<M>> {
     pub phantom_data: PhantomData<T>,
 }
 impl<M: Memory, T : TypedDynamicPtrWrapper<M>> IndirectPtr<M, T> {
-    pub fn read(&self) -> anyhow::Result<T> {
+    pub fn read(&self) -> anyhow::Result<Option<T>> {
         let result_ptr = self.inner_ptr.read_ptr()?.ok_or_else(|| anyhow!("Ptr does not point to a ptr"))?;
-        Ok(T::from_ptr_unchecked(result_ptr))
+        Ok(result_ptr.map(|x| T::from_ptr_unchecked(x)))
     }
-    pub fn write(&self, value: &T) -> anyhow::Result<()> {
-        self.inner_ptr.write_ptr(value.get_inner_ptr())
+    pub fn write(&self, value: &Option<T>) -> anyhow::Result<()> {
+        if let Some(inner_ptr_value) = value {
+            self.inner_ptr.write_ptr(inner_ptr_value.get_inner_ptr())
+        } else { self.inner_ptr.write_nullptr() }
     }
 }
 impl<M: Memory, T : TypedDynamicPtrWrapper<M>> TypedDynamicPtrWrapper<M> for IndirectPtr<M, T> {
@@ -370,9 +372,9 @@ impl<M: Memory, T : TypedDynamicPtrWrapper<M>> TypedDynamicPtrWrapper<M> for Ind
         &self.inner_ptr
     }
     fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
-        if let Some(pointee_type_index) = ptr_metadata.pointer_pointee_type_index()? {
+        if let Some((pointee_type_index, is_reference_type)) = ptr_metadata.pointer_pointee_type_index_and_is_reference()? {
             let pointee_ptr_metadata = ptr_metadata.with_type_index(pointee_type_index);
-            T::can_typecast(&pointee_ptr_metadata)
+            Ok(!is_reference_type && T::can_typecast(&pointee_ptr_metadata)?)
         } else { Ok(false) }
     }
 }
@@ -381,6 +383,45 @@ impl<M: Memory, T : TypedDynamicPtrWrapper<M> + StaticallyTypedPtr<M>> Staticall
         let pointee_type = T::store_type_descriptor(namespace)?;
         let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
         let type_index = type_graph.store_type(Type::Pointer(PointerType{pointee_type_index: pointee_type.type_index, is_reference: false}));
+        Ok(TypePtrMetadata{namespace: namespace.clone(), type_index})
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct IndirectRef<M: Memory, T : TypedDynamicPtrWrapper<M>> {
+    pub inner_ptr: DynamicPtr<M>,
+    pub phantom_data: PhantomData<T>,
+}
+impl<M: Memory, T : TypedDynamicPtrWrapper<M>> IndirectRef<M, T> {
+    pub fn read(&self) -> anyhow::Result<T> {
+        let result_ptr = self.inner_ptr.read_ptr()
+            ?.ok_or_else(|| anyhow!("Ptr does not point to a ptr"))?
+            .ok_or_else(|| anyhow!("Reference type has illegal value of nullptr"))?;
+        Ok(T::from_ptr_unchecked(result_ptr))
+    }
+    pub fn write(&self, value: &T) -> anyhow::Result<()> {
+        self.inner_ptr.write_ptr(value.get_inner_ptr())
+    }
+}
+impl<M: Memory, T : TypedDynamicPtrWrapper<M>> TypedDynamicPtrWrapper<M> for IndirectRef<M, T> {
+    fn from_ptr_unchecked(ptr: DynamicPtr<M>) -> Self {
+        Self{inner_ptr: ptr, phantom_data: PhantomData::default()}
+    }
+    fn get_inner_ptr(&self) -> &DynamicPtr<M> {
+        &self.inner_ptr
+    }
+    fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
+        if let Some((pointee_type_index, is_reference_type)) = ptr_metadata.pointer_pointee_type_index_and_is_reference()? {
+            let pointee_ptr_metadata = ptr_metadata.with_type_index(pointee_type_index);
+            Ok(is_reference_type && T::can_typecast(&pointee_ptr_metadata)?)
+        } else { Ok(false) }
+    }
+}
+impl<M: Memory, T : TypedDynamicPtrWrapper<M> + StaticallyTypedPtr<M>> StaticallyTypedPtr<M> for IndirectRef<M, T> {
+    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
+        let pointee_type = T::store_type_descriptor(namespace)?;
+        let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
+        let type_index = type_graph.store_type(Type::Pointer(PointerType{pointee_type_index: pointee_type.type_index, is_reference: true}));
         Ok(TypePtrMetadata{namespace: namespace.clone(), type_index})
     }
 }

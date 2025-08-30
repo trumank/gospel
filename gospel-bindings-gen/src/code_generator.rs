@@ -61,7 +61,11 @@ impl CodeGenerationContext {
             },
             Type::Pointer(pointer_type) => {
                 let pointee_type = self.generate_type_reference(pointer_type.pointee_type_index)?;
-                Ok(quote! {gospel_runtime::static_type_wrappers::IndirectPtr::<M, #pointee_type>})
+                if pointer_type.is_reference {
+                    Ok(quote! {gospel_runtime::static_type_wrappers::IndirectRef::<M, #pointee_type>})
+                } else {
+                    Ok(quote! {gospel_runtime::static_type_wrappers::IndirectPtr::<M, #pointee_type>})
+                }
             }
             Type::CVQualified(cv_qualified_type) => {
                 self.generate_type_reference(cv_qualified_type.base_type_index)
