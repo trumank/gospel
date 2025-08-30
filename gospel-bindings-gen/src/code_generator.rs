@@ -114,39 +114,16 @@ impl CodeGenerationContext {
         if let Some(field_type_index) = maybe_field_type_index && !self.is_opaque_type_index(field_type_index) &&
             let Ok(generated_field_type) = self.generate_type_reference(field_type_index) {
             if is_prototype_field {
-                quote! {
-                    pub fn #field_name(&self) -> anyhow::Result<Option<#generated_field_type>> {
-                        if let Some(raw_field_ptr) = self.inner_ptr.get_struct_field_ptr(#source_file_name)? {
-                            use gospel_runtime::static_type_wrappers::TypedDynamicPtrWrapper;
-                            Ok(Some(#generated_field_type::try_cast(&raw_field_ptr)?.ok_or_else(|| anyhow::anyhow!("Struct field is of incompatible type: {}:{}", stringify!(#type_name), #source_file_name))?))
-                        } else { Ok(None) }
-                    }
-                }
+                quote! { gsb_codegen_implement_field!(#type_name, #field_name, #source_file_name, optional, #generated_field_type); }
             } else {
-                quote! {
-                    pub fn #field_name(&self) -> anyhow::Result<#generated_field_type> {
-                        let raw_field_ptr = self.inner_ptr.get_struct_field_ptr(#source_file_name)?
-                            .ok_or_else(|| anyhow::anyhow!("Struct missing field: {}:{}", stringify!(#type_name), #source_file_name))?;
-                        use gospel_runtime::static_type_wrappers::TypedDynamicPtrWrapper;
-                        Ok(#generated_field_type::try_cast(&raw_field_ptr)?
-                            .ok_or_else(|| anyhow::anyhow!("Struct field is of incompatible type: {}:{}", stringify!(#type_name), #source_file_name))?)
-                    }
-                }
+                quote! { gsb_codegen_implement_field!(#type_name, #field_name, #source_file_name, required, #generated_field_type); }
             }
         } else {
             // We cannot generate an accurate field type, so just return DynamicPtr as-is
             if is_prototype_field {
-                quote! {
-                    pub fn #field_name(&self) -> anyhow::Result<Option<gospel_runtime::runtime_type_model::DynamicPtr<M>>> {
-                        self.inner_ptr.get_struct_field_ptr(#source_file_name)
-                    }
-                }
+                quote! { gsb_codegen_implement_field!(#type_name, #field_name, #source_file_name, optional); }
             } else {
-                quote! {
-                    pub fn #field_name(&self) -> anyhow::Result<gospel_runtime::runtime_type_model::DynamicPtr<M>> {
-                        self.inner_ptr.get_struct_field_ptr(#source_file_name)?.ok_or_else(|| anyhow::anyhow!("Struct missing field: {}:{}", stringify!(#type_name), #source_file_name))
-                    }
-                }
+                quote! { gsb_codegen_implement_field!(#type_name, #field_name, #source_file_name, required); }
             }
         }
     }
@@ -204,36 +181,12 @@ impl CodeGenerationContext {
             }
         }
         let static_type_impl = if is_parameterless_type {
-            Some(quote! {
-                impl<M: gospel_runtime::memory_access::Memory> gospel_runtime::static_type_wrappers::StaticallyTypedPtr<M> for #type_name<M> {
-                    fn store_type_descriptor(namespace: &gospel_runtime::runtime_type_model::TypePtrNamespace) -> anyhow::Result<gospel_runtime::runtime_type_model::TypePtrMetadata> {
-                        let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow::anyhow!(x.to_string()))?;
-                        let type_index = type_graph.find_create_named_udt_type(#full_type_name)?.ok_or_else(|| anyhow::anyhow!("Named struct not found: {}", #full_type_name))?;
-                        Ok(gospel_runtime::runtime_type_model::TypePtrMetadata{namespace: namespace.clone(), type_index})
-                    }
-                }
-            })
+            Some(quote! { gsb_codegen_implement_static_type!(#type_name, #full_type_name); })
         } else { None };
         Ok(quote! {
-            #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-            pub struct #type_name<M: gospel_runtime::memory_access::Memory> {
-                inner_ptr: gospel_runtime::runtime_type_model::DynamicPtr<M>,
-            }
+            gsb_codegen_generate_type_struct!(#type_name, #full_type_name);
             impl<M: gospel_runtime::memory_access::Memory> #type_name<M> {
                 #(#generated_fields)*
-            }
-            impl<M: gospel_runtime::memory_access::Memory> gospel_runtime::static_type_wrappers::TypedDynamicPtrWrapper<M> for #type_name<M> {
-                fn from_ptr_unchecked(ptr: gospel_runtime::runtime_type_model::DynamicPtr<M>) -> Self {
-                    Self{inner_ptr: ptr}
-                }
-                fn get_inner_ptr(&self) -> &gospel_runtime::runtime_type_model::DynamicPtr<M> {
-                    &self.inner_ptr
-                }
-                fn can_typecast(ptr_metadata: &gospel_runtime::runtime_type_model::TypePtrMetadata) -> anyhow::Result<bool> {
-                    if let Some(struct_name) = ptr_metadata.struct_type_name()? {
-                        Ok(struct_name == #full_type_name)
-                    } else { Ok(false) }
-                }
             }
             #static_type_impl
         })
@@ -254,6 +207,9 @@ impl CodeGenerationContext {
         }
         let bindings_mod_name = Ident::new(&self.bindings_mod_name, Span::call_site());
         let result_file_token_stream = quote! {
+            #[macro_use(gsb_codegen_generate_type_struct, gsb_codegen_implement_field, gsb_codegen_implement_static_type)]
+            extern crate gospel_runtime;
+
             #[allow(warnings, unused)]
             mod #bindings_mod_name {
                 #(#type_definitions)*
