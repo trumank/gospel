@@ -265,6 +265,10 @@ impl Sub<usize> for OpaquePtr<'_> {
     }
 }
 impl OpaquePtr<'_> {
+    /// Returns true if this pointer points to zero address, e.g. is a nullptr
+    pub fn is_nullptr(&self) -> bool {
+        self.address == 0
+    }
     /// Reads data of various sizes from the memory location pointed to by this pointer
     pub fn read_u8(&self) -> anyhow::Result<u8> { self.memory.read_u8(self.address) }
     pub fn read_u8_array(&self, buffer: &mut [u8]) -> anyhow::Result<()> { self.memory.read_u8_array(self.address, buffer) }

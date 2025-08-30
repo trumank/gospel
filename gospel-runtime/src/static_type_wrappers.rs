@@ -43,6 +43,10 @@ pub trait TypedDynamicPtrWrapper<'a> where Self: Sized {
     fn sub_unchecked(&self, count: usize) -> anyhow::Result<Self> {
         Ok(Self::from_ptr_unchecked(self.get_inner_ptr().sub_unchecked(count)?))
     }
+    /// Returns true if this pointer points to zero address, e.g. is a nullptr
+    fn is_nullptr(&self) -> bool {
+        self.get_inner_ptr().is_nullptr()
+    }
 }
 impl<'a> DynamicPtr<'a> {
     /// Casts pointer of this type to pointer of another type, returns None if cast is not possible

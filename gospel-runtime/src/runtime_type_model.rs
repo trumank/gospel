@@ -149,6 +149,10 @@ impl Hash for DynamicPtr<'_> {
     }
 }
 impl DynamicPtr<'_> {
+    /// Returns true if this pointer points to zero address, e.g. is a nullptr
+    pub fn is_nullptr(&self) -> bool {
+        self.opaque_ptr.is_nullptr()
+    }
     /// Offsets this pointer towards higher addresses by the given number of elements
     pub fn add_unchecked(&self, count: usize) -> anyhow::Result<Self> {
         Ok(Self{opaque_ptr: self.opaque_ptr.clone() + (count * self.metadata.size_and_alignment()?.0), metadata: self.metadata.clone() })
