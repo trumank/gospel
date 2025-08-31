@@ -4,11 +4,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 use gospel_runtime::current_process::CurrentProcessMemory;
 use gospel_runtime::memory_access::OpaquePtr;
-use gospel_runtime::static_type_wrappers::StaticallyTypedPtr;
+use gospel_runtime::static_type_wrappers::{StaticallyTypedPtr, TypedDynamicPtrWrapper};
 use gospel_runtime::vm_integration::GospelVMTypeGraphBackend;
 use gospel_typelib::type_model::TargetTriplet;
 use gospel_vm::vm::GospelVMOptions;
-use crate::gospel_bindings::{UObject};
+use crate::gospel_bindings::{UField, UObject};
 
 include!(concat!(env!("OUT_DIR"), "/", "gospel_bindings.rs"));
 
@@ -21,6 +21,11 @@ struct TestUObjectLayout {
     name_private: u64,
     outer_private: *const TestUObjectLayout,
 }
+#[repr(C)]
+struct TestUFieldLayout {
+    baseclass_0: TestUObjectLayout,
+    next: *const TestUFieldLayout,
+}
 
 fn main() -> anyhow::Result<()> {
     let current_process_memory = Arc::new(CurrentProcessMemory{});
@@ -29,12 +34,13 @@ fn main() -> anyhow::Result<()> {
     let vm_options = GospelVMOptions::default().target_triplet(TargetTriplet::current_target().unwrap()).with_global("UE_VERSION", 504);
     let type_namespace = GospelVMTypeGraphBackend::create_from_module_tree(&module_path, &Vec::new(), vm_options)?.to_type_ptr_namespace()?;
 
-    let test_object = TestUObjectLayout{vtable: 0, object_flags: 1, internal_index: 50, class_private: null(), name_private: 0, outer_private: null()};
-    let test_object_address = (&test_object as *const TestUObjectLayout) as u64;
-    let opaque_object_ptr = OpaquePtr{memory: current_process_memory, address: test_object_address};
+    let test_field = TestUFieldLayout{baseclass_0: TestUObjectLayout{vtable: 0, object_flags: 1, internal_index: 50, class_private: null(), name_private: 0, outer_private: null()}, next: null()};
+    let test_field_address = (&test_field as *const TestUFieldLayout) as u64;
+    let opaque_field_ptr = OpaquePtr{memory: current_process_memory, address: test_field_address};
 
-    let object_ptr = UObject::from_raw_ptr(opaque_object_ptr, &type_namespace)?;
+    let field_ptr = UField::from_raw_ptr(opaque_field_ptr, &type_namespace)?;
+    let object_ptr = field_ptr.cast_checked::<UObject<CurrentProcessMemory>>()?;
     let object_internal_index = object_ptr.internal_index()?.read()?;
-    assert_eq!(test_object.internal_index, object_internal_index);
+    assert_eq!(test_field.baseclass_0.internal_index, object_internal_index);
     Ok({})
 }
