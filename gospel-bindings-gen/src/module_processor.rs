@@ -1,18 +1,26 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use anyhow::{anyhow, bail};
 use gospel_compiler::ast::ExpressionValueType;
-use gospel_compiler::backend::{CompilerFunctionReference, CompilerInstance, CompilerLexicalNode, CompilerLexicalScope, CompilerLexicalScopeClass, CompilerOptions};
+use gospel_compiler::backend::{CompilerFunctionDeclaration, CompilerInstance, CompilerLexicalNode, CompilerLexicalScope, CompilerLexicalScopeClass, CompilerOptions};
 use gospel_compiler::module_definition::resolve_module_dependencies;
 use gospel_vm::module::GospelContainer;
-use gospel_vm::vm::{GospelVMClosure, GospelVMOptions, GospelVMRunContext, GospelVMState, GospelVMValue};
+use gospel_vm::vm::{GospelVMOptions, GospelVMRunContext, GospelVMState, GospelVMValue};
+
+#[derive(Debug, Clone)]
+pub(crate) struct BindingsTypeDefinition {
+    pub(crate) type_full_name: String,
+    pub(crate) type_index: Option<usize>,
+    pub(crate) is_static_type: bool,
+    pub(crate) type_metadata: BTreeMap<String, String>,
+}
 
 #[derive(Debug)]
 pub(crate) struct ResolvedBindingsModuleContext {
     pub(crate) run_context: GospelVMRunContext,
-    pub(crate) type_name_to_dependency_crate_name: HashMap<String, Option<String>>,
-    pub(crate) type_name_to_type_index: Vec<(String, Option<usize>, bool, Option<GospelVMClosure>)>,
+    pub(crate) type_source_crate_lookup: HashMap<String, Option<String>>,
+    pub(crate) types_to_generate: Vec<BindingsTypeDefinition>,
 }
 
 pub(crate) fn process_module_context(main_module_path: &PathBuf, additional_dependencies: &Vec<PathBuf>, extra_modules_to_include: &HashSet<String>, module_to_bindings_crate: &HashMap<String, String>) -> anyhow::Result<ResolvedBindingsModuleContext> {
@@ -31,8 +39,8 @@ pub(crate) fn process_module_context(main_module_path: &PathBuf, additional_depe
     }
     let compiled_main_module = main_module.compile_module(&compiler_instance).map_err(|x| anyhow!("Failed to compile module: {}", x))?;
 
-    let mut type_name_to_dependency_crate_name: HashMap<String, Option<String>> = HashMap::new();
-    let mut type_definition_functions: Vec<CompilerFunctionReference> = Vec::new();
+    let mut type_source_crate_lookup: HashMap<String, Option<String>> = HashMap::new();
+    let mut type_definition_functions: Vec<CompilerFunctionDeclaration> = Vec::new();
 
     // Gather all type definitions produced by the modules
     for module_dependency in &all_module_dependencies {
@@ -42,9 +50,9 @@ pub(crate) fn process_module_context(main_module_path: &PathBuf, additional_depe
             let is_included_with_this_module = extra_modules_to_include.contains(&module_name);
 
             if source_crate.is_some() && !is_included_with_this_module {
-                discover_module_type_definitions(&dependency_scope, Some(source_crate.unwrap().as_str()), &mut type_name_to_dependency_crate_name, &mut Vec::new());
+                discover_module_type_definitions(&dependency_scope, Some(source_crate.unwrap().as_str()), &mut type_source_crate_lookup, &mut Vec::new());
             } else if source_crate.is_none() && is_included_with_this_module {
-                discover_module_type_definitions(&dependency_scope, None, &mut type_name_to_dependency_crate_name, &mut type_definition_functions);
+                discover_module_type_definitions(&dependency_scope, None, &mut type_source_crate_lookup, &mut type_definition_functions);
             } else if source_crate.is_some() && is_included_with_this_module {
                 bail!("Module {} bindings are already defined in crate {}, but it was asked to be included in this module bindings", module_name, source_crate.unwrap());
             } else {
@@ -58,7 +66,7 @@ pub(crate) fn process_module_context(main_module_path: &PathBuf, additional_depe
         bail!("Module {} bindings are already generated in a dependency crate {}", main_module.module_name(), existing_module_crate);
     }
     if let Some(main_module_scope) = compiler_instance.find_module_scope(main_module.module_name()) {
-        discover_module_type_definitions(&main_module_scope, None, &mut type_name_to_dependency_crate_name, &mut type_definition_functions);
+        discover_module_type_definitions(&main_module_scope, None, &mut type_source_crate_lookup, &mut type_definition_functions);
     } else {
         bail!("Module {} did not contain any source files to be compiled", main_module.module_name());
     }
@@ -72,30 +80,40 @@ pub(crate) fn process_module_context(main_module_path: &PathBuf, additional_depe
 
     // Run the VM to generate type hierarchy for types that we want to generate
     let mut run_context = GospelVMRunContext::create(GospelVMOptions::default().no_default_globals());
-    let mut type_name_to_type_index: Vec<(String, Option<usize>, bool, Option<GospelVMClosure>)> = Vec::new();
-    for function_reference in &type_definition_functions {
-        let type_name = function_reference.return_value_type_name.as_ref().unwrap().clone();
-        if let Some(type_function) = vm_state.find_function_by_reference(&function_reference.function) &&
+    let mut types_to_generate: Vec<BindingsTypeDefinition> = Vec::new();
+    for function_declaration in &type_definition_functions {
+        let type_name = function_declaration.reference.return_value_type_name.as_ref().unwrap().clone();
+        if let Some(type_function) = vm_state.find_function_by_reference(&function_declaration.reference.function) &&
             let execution_result = type_function.execute(Vec::new(), &mut run_context).map_err(|x| anyhow!("Failed to evaluate type {}: {}", &type_name, x))? &&
             let GospelVMValue::TypeReference(type_index) = execution_result {
-            let is_parameterless_type = function_reference.signature.explicit_parameters.is_none() && function_reference.signature.implicit_parameters.is_empty();
-            type_name_to_type_index.push((type_name, Some(type_index), is_parameterless_type, Some(type_function.clone())));
+            let is_parameterless_type = function_declaration.reference.signature.explicit_parameters.is_none() && function_declaration.reference.signature.implicit_parameters.is_empty();
+            types_to_generate.push(BindingsTypeDefinition{
+                type_full_name: type_name,
+                type_index: Some(type_index),
+                is_static_type: is_parameterless_type,
+                type_metadata: function_declaration.metadata.clone(),
+            });
         } else {
-            type_name_to_type_index.push((type_name, None, false, None));
+            types_to_generate.push(BindingsTypeDefinition{
+                type_full_name: type_name,
+                type_index: None,
+                is_static_type: false,
+                type_metadata: BTreeMap::new(),
+            })
         }
     }
 
-    Ok(ResolvedBindingsModuleContext{ run_context, type_name_to_dependency_crate_name, type_name_to_type_index })
+    Ok(ResolvedBindingsModuleContext{ run_context, type_source_crate_lookup, types_to_generate })
 }
 
-fn discover_module_type_definitions(current_scope: &Rc<CompilerLexicalScope>, crate_name: Option<&str>, type_name_to_crate_name: &mut HashMap<String, Option<String>>, type_definition_functions: &mut Vec<CompilerFunctionReference>) {
+fn discover_module_type_definitions(current_scope: &Rc<CompilerLexicalScope>, crate_name: Option<&str>, type_name_to_crate_name: &mut HashMap<String, Option<String>>, type_definition_functions: &mut Vec<CompilerFunctionDeclaration>) {
     for child_node in current_scope.iterate_children() {
         if let CompilerLexicalNode::Scope(child_scope) = child_node {
             if let CompilerLexicalScopeClass::Function(function_declaration) = &child_scope.class {
-                let function_reference = function_declaration.borrow().function_reference.clone();
-                if function_reference.signature.return_value_type == ExpressionValueType::Typename && let Some(return_value_type_name) = &function_reference.return_value_type_name {
+                let function_declaration = function_declaration.borrow().clone();
+                if function_declaration.reference.signature.return_value_type == ExpressionValueType::Typename && let Some(return_value_type_name) = &function_declaration.reference.return_value_type_name {
                     type_name_to_crate_name.insert(return_value_type_name.clone(), crate_name.map(|x| x.to_string()));
-                    type_definition_functions.push(function_reference);
+                    type_definition_functions.push(function_declaration);
                 }
             } else if matches!(child_scope.class, CompilerLexicalScopeClass::SourceFile(_)) || matches!(child_scope.class, CompilerLexicalScopeClass::Namespace) {
                 discover_module_type_definitions(&child_scope, crate_name, type_name_to_crate_name, type_definition_functions);

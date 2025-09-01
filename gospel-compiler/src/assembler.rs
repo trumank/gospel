@@ -5,8 +5,7 @@ use anyhow::{anyhow};
 use logos::{Lexer, Logos};
 use strum::Display;
 use gospel_vm::bytecode::{GospelInstruction, GospelOpcode};
-use gospel_vm::gospel::{GospelValueType};
-use gospel_vm::writer::{GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceObjectReference, GospelSourceStructDefinition, GospelSourceStructField};
+use gospel_vm::writer::{GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceFunctionDefinition, GospelSourceObjectReference};
 use std::str::FromStr;
 use crate::lex_util::get_line_number_and_offset_from_index;
 
@@ -29,9 +28,6 @@ enum AssemblerToken {
     #[token("global")]
     #[strum(to_string = "global")]
     GlobalVariableSpecifier,
-    #[token("structure")]
-    #[strum(to_string = "structure")]
-    StructureSpecifier,
     #[token("max_slots")]
     #[strum(to_string = "max_slots")]
     MaxSlotsSpecifier,
@@ -152,9 +148,7 @@ struct FunctionCodeAssembler<'a> {
     module_name: String,
     global_variable_names: HashSet<String>,
     local_function_names: HashSet<String>,
-    local_struct_names: HashSet<String>,
     function_definition: &'a mut GospelSourceFunctionDefinition,
-    argument_names: HashMap<String, u32>,
     local_variable_slots: HashMap<String, u32>,
     label_lookup: HashMap<String, u32>,
     label_fixups: HashMap<String, Vec<GospelJumpLabelFixup>>,
@@ -176,8 +170,6 @@ impl FunctionCodeAssembler<'_> {
                             // Local identifier can refer to a local variable, argument, label, or a global variable
                             if let Some(local_variable_slot_index) = self.local_variable_slots.get(local_identifier) {
                                 *local_variable_slot_index
-                            } else if let Some(function_argument_index) = self.argument_names.get(local_identifier) {
-                                *function_argument_index
                             } else if let Some(label_instruction_index) = self.label_lookup.get(local_identifier) {
                                 *label_instruction_index
                             } else if self.global_variable_names.contains(local_identifier) {
@@ -185,9 +177,6 @@ impl FunctionCodeAssembler<'_> {
                             } else if self.local_function_names.contains(local_identifier) {
                                 let function_reference = GospelSourceObjectReference{module_name: self.module_name.clone(), local_name: local_identifier.clone()};
                                 self.function_definition.add_function_reference_internal(function_reference)
-                            } else if self.local_struct_names.contains(local_identifier) {
-                                let struct_reference = GospelSourceObjectReference{module_name: self.module_name.clone(), local_name: local_identifier.clone()};
-                                self.function_definition.add_struct_reference_internal(struct_reference)
                             } else {
                                 // Assume forward declared label reference
                                 if !self.label_fixups.contains_key(local_identifier) {
@@ -201,9 +190,8 @@ impl FunctionCodeAssembler<'_> {
                             }
                         }
                         AssemblerIdentifier::Qualified { container_name, local_name } => {
-                            // Qualified identifiers are ambiguous as they can refer both to external functions and structs
-                            return Err(ctx.fail(format!("Ambiguous qualified identifier {0}::{1}, could refer both to a struct or to a function. Use `struct {0}::{1}` to refer to a struct or `function {0}::{1}` to refer to a function",
-                                container_name, local_name)))
+                            // Refers to a function
+                            self.function_definition.add_function_reference_internal(GospelSourceObjectReference{module_name: container_name.clone(), local_name: local_name.clone()})
                         }
                     }
                 }
@@ -214,13 +202,6 @@ impl FunctionCodeAssembler<'_> {
                 AssemblerToken::StringLiteral(string_literal) => {
                     // String literals are treated as string references
                     self.function_definition.add_string_reference_internal(string_literal)
-                }
-                AssemblerToken::StructureSpecifier => {
-                    let struct_reference = match ctx.next_identifier()? {
-                        AssemblerIdentifier::Local(name) => GospelSourceObjectReference{module_name: self.module_name.clone(), local_name: name},
-                        AssemblerIdentifier::Qualified{container_name, local_name} => GospelSourceObjectReference{module_name: container_name, local_name}
-                    };
-                    self.function_definition.add_struct_reference_internal(struct_reference)
                 }
                 AssemblerToken::FunctionSpecifier => {
                     let function_reference = match ctx.next_identifier()? {
@@ -288,50 +269,12 @@ pub struct GospelAssembler {
     visitor: Rc<RefCell<dyn GospelModuleVisitor>>,
     global_variable_names: HashSet<String>,
     local_function_names: HashSet<String>,
-    local_struct_names: HashSet<String>,
 }
 impl GospelAssembler {
-    fn parse_value_type_token(token: &AssemblerToken) -> Option<GospelValueType> {
-        if let AssemblerToken::Identifier(identifier) = token {
-            if let AssemblerIdentifier::Local(local_name) = identifier {
-                GospelValueType::from_str(local_name.as_str()).ok()
-            } else { None }
-        } else { None }
-    }
     fn parse_function_definition(&mut self, ctx: &mut GospelLexerContext) -> anyhow::Result<()> {
         let function_name = ctx.next_local_identifier()?;
         let module_name = self.visitor.borrow().module_name().ok_or_else(|| anyhow!("Cannot compile declarations for unknown module name"))?;
-        let mut function_declaration = GospelSourceFunctionDeclaration::create(
-            GospelSourceObjectReference{module_name: module_name.clone(), local_name: function_name.clone()}, true, ctx.file_name.to_string());
-        let mut argument_name_map: HashMap<String, u32> = HashMap::new();
-
-        let mut current_argument_token = ctx.next_checked()?;
-        while current_argument_token != AssemblerToken::ReturnValueSeparator {
-            // This might be a named argument, attempt to parse the token as identifier
-            let mut maybe_argument_name: Option<String> = None;
-            if let AssemblerToken::Identifier(argument_name) = current_argument_token {
-                maybe_argument_name = Some(ctx.expect_local_identifier(argument_name)?);
-
-                // Next token must be a label separator, followed by the argument type
-                ctx.next_expect_token(AssemblerToken::NameSeparator)?;
-                current_argument_token = ctx.next_checked()?;
-            }
-
-            // Current token should be an argument type
-            let argument_type = Self::parse_value_type_token(&current_argument_token)
-                .ok_or_else(|| ctx.fail(format!("Expected value type, got {}", current_argument_token)))?;
-            current_argument_token = ctx.next_checked()?;
-            let argument_index = function_declaration.add_function_argument(argument_type)?;
-            if let Some(argument_name) = maybe_argument_name {
-                argument_name_map.insert(argument_name, argument_index);
-            }
-        }
-
-        // All functions must have a return value since all gospel functions are pure
-        let return_value_token = ctx.next_checked()?;
-        let return_value_type = Self::parse_value_type_token(&return_value_token)
-            .ok_or_else(|| ctx.fail(format!("Expected value type, got {}", return_value_token)))?;
-        function_declaration.set_return_value_type(return_value_type);
+        let function_declaration = GospelSourceObjectReference{module_name: module_name.clone(), local_name: function_name.clone()};
 
         // Add function to the locally defined list for convenience
         self.local_function_names.insert(function_name.clone());
@@ -354,16 +297,14 @@ impl GospelAssembler {
         ctx.next_expect_token(AssemblerToken::EnterScope)?;
 
         // This is a function definition, parse the function body now
-        let mut function_definition = GospelSourceFunctionDefinition::create(function_declaration);
+        let mut function_definition = GospelSourceFunctionDefinition::create(true, ctx.file_name.to_string());
         function_definition.num_slots = max_slot_count;
         let module_name = self.visitor.borrow().module_name().ok_or_else(|| anyhow!("Cannot compile declarations for unknown module name"))?;
         let mut function_assembler = FunctionCodeAssembler{
             module_name,
             global_variable_names: self.global_variable_names.clone(),
             local_function_names: self.local_function_names.clone(),
-            local_struct_names: self.local_struct_names.clone(),
             function_definition: &mut function_definition,
-            argument_names: argument_name_map,
             local_variable_slots: HashMap::new(),
             label_lookup: HashMap::new(),
             label_fixups: HashMap::new(),
@@ -379,7 +320,7 @@ impl GospelAssembler {
         ctx.next_expect_token(AssemblerToken::StatementSeparator)?;
 
         // Define the function finally
-        self.visitor.borrow_mut().define_function(function_definition)
+        self.visitor.borrow_mut().define_function(function_declaration, function_definition)
             .map_err(|x| ctx.fail(x.to_string()))
     }
     fn parse_global_declaration(&mut self, ctx: &mut GospelLexerContext) -> anyhow::Result<()> {
@@ -400,58 +341,16 @@ impl GospelAssembler {
         self.visitor.borrow_mut().define_global(&global_variable_name, default_value)
             .map_err(|x| ctx.fail(x.to_string()))
     }
-    fn parse_struct_definition(&mut self, ctx: &mut GospelLexerContext) -> anyhow::Result<()> {
-        let struct_name = ctx.next_local_identifier()?;
-        ctx.next_expect_token(AssemblerToken::EnterScope)?;
-
-        let module_name = self.visitor.borrow().module_name().ok_or_else(|| anyhow!("Cannot compile declarations for unknown module name"))?;
-        let mut struct_builder = GospelSourceStructDefinition{
-            name: GospelSourceObjectReference{module_name, local_name: struct_name.clone()},
-            exported: true,
-            fields: Vec::new(),
-        };
-        let mut current_token = ctx.next_checked()?;
-        while current_token != AssemblerToken::ExitScope {
-            if let Some(unnamed_variable_type) = Self::parse_value_type_token(&current_token) {
-                struct_builder.fields.push(GospelSourceStructField{
-                    field_name: None,
-                    field_type: unnamed_variable_type,
-                });
-                ctx.next_expect_token(AssemblerToken::StatementSeparator)?;
-            } else if let AssemblerToken::Identifier(identifier) = &current_token {
-                let field_name = ctx.expect_local_identifier(identifier.clone())?;
-                ctx.next_expect_token(AssemblerToken::NameSeparator)?;
-
-                let variable_type_token = ctx.next_checked()?;
-                let field_type = Self::parse_value_type_token(&variable_type_token)
-                    .ok_or_else(|| anyhow!("Expected value type, got {}", variable_type_token))?;
-                struct_builder.fields.push(GospelSourceStructField{
-                    field_name: Some(field_name),
-                    field_type,
-                });
-                ctx.next_expect_token(AssemblerToken::StatementSeparator)?;
-            } else {
-                return Err(ctx.fail(format!("Expected label or value type, got {}", current_token)));
-            }
-            current_token = ctx.next_checked()?;
-        }
-        ctx.next_expect_token(AssemblerToken::StatementSeparator)?;
-        self.local_struct_names.insert(struct_name.clone());
-
-        self.visitor.borrow_mut().define_struct(struct_builder)
-            .map_err(|x| ctx.fail(x.to_string()))
-    }
     fn parse_top_level_statement(&mut self, start_token: AssemblerToken, ctx: &mut GospelLexerContext) -> anyhow::Result<()> {
         match start_token {
             AssemblerToken::FunctionSpecifier => self.parse_function_definition(ctx),
             AssemblerToken::GlobalVariableSpecifier => self.parse_global_declaration(ctx),
-            AssemblerToken::StructureSpecifier => self.parse_struct_definition(ctx),
             _ => Err(ctx.fail(format!("Expected top level statement (function), got {}", start_token)))
         }
     }
     /// Creates an assembler instance that will assemble the files and forward the results to the provided visitor
     pub fn create(visitor: Rc<RefCell<dyn GospelModuleVisitor>>) -> Self {
-        GospelAssembler{visitor, global_variable_names: HashSet::new(), local_function_names: HashSet::new(), local_struct_names: HashSet::new()}
+        GospelAssembler{visitor, global_variable_names: HashSet::new(), local_function_names: HashSet::new()}
     }
     /// Assembles the provided source assembly file and writes results to the underlying writer
     pub fn assemble_file_contents(&mut self, file_name: &str, contents: &str) -> anyhow::Result<()> {

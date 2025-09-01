@@ -10,7 +10,6 @@ use anyhow::{anyhow};
 use clap::{Args, Parser, ValueEnum};
 use gospel_typelib::type_model::{ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, TypeLayoutCache, TypeTree};
 use gospel_vm::module::{GospelContainer};
-use gospel_vm::reflection::{GospelContainerReflector, GospelModuleReflector};
 use gospel_vm::vm::{GospelVMContainer, GospelVMOptions, GospelVMRunContext, GospelVMState, GospelVMTypeContainer, GospelVMValue};
 use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter};
 use crate::assembler::GospelAssembler;
@@ -125,8 +124,8 @@ struct ActionCallFunction {
 }
 
 #[derive(Parser, Debug)]
-struct ActionReflectModule {
-    /// Module container or reference container to print the public interface of
+struct ActionDisassembleModule {
+    /// Module container to disassemble
     #[arg(index = 1)]
     input: PathBuf,
 }
@@ -242,8 +241,8 @@ enum Action {
     Assemble(ActionAssembleModule),
     /// Call a named function with the provided arguments
     Call(ActionCallFunction),
-    /// Prints information about the public interface of the given module. Note that this will not print any private module definitions or data
-    Reflect(ActionReflectModule),
+    /// Disassembles the provided module container file
+    Disassemble(ActionDisassembleModule),
     /// Parses the source file to an AST and dumps it to the standard output as JSON
     Parse(ActionParseSourceFile),
     /// Compiles module files into a module container
@@ -440,32 +439,14 @@ fn do_action_call(action: ActionCallFunction) -> anyhow::Result<()> {
     pretty_print_vm_value(&function_result, &execution_context, action.output_format)
 }
 
-fn do_action_reflect(action: ActionReflectModule) -> anyhow::Result<()> {
+fn do_action_disassemble(action: ActionDisassembleModule) -> anyhow::Result<()> {
     let file_buffer = read(action.input.clone())
         .map_err(|x| anyhow!("Failed to open container file {}: {}", action.input.to_string_lossy(), x.to_string()))?;
 
     // Parse the module interface based on the file type and create the reflector object
-    let parsed_container = GospelContainer::read(&file_buffer)
+    // TODO: Implement disassembler and necessary API later
+    let _parsed_container = GospelContainer::read(&file_buffer)
         .map_err(|x| anyhow!("Failed to parse module container file: {}", x.to_string()))?;
-    let module_reflector = GospelContainerReflector::create(Rc::new(parsed_container))
-        .map_err(|x| anyhow!("Failed to reflect module container file: {}", x.to_string()))?;
-
-    // Print the resulting data now
-    println!("Module {} public interface:", module_reflector.module_name()?);
-    for global_variable in module_reflector.enumerate_globals()? {
-        println!(" extern global {};", global_variable.name);
-    }
-    for function_info in module_reflector.enumerate_functions()? {
-        let arguments: Vec<String> = function_info.arguments.iter().enumerate().map(|(index, argument)| {
-            format!("${}: {}", index, argument.argument_type)
-        }).collect();
-        let function_declaration = if arguments.is_empty() {
-            format!("{} -> {}", function_info.name, function_info.return_value_type)
-        } else {
-            format!("{} {} -> {}", function_info.name, arguments.join(" "), function_info.return_value_type)
-        };
-        println!(" function {};", function_declaration);
-    }
     Ok({})
 }
 
@@ -542,7 +523,7 @@ fn main() {
     let result = match args.action {
         Action::Assemble(assemble_action) => do_action_assemble(assemble_action),
         Action::Call(call_action) => do_action_call(call_action),
-        Action::Reflect(reflect_action) => do_action_reflect(reflect_action),
+        Action::Disassemble(reflect_action) => do_action_disassemble(reflect_action),
         Action::Parse(parse_action) => do_action_parse(parse_action),
         Action::Compile(compile_action) => do_action_compile(compile_action),
         Action::Eval(eval_action) => do_action_eval(eval_action),

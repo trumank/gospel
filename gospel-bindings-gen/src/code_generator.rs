@@ -1,4 +1,4 @@
-use crate::module_processor::ResolvedBindingsModuleContext;
+use crate::module_processor::{BindingsTypeDefinition, ResolvedBindingsModuleContext};
 use anyhow::{anyhow, bail};
 use gospel_typelib::type_model::{PrimitiveType, Type, TypeGraphLike, UserDefinedTypeMember};
 use proc_macro2::{Ident, Span, TokenStream};
@@ -6,7 +6,6 @@ use quote::quote;
 use std::collections::{HashMap, HashSet};
 use convert_case::{Case, Casing};
 use syn::{parse2, parse_str, File};
-use gospel_vm::vm::GospelVMClosure;
 
 #[derive(Debug)]
 pub(crate) struct CodeGenerationContext {
@@ -51,9 +50,8 @@ impl CodeGenerationContext {
         let mod_name = Ident::new(&self.bindings_mod_name, Span::call_site());
         quote! { #crate_name::#mod_name::#short_type_name }
     }
-    fn generate_doc_comment(function_closure: &Option<GospelVMClosure>, doc_metadata: &str) -> Option<TokenStream> {
-        let documentation_attributes: Vec<TokenStream> = function_closure.as_ref()
-            .and_then(|x| x.function_metadata(doc_metadata)).into_iter()
+    fn generate_doc_comment(type_definition: &BindingsTypeDefinition, doc_metadata: &str) -> Option<TokenStream> {
+        let documentation_attributes: Vec<TokenStream> = type_definition.type_metadata.get(doc_metadata).into_iter()
             .flat_map(|x| x.lines())
             .filter(|x| !x.is_empty())
             .map(|doc_comment_line| quote! { #[doc = #doc_comment_line] })
@@ -93,7 +91,7 @@ impl CodeGenerationContext {
             }
             Type::UDT(user_defined_type) => {
                 // TODO: We could generate more accurate bindings based not just on the name of the type but also on the template parameters
-                if let Some(udt_name) = &user_defined_type.name && let Some(source_crate_name) = self.module_context.type_name_to_dependency_crate_name.get(udt_name) {
+                if let Some(udt_name) = &user_defined_type.name && let Some(source_crate_name) = self.module_context.type_source_crate_lookup.get(udt_name) {
                     let full_type_name = self.generate_type_qualified_name(source_crate_name, udt_name);
                     Ok(quote! { #full_type_name::<M> })
                 } else {
@@ -120,8 +118,8 @@ impl CodeGenerationContext {
             *primitive_type == PrimitiveType::Void
         } else { false }
     }
-    fn generate_type_field_definition(&self, type_name: &Ident, source_file_name: &str, field_name: &Ident, maybe_field_type_index: Option<usize>, is_prototype_field: bool, function_closure: &Option<GospelVMClosure>) -> TokenStream {
-        let field_doc_comment = Self::generate_doc_comment(function_closure, &format!("doc_{}", source_file_name));
+    fn generate_type_field_definition(&self, type_name: &Ident, source_file_name: &str, field_name: &Ident, maybe_field_type_index: Option<usize>, is_prototype_field: bool, type_definition: &BindingsTypeDefinition) -> TokenStream {
+        let field_doc_comment = Self::generate_doc_comment(type_definition, &format!("doc_{}", source_file_name));
         if let Some(field_type_index) = maybe_field_type_index && !self.is_opaque_type_index(field_type_index) &&
             let Ok(generated_field_type) = self.generate_type_reference(field_type_index) {
             if is_prototype_field {
@@ -138,7 +136,7 @@ impl CodeGenerationContext {
             }
         }
     }
-    fn generate_type_definition(&self, type_index: usize, is_parameterless_type: bool, function_closure: &Option<GospelVMClosure>) -> anyhow::Result<TokenStream> {
+    fn generate_type_definition(&self, type_index: usize, type_definition: &BindingsTypeDefinition) -> anyhow::Result<TokenStream> {
         let base_type_index = self.module_context.run_context.base_type_index(type_index);
         let type_container = self.module_context.run_context.type_container_by_index(base_type_index);
 
@@ -148,14 +146,14 @@ impl CodeGenerationContext {
 
         let full_type_name = user_defined_type.name.clone().ok_or_else(|| anyhow!("Cannot generate bindings for unnamed UDTs"))?;
         let type_name = Ident::new(&Self::generate_short_udt_name(&full_type_name), Span::call_site());
-        let type_doc_comment = Self::generate_doc_comment(function_closure, "doc");
+        let type_doc_comment = Self::generate_doc_comment(type_definition, "doc");
         let mut generated_field_names: HashSet<String> = HashSet::new();
         let mut generated_fields: Vec<TokenStream> = Vec::new();
 
         // Generate non-prototype members first
         for udt_member in &user_defined_type.members {
             if let UserDefinedTypeMember::Field(field) = udt_member && let Some(field_name) = field.name.as_ref() && !field_name.contains("@") {
-                let field_tokens = self.generate_type_field_definition(&type_name, field_name, &Ident::new(&Self::convert_field_name_to_snake_case(field_name), Span::call_site()), Some(field.member_type_index), false, function_closure);
+                let field_tokens = self.generate_type_field_definition(&type_name, field_name, &Ident::new(&Self::convert_field_name_to_snake_case(field_name), Span::call_site()), Some(field.member_type_index), false, type_definition);
                 generated_field_names.insert(field_name.clone());
                 generated_fields.push(field_tokens);
             }
@@ -187,12 +185,12 @@ impl CodeGenerationContext {
             if let UserDefinedTypeMember::Field(field) = prototype_udt_member &&
                 let Some(field_name) = field.name.as_ref() && !generated_field_names.contains(field_name) {
                 let field_type = if prototype_fields_with_conflicting_types.contains(field_name) { None } else { Some(field.member_type_index) };
-                let field_tokens = self.generate_type_field_definition(&type_name, field_name, &Ident::new(&Self::convert_field_name_to_snake_case(field_name), Span::call_site()), field_type, true, function_closure);
+                let field_tokens = self.generate_type_field_definition(&type_name, field_name, &Ident::new(&Self::convert_field_name_to_snake_case(field_name), Span::call_site()), field_type, true, type_definition);
                 generated_field_names.insert(field_name.clone());
                 generated_fields.push(field_tokens);
             }
         }
-        let type_impl_arguments = if is_parameterless_type {
+        let type_impl_arguments = if type_definition.is_static_type {
             quote! { static_type }
         } else { quote!{ dynamic_type } };
         Ok(quote! {
@@ -213,11 +211,11 @@ impl CodeGenerationContext {
     }
     pub(crate) fn generate_bindings_file(self) -> anyhow::Result<String> {
         let mut type_definitions: Vec<TokenStream> = Vec::new();
-        for (type_name, maybe_type_index, is_parameterless_type, function_closure) in &self.module_context.type_name_to_type_index {
-            if let Some(type_index) = maybe_type_index.clone() && let Ok(result_type_definition) = self.generate_type_definition(type_index, *is_parameterless_type, function_closure) {
+        for type_definition in &self.module_context.types_to_generate {
+            if let Some(type_index) = type_definition.type_index && let Ok(result_type_definition) = self.generate_type_definition(type_index, type_definition) {
                 type_definitions.push(result_type_definition.clone());
             } else {
-                let fallback_type_definition = self.generate_fallback_type_definition(type_name);
+                let fallback_type_definition = self.generate_fallback_type_definition(&type_definition.type_full_name);
                 type_definitions.push(fallback_type_definition);
             }
         }

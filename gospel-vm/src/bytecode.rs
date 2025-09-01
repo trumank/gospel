@@ -25,8 +25,6 @@ pub enum GospelOpcode {
     BindClosure = 0x07, // <imm>; [pop stack] [pop stack] x <imm> -> [push stack]
     #[strum(props(immediate_count = "1"))]
     RaiseException = 0x08, // <imm>; ->
-    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
-    Typeof = 0x09, // ; [pop stack] -> [push stack]
     Return = 0x0A, // ; ->
     #[strum(props(immediate_count = "1"))]
     PushExceptionHandler = 0xB, // <imm>; ->
@@ -159,22 +157,12 @@ pub enum GospelOpcode {
     #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
     ArrayRemoveItem = 0x86, // ; [pop stack], [pop stack] -> [push stack]
     // Struct opcodes
-    #[strum(props(immediate_count = "1", stack_out_count = "1"))]
-    StructAllocate = 0x90, // <imm>; -> [push stack]
-    #[strum(props(immediate_count = "2", stack_in_count = "1", stack_out_count = "1"))]
-    StructGetLocalField = 0x92, // <imm> <imm>; [pop stack] -> [push stack]
-    #[strum(props(immediate_count = "2", stack_in_count = "2", stack_out_count = "1"))]
-    StructSetLocalField = 0x93, // <imm> <imm>; [pop stack], [pop stack] -> [push stack]
-    #[strum(props(immediate_count = "2", stack_in_count = "1", stack_out_count = "1"))]
-    StructGetNamedField = 0x94, // <imm> <imm>; [pop stack] -> [push stack]
-    #[strum(props(immediate_count = "2", stack_in_count = "2", stack_out_count = "1"))]
-    StructSetNamedField = 0x95, // <imm> <imm>; [pop stack], [pop stack] -> [push stack]
-    #[strum(props(immediate_count = "1", stack_out_count = "1"))]
-    StructIsStructOfType = 0x96, // <imm>; -> [push stack]
-    #[strum(props(immediate_count = "2", stack_in_count = "1", stack_out_count = "1"))]
-    StructGetNamedTypedField = 0x97, // <imm> <imm>; [pop stack] -> [push stack]
-    #[strum(props(immediate_count = "2", stack_in_count = "2", stack_out_count = "1"))]
-    StructSetNamedTypedField = 0x98, // <imm> <imm>; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(stack_out_count = "1"))]
+    StructAllocate = 0x90, // ; -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
+    StructGetField = 0x94, // <imm>; [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "2", stack_out_count = "1"))]
+    StructSetField = 0x95, // <imm>; [pop stack], [pop stack] -> [push stack]
     // Type layout calculation opcodes
     #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
     TypeCalculateSize = 0xA0, // ; [pop stack] -> [push stack]

@@ -345,6 +345,7 @@ dependencies = [
  "anyhow",
  "bitcode",
  "gospel-typelib",
+ "itertools",
  "serde",
  "strum",
 ]

@@ -10,8 +10,8 @@ use crate::ast::{CVQualifiedExpression, EnumConstantDeclaration, EnumStatement, 
 use gospel_typelib::type_model::{EnumKind, PrimitiveType, UserDefinedTypeKind};
 use gospel_vm::bytecode::GospelOpcode;
 use gospel_vm::module::GospelContainer;
-use gospel_vm::gospel::{GospelTargetProperty, GospelValueType};
-use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter, GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceFunctionDeclaration, GospelSourceFunctionDefinition, GospelSourceObjectReference, GospelSourceStructDefinition, GospelSourceStructField};
+use gospel_vm::gospel::{GospelTargetProperty};
+use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter, GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceFunctionDefinition, GospelSourceObjectReference};
 use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, ImportStatement, ModuleImportStatementType, ModuleSourceFile, TopLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayTypeExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, BuiltinIdentifierExpression, BuiltinIdentifier, DeclarationAccessSpecifier, PrimitiveTypeExpression, ExpressionWithCondition};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -178,33 +178,28 @@ struct CompilerFunctionBuilder {
     function_scope: Rc<CompilerLexicalScope>,
     function_signature: CompilerFunctionSignature,
     return_value_struct_name: Option<String>,
+    function_name: GospelSourceObjectReference,
     function_definition: GospelSourceFunctionDefinition,
     argument_source_declarations: Vec<Rc<CompilerLexicalDeclaration>>,
     inline_struct_counter: usize,
 }
 impl CompilerFunctionBuilder {
-    fn pre_compile_function(function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<(GospelSourceFunctionDeclaration, CompilerFunctionSignature, Option<String>, Vec<Rc<CompilerLexicalDeclaration>>)> {
+    fn pre_compile_function(function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<(GospelSourceObjectReference, CompilerFunctionSignature, Option<String>, Vec<Rc<CompilerLexicalDeclaration>>)> {
         let function_reference = if let CompilerLexicalScopeClass::Function(function_closure) = &function_scope.class {
             let borrowed_closure = function_closure.borrow();
-            borrowed_closure.function_reference.clone()
+            borrowed_closure.reference.clone()
         } else {
             compiler_bail!(&function_scope.source_context, "Internal compiler error: expected data scope in CompilerFunctionBuilder");
         };
-
-        let mut function_declaration: GospelSourceFunctionDeclaration = GospelSourceFunctionDeclaration::create(
-            function_reference.function.clone(), function_scope.visibility == DeclarationVisibility::Public, function_scope.source_context.file_name.clone().unwrap_or(String::from("<builtin>")));
-        function_declaration.set_return_value_type(CompilerInstance::convert_value_type(function_reference.signature.return_value_type));
         let mut argument_source_declarations: Vec<Rc<CompilerLexicalDeclaration>> = Vec::new();
 
         for weak_implicit_parameter in &function_reference.signature.implicit_parameters {
             if let Some(implicit_parameter) = weak_implicit_parameter.upgrade() {
                 match &implicit_parameter.class {
-                    CompilerLexicalDeclarationClass::Parameter(parameter_type) => {
-                        function_declaration.add_function_argument(CompilerInstance::convert_value_type(parameter_type.clone())).with_source_context(&function_scope.source_context)?;
+                    CompilerLexicalDeclarationClass::Parameter(_) => {
                         argument_source_declarations.push(implicit_parameter);
                     }
-                    CompilerLexicalDeclarationClass::LocalVariable(local_variable) => {
-                        function_declaration.add_function_argument(CompilerInstance::convert_value_type(local_variable.variable_type.clone())).with_source_context(&function_scope.source_context)?;
+                    CompilerLexicalDeclarationClass::LocalVariable(_) => {
                         argument_source_declarations.push(implicit_parameter);
                     }
                     _ => { compiler_bail!(&function_scope.source_context, "Internal compiler error: expected Parameter or LocalVariable declaration as implicit function parameters, got {}", implicit_parameter.class); }
@@ -217,22 +212,22 @@ impl CompilerFunctionBuilder {
         if let Some(explicit_function_parameters) = &function_reference.signature.explicit_parameters {
             for explicit_function_parameter in explicit_function_parameters {
                 if let Some(parameter_declaration) = explicit_function_parameter.parameter_declaration.upgrade() {
-                    function_declaration.add_function_argument(CompilerInstance::convert_value_type(explicit_function_parameter.parameter_type.clone())).with_source_context(&function_scope.source_context)?;
                     argument_source_declarations.push(parameter_declaration);
                 } else {
                     compiler_bail!(&function_scope.source_context, "Internal compiler error: lost reference to the explicit function parameter");
                 }
             }
         }
-        Ok((function_declaration, function_reference.signature, function_reference.return_value_type_name.clone(), argument_source_declarations))
+        Ok((function_reference.function.clone(), function_reference.signature, function_reference.return_value_type_name.clone(), argument_source_declarations))
     }
     fn create(function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<CompilerFunctionBuilder> {
-        let (function_declaration, function_signature, return_value_struct_name, argument_source_declarations) = Self::pre_compile_function(function_scope)?;
+        let (function_name, function_signature, return_value_struct_name, argument_source_declarations) = Self::pre_compile_function(function_scope)?;
         Ok(CompilerFunctionBuilder{
             function_scope: function_scope.clone(),
             function_signature: function_signature.clone(),
             return_value_struct_name,
-            function_definition: GospelSourceFunctionDefinition::create(function_declaration),
+            function_name,
+            function_definition: GospelSourceFunctionDefinition::create(function_scope.visibility == DeclarationVisibility::Public, function_scope.source_context.file_name.clone().unwrap_or(String::from("<builtin>"))),
             argument_source_declarations,
             inline_struct_counter: 0,
         })
@@ -287,21 +282,6 @@ impl CompilerFunctionBuilder {
         let struct_reference = CompilerInstance::compile_struct_statement(scope, expression, Some(struct_function_name.as_str()), DeclarationVisibility::Private)?;
         self.compile_static_function_call(scope, &struct_reference, &source_context, None, true)
     }
-    fn emit_runtime_typecheck(&mut self, source_context: &CompilerSourceContext, expected_expression_type: ExpressionValueType) -> CompilerResult<()> {
-        self.function_definition.add_simple_instruction(GospelOpcode::Dup, Self::get_line_number(source_context)).with_source_context(source_context)?;
-
-        // if typeof(x) == expected_expression_type { jump to end } else { abort }
-        self.function_definition.add_simple_instruction(GospelOpcode::Typeof, Self::get_line_number(source_context)).with_source_context(source_context)?;
-        self.function_definition.add_int_constant_instruction(CompilerInstance::convert_value_type(expected_expression_type) as i32, Self::get_line_number(source_context)).with_source_context(source_context)?;
-        self.function_definition.add_simple_instruction(GospelOpcode::Sub, Self::get_line_number(source_context)).with_source_context(source_context)?;
-
-        let (_, jump_to_end_fixup) = self.function_definition.add_control_flow_instruction(GospelOpcode::Branchz, Self::get_line_number(source_context)).with_source_context(source_context)?;
-        self.function_definition.add_string_instruction(GospelOpcode::RaiseException, format!("Runtime typecheck failed: Expected {}", expected_expression_type).as_str(), Self::get_line_number(source_context)).with_source_context(source_context)?;
-
-        let end_instruction_index = self.function_definition.current_instruction_count();
-        self.function_definition.fixup_control_flow_instruction(jump_to_end_fixup, end_instruction_index).with_source_context(source_context)?;
-        Ok({})
-    }
     fn compile_member_access_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &MemberAccessExpression) -> CompilerResult<ExpressionValueType> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
 
@@ -311,18 +291,15 @@ impl CompilerFunctionBuilder {
 
         if let Some(template_arguments) = &expression.template_arguments {
             // Member access expression is a closure call, so we need to read the value as the closure and then call it
-            self.function_definition.add_typed_member_access_instruction(GospelOpcode::StructGetNamedTypedField, expression.member_name.as_str(), GospelValueType::Closure, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+            self.function_definition.add_string_instruction(GospelOpcode::StructGetField, expression.member_name.as_str(), Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             for function_argument_expression in template_arguments {
                 self.compile_expression(scope, function_argument_expression)?;
             }
             self.function_definition.add_variadic_instruction(GospelOpcode::Call, template_arguments.len() as u32, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
-            // Closure return value is not known compile time, so we need to emit a runtime type check
-            self.emit_runtime_typecheck(&source_context, expression.member_type)?;
             Ok(expression.member_type)
         } else {
             // Member access expression is just a read from the metadata struct, not a closure call. StructGetNamedTypedField will do a runtime typecheck for us
-            let member_field_type = CompilerInstance::convert_value_type(expression.member_type);
-            self.function_definition.add_typed_member_access_instruction(GospelOpcode::StructGetNamedTypedField, expression.member_name.as_str(), member_field_type, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+            self.function_definition.add_string_instruction(GospelOpcode::StructGetField, expression.member_name.as_str(), Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             Ok(expression.member_type)
         }
     }
@@ -731,7 +708,7 @@ impl CompilerFunctionBuilder {
             CompilerLexicalNode::Scope(scope_declaration) => {
                 match &scope_declaration.class {
                     CompilerLexicalScopeClass::Function(data_closure) => {
-                        self.compile_static_function_call(scope, &data_closure.borrow().function_reference, &source_context, expression.template_arguments.as_ref(), false)
+                        self.compile_static_function_call(scope, &data_closure.borrow().reference, &source_context, expression.template_arguments.as_ref(), false)
                     }
                     _ => Err(compiler_error!(&source_context, "Scope {} does not name a data or struct declaration", scope_declaration.name))
                 }
@@ -925,11 +902,11 @@ impl CompilerFunctionBuilder {
     fn compile_enum_type_initialization(&mut self, enum_kind: EnumKind) -> CompilerResult<u32> {
         self.compile_generic_type_initialization(GospelOpcode::TypeEnumAllocate, enum_kind.to_string().as_str())
     }
-    fn compile_udt_type_metadata_struct_initialization(&mut self, struct_meta_layout: &CompilerStructMetaLayoutReference) -> CompilerResult<u32> {
+    fn compile_udt_type_metadata_struct_initialization(&mut self) -> CompilerResult<u32> {
         let source_context = self.function_scope.source_context.clone();
         let slot_index = self.function_definition.add_slot().with_source_context(&source_context)?;
 
-        self.function_definition.add_struct_instruction(GospelOpcode::StructAllocate, struct_meta_layout.reference.clone(), Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        self.function_definition.add_simple_instruction(GospelOpcode::StructAllocate, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         Ok(slot_index)
     }
@@ -1081,7 +1058,7 @@ impl CompilerFunctionBuilder {
     }
     fn commit(self) -> CompilerResult<()> {
         let codegen_data = self.function_scope.module_codegen().ok_or_else(|| compiler_error!(&self.function_scope.source_context, "Codegen not found for current module"))?;
-        if let Err(error) = codegen_data.visitor.borrow_mut().define_function(self.function_definition) {
+        if let Err(error) = codegen_data.visitor.borrow_mut().define_function(self.function_name, self.function_definition) {
             compiler_bail!(&self.function_scope.source_context, "Failed to define function {}: {}", self.function_scope.full_scope_name_no_module_name(), error.to_string());
         }
         Ok({})
@@ -1117,10 +1094,9 @@ pub trait CompilerModuleBuilder : CompilerModuleBuilderInternal {
             module_codegen_data.push_delayed_function_definition(&function_scope, Box::new(CompilerSimpleExpressionFunctionGenerator{
                 source_context: source_context.line_context.clone(),
                 return_value_expression: expression.clone(),
-                function_metadata: Vec::new(),
             }))?;
         }
-        Ok(function_closure.borrow().function_reference.function.clone())
+        Ok(function_closure.borrow().reference.function.clone())
     }
 }
 
@@ -1175,75 +1151,21 @@ impl CompilerModuleBuilderInternal for CompilerModuleDefinitionBuilder {
 }
 impl CompilerModuleBuilder for CompilerModuleDefinitionBuilder {}
 
-/// Represents a meta-layout of struct member
-#[derive(Debug, Clone)]
-pub struct CompilerStructMetaMember {
-    pub name: String,
-    pub value_type: ExpressionValueType,
-    declaration_source_contexts: Vec<CompilerSourceContext>,
-}
-
-/// Represents a meta-layout of struct
-#[derive(Debug, Clone, Default)]
-pub struct CompilerStructMetaLayout {
-    pub members: Vec<CompilerStructMetaMember>,
-    member_lookup: HashMap<String, usize>,
-}
-impl CompilerStructMetaLayout {
-    fn find_member_index_checked(&self, name: &str, value_type: ExpressionValueType, source_context: &CompilerSourceContext) -> CompilerResult<usize> {
-        if let Some(member_index) = self.member_lookup.get(name).cloned() {
-            if self.members[member_index].value_type != value_type {
-                compiler_bail!(source_context, "Access to meta member {} with incompatible value type {} (member value type: {})", name, value_type, self.members[member_index].value_type);
-            }
-            Ok(member_index)
-        } else {
-            compiler_bail!(source_context, "Meta member with name {} not found in metadata struct", name);
-        }
-    }
-    fn define_member_checked(&mut self, name: &str, value_type: ExpressionValueType, source_context: &CompilerSourceContext) -> CompilerResult<usize> {
-        if let Some(existing_member_index) = self.member_lookup.get(name).cloned() {
-            if self.members[existing_member_index].value_type != value_type {
-               compiler_bail!(source_context, "Conflicting definition of meta member: Previous declaration of {} at {} was of type {}, attempting to redeclare as type {}",
-                name, self.members[existing_member_index].declaration_source_contexts.first().as_ref().unwrap(), self.members[existing_member_index].value_type, value_type);
-            }
-            self.members[existing_member_index].declaration_source_contexts.push(source_context.clone());
-            Ok(existing_member_index)
-        } else {
-            let new_struct_member = CompilerStructMetaMember{name: name.to_string(), value_type, declaration_source_contexts: vec![source_context.clone()]};
-            let new_member_index = self.members.len();
-            self.members.push(new_struct_member);
-            self.member_lookup.insert(name.to_string(), new_member_index);
-            Ok(new_member_index)
-        }
-    }
-}
-
-/// Represents a meta-layout of the compiled struct
-#[derive(Debug, Clone, Default)]
-pub struct CompilerStructMetaLayoutReference {
-    pub reference: GospelSourceObjectReference,
-    pub signature: CompilerStructMetaLayout,
-}
-
 #[derive(Debug, Clone)]
 struct CompilerSimpleExpressionFunctionGenerator {
     source_context: ASTSourceContext,
     return_value_expression: Expression,
-    function_metadata: Vec<(String, String)>
 }
 impl CompilerFunctionCodeGenerator for CompilerSimpleExpressionFunctionGenerator {
     fn generate(&self, function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<()> {
         let mut function_builder = CompilerFunctionBuilder::create(function_scope)?;
-        for (metadata_key, metadata_value) in &self.function_metadata {
-            function_builder.function_definition.metadata.insert(metadata_key.clone(), metadata_value.clone());
-        }
         function_builder.compile_return_value_expression(&function_builder.function_scope.clone(), &self.source_context, &self.return_value_expression)?;
         function_builder.commit()
     }
 }
 
 trait CompilerStructFragmentGenerator : Debug {
-    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()>;
+    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()>;
 }
 
 #[derive(Debug)]
@@ -1252,10 +1174,10 @@ struct CompilerStructBlockFragment {
     fragments: Vec<Box<dyn CompilerStructFragmentGenerator>>
 }
 impl CompilerStructFragmentGenerator for CompilerStructBlockFragment {
-    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
+    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
         let block_instruction_index = builder.function_definition.current_instruction_count();
         for inner_declaration in &self.fragments {
-            inner_declaration.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, meta_layout, is_prototype_pass, allow_partial_types)?;
+            inner_declaration.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, is_prototype_pass, allow_partial_types)?;
         }
         self.block_declaration.borrow_mut().block_range = CompilerInstructionRange{
             start_instruction_index: block_instruction_index,
@@ -1275,7 +1197,7 @@ struct CompilerStructConditionalFragment {
     else_branch: Option<(Rc<RefCell<CompilerBlockDeclaration>>, Box<dyn CompilerStructFragmentGenerator>)>,
 }
 impl CompilerStructConditionalFragment {
-    fn compile_full_pass_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference, allow_partial_types: bool) -> CompilerResult<()> {
+    fn compile_full_pass_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, allow_partial_types: bool) -> CompilerResult<()> {
         let mut partial_type_jump_to_end_fixup: Option<GospelJumpLabelFixup> = None;
         if allow_partial_types {
             builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, source_context| {
@@ -1295,7 +1217,7 @@ impl CompilerStructConditionalFragment {
         let (_, condition_fixup) = builder.function_definition.add_control_flow_instruction(GospelOpcode::Branchz, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
 
         let then_branch_instruction_index = builder.function_definition.current_instruction_count();
-        self.then_fragment.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, meta_layout, false, allow_partial_types)?;
+        self.then_fragment.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, false, allow_partial_types)?;
 
         if let Some((else_block_declaration, else_fragment)) = &self.else_branch {
             // We have an else statement, so we need to jump to the end of the conditional statement after then branch is done
@@ -1305,7 +1227,7 @@ impl CompilerStructConditionalFragment {
                 start_instruction_index: then_branch_instruction_index,
                 end_instruction_index: else_branch_instruction_index,
             };
-            else_fragment.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, meta_layout, false, allow_partial_types)?;
+            else_fragment.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, false, allow_partial_types)?;
             else_block_declaration.borrow_mut().block_range = CompilerInstructionRange{
                 start_instruction_index: else_branch_instruction_index,
                 end_instruction_index: builder.function_definition.current_instruction_count(),
@@ -1329,21 +1251,21 @@ impl CompilerStructConditionalFragment {
         }
         Ok({})
     }
-    fn compile_prototype_pass_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference, allow_partial_types: bool) -> CompilerResult<()> {
+    fn compile_prototype_pass_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, allow_partial_types: bool) -> CompilerResult<()> {
         // Prototype pass does not need to evaluate conditions, both branches contribute to the struct prototype
-        self.then_fragment.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, meta_layout, true, allow_partial_types)?;
+        self.then_fragment.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, true, allow_partial_types)?;
         if let Some((_, else_fragment)) = &self.else_branch {
-            else_fragment.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, meta_layout, true, allow_partial_types)?;
+            else_fragment.compile_fragment(builder, type_layout_slot, type_layout_metadata_slot, true, allow_partial_types)?;
         }
         Ok({})
     }
 }
 impl CompilerStructFragmentGenerator for CompilerStructConditionalFragment {
-    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
+    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
        if is_prototype_pass {
-           self.compile_prototype_pass_fragment(builder, type_layout_slot, type_layout_metadata_slot, meta_layout, allow_partial_types)
+           self.compile_prototype_pass_fragment(builder, type_layout_slot, type_layout_metadata_slot, allow_partial_types)
        } else {
-           self.compile_full_pass_fragment(builder, type_layout_slot, type_layout_metadata_slot, meta_layout, allow_partial_types)
+           self.compile_full_pass_fragment(builder, type_layout_slot, type_layout_metadata_slot, allow_partial_types)
        }
     }
 }
@@ -1356,7 +1278,7 @@ struct CompilerStructMetadataFragment {
     metadata_name: String,
 }
 impl CompilerStructMetadataFragment {
-    fn compile_full_pass_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference, allow_take_slot: bool) -> CompilerResult<()> {
+    fn compile_full_pass_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_metadata_slot: u32, allow_take_slot: bool) -> CompilerResult<()> {
         // We cannot use TakeSlot if result of our calculation can be lost due to an exception
         if allow_take_slot {
             // Take metadata struct from the slot
@@ -1365,24 +1287,22 @@ impl CompilerStructMetadataFragment {
             // Copy metadata struct from the slot
             builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_metadata_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         }
-
         // Push the struct closure or resolved type layout on the stack
-        let metadata_field_value_type = builder.compile_implicitly_bound_function_closure_or_call(&self.scope, &self.metadata_function_reference, &self.source_context)?;
-        let metadata_field_index = meta_layout.signature.find_member_index_checked(&self.metadata_name, metadata_field_value_type, &self.source_context)?;
+        builder.compile_implicitly_bound_function_closure_or_call(&self.scope, &self.metadata_function_reference, &self.source_context)?;
 
         // Set the meta struct field value and store the struct back to the slot
-        builder.function_definition.add_struct_local_member_access_instruction(GospelOpcode::StructSetLocalField, meta_layout.reference.clone(), metadata_field_index as u32, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+        builder.function_definition.add_string_instruction(GospelOpcode::StructSetField, self.metadata_name.as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         builder.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, type_layout_metadata_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         Ok({})
     }
 }
 impl CompilerStructFragmentGenerator for CompilerStructMetadataFragment {
-    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, meta_layout: &CompilerStructMetaLayoutReference, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
+    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, type_layout_metadata_slot: u32, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
         // Prototype pass does not require metadata generation
         if !is_prototype_pass {
             if allow_partial_types {
                 builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, _| {
-                    self.compile_full_pass_fragment(inner_builder, type_layout_metadata_slot, meta_layout, !allow_partial_types)?;
+                    self.compile_full_pass_fragment(inner_builder, type_layout_metadata_slot, !allow_partial_types)?;
                     Ok({})
                 }, |inner_builder, source_context| {
                     // Type without complete metadata is also considered incomplete
@@ -1390,7 +1310,7 @@ impl CompilerStructFragmentGenerator for CompilerStructMetadataFragment {
                     Ok({})
                 })?;
             } else {
-                self.compile_full_pass_fragment(builder, type_layout_metadata_slot, meta_layout, !allow_partial_types)?;
+                self.compile_full_pass_fragment(builder, type_layout_metadata_slot, !allow_partial_types)?;
             }
         }
         Ok({})
@@ -1474,7 +1394,7 @@ impl CompilerStructMemberFragment {
     }
 }
 impl CompilerStructFragmentGenerator for CompilerStructMemberFragment {
-    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, _type_layout_metadata_slot: u32, _meta_layout: &CompilerStructMetaLayoutReference, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
+    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, _type_layout_metadata_slot: u32, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
         if is_prototype_pass || allow_partial_types {
             builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, _| {
                 self.compile_full_member_declaration(inner_builder, type_layout_slot, is_prototype_pass, allow_partial_types)
@@ -1524,7 +1444,7 @@ impl CompilerStructVirtualFunctionFragment {
     }
 }
 impl CompilerStructFragmentGenerator for CompilerStructVirtualFunctionFragment {
-    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, _type_layout_metadata_slot: u32, _meta_layout: &CompilerStructMetaLayoutReference, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
+    fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, _type_layout_metadata_slot: u32, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
         if is_prototype_pass || allow_partial_types {
             builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, _| {
                 self.compile_full_fragment(inner_builder, type_layout_slot, is_prototype_pass)
@@ -1545,7 +1465,7 @@ impl CompilerStructFragmentGenerator for CompilerStructVirtualFunctionFragment {
 #[derive(Debug)]
 struct BlankStructFragmentGenerator {}
 impl CompilerStructFragmentGenerator for BlankStructFragmentGenerator {
-    fn compile_fragment(&self, _builder: &mut CompilerFunctionBuilder, _type_layout_slot: u32, _type_layout_metadata_slot: u32, _meta_layout: &CompilerStructMetaLayoutReference, _is_prototype_pass: bool, _allow_partial_types: bool) -> CompilerResult<()> {
+    fn compile_fragment(&self, _builder: &mut CompilerFunctionBuilder, _type_layout_slot: u32, _type_layout_metadata_slot: u32, _is_prototype_pass: bool, _allow_partial_types: bool) -> CompilerResult<()> {
         Ok({})
     }
 }
@@ -1553,7 +1473,6 @@ impl CompilerStructFragmentGenerator for BlankStructFragmentGenerator {
 #[derive(Debug)]
 struct CompilerStructFunctionGenerator {
     struct_kind: UserDefinedTypeKind,
-    struct_meta_layout: CompilerStructMetaLayoutReference,
     alignment_expression: Option<ExpressionWithCondition>,
     member_pack_alignment_expression: Option<ExpressionWithCondition>,
     base_class_expressions: Vec<ExpressionWithCondition>,
@@ -1561,17 +1480,13 @@ struct CompilerStructFunctionGenerator {
     generate_prototype_layout: bool,
     source_context: CompilerSourceContext,
     fragments: Vec<Box<dyn CompilerStructFragmentGenerator>>,
-    function_metadata: Vec<(String, String)>
 }
 impl CompilerFunctionCodeGenerator for CompilerStructFunctionGenerator {
     fn generate(&self, function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<()> {
         let mut function_builder = CompilerFunctionBuilder::create(function_scope)?;
-        for (metadata_key, metadata_value) in &self.function_metadata {
-            function_builder.function_definition.metadata.insert(metadata_key.clone(), metadata_value.clone());
-        }
 
         let type_layout_slot_index = function_builder.compile_udt_type_initialization(self.struct_kind)?;
-        let type_layout_metadata_slot_index = function_builder.compile_udt_type_metadata_struct_initialization(&self.struct_meta_layout)?;
+        let type_layout_metadata_slot_index = function_builder.compile_udt_type_metadata_struct_initialization()?;
 
         if let Some(alignment_expression) = &self.alignment_expression {
             if self.allow_partial_types {
@@ -1592,13 +1507,13 @@ impl CompilerFunctionCodeGenerator for CompilerStructFunctionGenerator {
         }
         // Main pass with UDT layout generation
         self.fragments.iter().map(|struct_fragment| {
-            struct_fragment.compile_fragment(&mut function_builder, type_layout_slot_index, type_layout_metadata_slot_index, &self.struct_meta_layout, false, self.allow_partial_types)
+            struct_fragment.compile_fragment(&mut function_builder, type_layout_slot_index, type_layout_metadata_slot_index, false, self.allow_partial_types)
         }).chain_compiler_result(|| compiler_error!(&self.source_context, "Failed to compile struct definition (main pass)"))?;
 
         // Optional secondary pass that generates layout prototype information useful to some users
         if self.generate_prototype_layout {
             self.fragments.iter().map(|struct_fragment| {
-                struct_fragment.compile_fragment(&mut function_builder, type_layout_slot_index, type_layout_metadata_slot_index, &self.struct_meta_layout, true, false)
+                struct_fragment.compile_fragment(&mut function_builder, type_layout_slot_index, type_layout_metadata_slot_index, true, false)
             }).chain_compiler_result(|| compiler_error!(&self.source_context, "Failed to compile struct definition (prototype pass)"))?;
         }
         for base_class_expression in &self.base_class_expressions {
@@ -1617,15 +1532,10 @@ struct CompilerEnumFunctionGenerator {
     generate_prototype_layout: bool,
     source_context: CompilerSourceContext,
     constants: Vec<EnumConstantDeclaration>,
-    function_metadata: Vec<(String, String)>
 }
 impl CompilerFunctionCodeGenerator for CompilerEnumFunctionGenerator {
     fn generate(&self, function_scope: &Rc<CompilerLexicalScope>) -> CompilerResult<()> {
         let mut function_builder = CompilerFunctionBuilder::create(function_scope)?;
-        for (metadata_key, metadata_value) in &self.function_metadata {
-            function_builder.function_definition.metadata.insert(metadata_key.clone(), metadata_value.clone());
-        }
-
         let type_layout_slot_index = function_builder.compile_enum_type_initialization(self.enum_kind)?;
 
         if let Some(underlying_type_expression) = &self.underlying_type_expression {
@@ -1723,14 +1633,6 @@ impl CompilerInstance {
         }
         // Relative resolution failed or this is an absolute identifier, try to resolve as absolute identifier
         self.resolve_absolute_identifier(identifier, visibility_context.as_ref())
-    }
-    fn convert_value_type(value_type: ExpressionValueType) -> GospelValueType {
-        match value_type {
-            ExpressionValueType::Int => GospelValueType::Integer,
-            ExpressionValueType::Typename => GospelValueType::TypeReference,
-            ExpressionValueType::Closure => GospelValueType::Closure,
-            ExpressionValueType::MetaStruct => GospelValueType::Struct,
-        }
     }
     fn convert_access_specifier(value_type: DeclarationAccessSpecifier) -> DeclarationVisibility {
         match value_type {
@@ -1837,38 +1739,38 @@ impl CompilerInstance {
         let source_context = CompilerSourceContext{file_name: source_function_scope.file_name(), line_context: template_argument.source_context.clone()};
 
         let default_value_reference = if let Some(argument_default_value_expression) = &template_argument.default_value {
-            let argument_index = source_function_closure.borrow().function_reference.signature.explicit_parameters.as_ref().unwrap().len();
+            let argument_index = source_function_closure.borrow().reference.signature.explicit_parameters.as_ref().unwrap().len();
             let function_name = format!("{}@default_value@{}", source_function_scope.name.as_str(), argument_index);
 
             let function_closure = Rc::new(RefCell::new(CompilerFunctionDeclaration {
-                function_reference: CompilerFunctionReference{
+                reference: CompilerFunctionReference{
                     function: GospelSourceObjectReference::default(),
-                    signature: CompilerFunctionSignature{ implicit_parameters: source_function_closure.borrow().function_reference.signature.implicit_parameters.clone(), ..CompilerFunctionSignature::default() },
+                    signature: CompilerFunctionSignature{ implicit_parameters: source_function_closure.borrow().reference.signature.implicit_parameters.clone(), ..CompilerFunctionSignature::default() },
                     return_value_type_name: None,
-                }
+                },
+                metadata: BTreeMap::new(),
             }));
             let function_parent_scope = source_function_scope.parent_scope().unwrap();
             let default_value_function_scope = function_parent_scope.declare_scope(function_name.as_str(), CompilerLexicalScopeClass::Function(CompilerResource{resource_handle: function_closure.clone()}), source_function_scope.visibility, &source_context.line_context)?;
 
-            function_closure.borrow_mut().function_reference.function = GospelSourceObjectReference{module_name: default_value_function_scope.module_name(), local_name: default_value_function_scope.full_scope_name_no_module_name()};
-            function_closure.borrow_mut().function_reference.signature.return_value_type = template_argument.value_type;
-            function_closure.borrow_mut().function_reference.signature.implicit_parameters = source_function_closure.borrow().function_reference.signature.implicit_parameters.clone();
-            function_closure.borrow_mut().function_reference.signature.explicit_parameters = source_function_closure.borrow().function_reference.signature.explicit_parameters.clone();
+            function_closure.borrow_mut().reference.function = GospelSourceObjectReference{module_name: default_value_function_scope.module_name(), local_name: default_value_function_scope.full_scope_name_no_module_name()};
+            function_closure.borrow_mut().reference.signature.return_value_type = template_argument.value_type;
+            function_closure.borrow_mut().reference.signature.implicit_parameters = source_function_closure.borrow().reference.signature.implicit_parameters.clone();
+            function_closure.borrow_mut().reference.signature.explicit_parameters = source_function_closure.borrow().reference.signature.explicit_parameters.clone();
 
             if let Some(module_codegen_data) = default_value_function_scope.module_codegen() {
                 module_codegen_data.push_delayed_function_definition(&default_value_function_scope, Box::new(CompilerSimpleExpressionFunctionGenerator{
                     source_context: default_value_function_scope.source_context.line_context.clone(),
                     return_value_expression: argument_default_value_expression.clone(),
-                    function_metadata: Vec::new(),
                 }))?;
             }
-            Some(function_closure.borrow().function_reference.clone())
+            Some(function_closure.borrow().reference.clone())
         } else { None };
 
         let new_parameter_declaration = source_function_scope.declare(template_argument.name.as_str(),
           CompilerLexicalDeclarationClass::Parameter(template_argument.value_type), DeclarationVisibility::Private, &source_context.line_context)?;
 
-        source_function_closure.borrow_mut().function_reference.signature.explicit_parameters.as_mut().unwrap().push(CompilerFunctionParameter{
+        source_function_closure.borrow_mut().reference.signature.explicit_parameters.as_mut().unwrap().push(CompilerFunctionParameter{
             parameter_type: template_argument.value_type,
             default_value: default_value_reference,
             parameter_declaration: Rc::downgrade(&new_parameter_declaration),
@@ -1880,20 +1782,21 @@ impl CompilerInstance {
 
         let implicit_parameters = scope.collect_implicit_scope_parameters();
         let function_closure = Rc::new(RefCell::new(CompilerFunctionDeclaration {
-            function_reference: CompilerFunctionReference{
+            reference: CompilerFunctionReference{
                 function: GospelSourceObjectReference::default(),
                 signature: CompilerFunctionSignature{ return_value_type, implicit_parameters, explicit_parameters: None },
                 return_value_type_name: None,
-            }
+            },
+            metadata: BTreeMap::new(),
         }));
         let function_scope = scope.declare_scope(function_name, CompilerLexicalScopeClass::Function(CompilerResource{resource_handle: function_closure.clone()}), visibility, &actual_source_context.line_context)?;
-        function_closure.borrow_mut().function_reference.function = GospelSourceObjectReference{module_name: scope.module_name(), local_name: function_scope.full_scope_name_no_module_name()};
+        function_closure.borrow_mut().reference.function = GospelSourceObjectReference{module_name: scope.module_name(), local_name: function_scope.full_scope_name_no_module_name()};
         if return_value_type == ExpressionValueType::Typename && is_type_definition {
-            function_closure.borrow_mut().function_reference.return_value_type_name = Some(function_scope.full_scope_name());
+            function_closure.borrow_mut().reference.return_value_type_name = Some(function_scope.full_scope_name());
         }
 
         if let Some(template_arguments) = template_declaration {
-            function_closure.borrow_mut().function_reference.signature.explicit_parameters = Some(Vec::new());
+            function_closure.borrow_mut().reference.signature.explicit_parameters = Some(Vec::new());
             for function_argument in &template_arguments.arguments {
                 Self::pre_compile_function_argument(&function_scope, &function_closure, function_argument)?;
             }
@@ -1904,18 +1807,16 @@ impl CompilerInstance {
         let visibility = statement.access_specifier.map(|x| Self::convert_access_specifier(x)).unwrap_or(default_visibility);
         let (function_scope, function_closure) = Self::declare_function(scope, statement.name.as_str(), visibility, statement.value_type, statement.template_declaration.as_ref(), false, &statement.source_context)?;
 
-        let mut function_metadata: Vec<(String, String)> = Vec::new();
         if let Some(doc_comment) = &statement.doc_comment {
-            function_metadata.push((String::from("doc"), doc_comment.clone()))
+            function_closure.borrow_mut().metadata.insert(String::from("doc"), doc_comment.clone());
         }
         if let Some(module_codegen_data) = function_scope.module_codegen() {
             module_codegen_data.push_delayed_function_definition(&function_scope, Box::new(CompilerSimpleExpressionFunctionGenerator{
                 source_context: statement.source_context.clone(),
                 return_value_expression: statement.initializer.clone(),
-                function_metadata,
             }))?;
         }
-        Ok(function_closure.borrow().function_reference.clone())
+        Ok(function_closure.borrow().reference.clone())
     }
     fn pre_compile_enum_statement(scope: &Rc<CompilerLexicalScope>, statement: &EnumStatement, fallback_name: Option<&str>, default_visibility: DeclarationVisibility) -> CompilerResult<CompilerFunctionReference> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
@@ -1932,14 +1833,13 @@ impl CompilerInstance {
                 constant_doc_comment_lookup.entry(constant_name.clone()).or_default().push(constant_doc_comment.clone());
             }
         }
-        let mut function_metadata: Vec<(String, String)> = Vec::new();
         if let Some(doc_comment) = &statement.doc_comment {
-            function_metadata.push((String::from("doc"), doc_comment.clone()))
+            function_closure.borrow_mut().metadata.insert(String::from("doc"), doc_comment.clone());
         }
-        function_metadata.extend(constant_doc_comment_lookup.into_iter().map(|(constant_name, constant_doc_list)| {
+       for (constant_name, constant_doc_list) in constant_doc_comment_lookup {
             let constant_doc = constant_doc_list.join("\n");
-            (format!("doc_{}", constant_name), constant_doc)
-        }));
+            function_closure.borrow_mut().metadata.insert(format!("doc_{}", constant_name), constant_doc);
+        }
 
         let (allow_partial_types, generate_prototype_layouts) = scope.compiler().map(|x| (x.compiler_options.allow_partial_types, x.compiler_options.generate_prototype_layouts)).unwrap_or((false, false));
         if let Some(module_codegen_data) = scope.module_codegen() {
@@ -1949,76 +1849,9 @@ impl CompilerInstance {
                 underlying_type_expression: statement.underlying_type_expression.clone(),
                 allow_partial_types, generate_prototype_layout: generate_prototype_layouts,
                 constants: statement.constants.clone(),
-                function_metadata,
             }))?;
         }
-        Ok(function_closure.borrow().function_reference.clone())
-    }
-    fn populate_struct_meta_layout_from_declaration_recursive(scope: &Rc<CompilerLexicalScope>, declaration: &StructInnerDeclaration, meta_layout: &mut CompilerStructMetaLayout) -> CompilerResult<()> {
-        match declaration {
-            StructInnerDeclaration::DataDeclaration(data_statement) => {
-                let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: data_statement.source_context.clone()};
-                if data_statement.template_declaration.is_some() {
-                    meta_layout.define_member_checked(data_statement.name.as_str(), ExpressionValueType::Closure, &source_context)?;
-                } else {
-                    meta_layout.define_member_checked(data_statement.name.as_str(), data_statement.value_type, &source_context)?;
-                }
-                Ok({})
-            }
-            StructInnerDeclaration::NestedStructDeclaration(struct_statement) => {
-                let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: struct_statement.source_context.clone()};
-                let name = struct_statement.name.as_ref().ok_or_else(|| compiler_error!(&source_context, "Unnamed struct declaration in top level scope. All top level structs must have a name"))?;
-                if struct_statement.template_declaration.is_some() {
-                    meta_layout.define_member_checked(name.as_str(), ExpressionValueType::Closure, &source_context)?;
-                } else {
-                    meta_layout.define_member_checked(name.as_str(), ExpressionValueType::Typename, &source_context)?;
-                }
-                Ok({})
-            }
-            StructInnerDeclaration::ConditionalDeclaration(conditional_statement) => {
-                Self::populate_struct_meta_layout_from_declaration_recursive(scope, &conditional_statement.then_branch, meta_layout)?;
-                if let Some(else_branch) = &conditional_statement.else_branch {
-                    Self::populate_struct_meta_layout_from_declaration_recursive(scope, &else_branch, meta_layout)?;
-                }
-                Ok({})
-            }
-            StructInnerDeclaration::BlockDeclaration(block_statement) => {
-                for inner_declaration in &block_statement.declarations {
-                    Self::populate_struct_meta_layout_from_declaration_recursive(scope, inner_declaration, meta_layout)?;
-                }
-                Ok({})
-            }
-            StructInnerDeclaration::FunctionDeclaration(_) => { Ok({}) }
-            StructInnerDeclaration::MemberDeclaration(_) => { Ok({}) }
-            StructInnerDeclaration::EmptyDeclaration => { Ok({}) }
-        }
-    }
-    fn compile_struct_meta_layout(struct_scope: &Rc<CompilerLexicalScope>, statement: &StructStatement) -> CompilerResult<CompilerStructMetaLayoutReference> {
-        let source_context = CompilerSourceContext{file_name: struct_scope.file_name(), line_context: statement.source_context.clone()};
-        let mut meta_layout = CompilerStructMetaLayout::default();
-        for inner_declaration in &statement.declarations {
-            Self::populate_struct_meta_layout_from_declaration_recursive(struct_scope, inner_declaration, &mut meta_layout)?;
-        }
-
-        let meta_layout_reference = Rc::new(RefCell::new(CompilerStructMetaLayoutReference{
-            reference: GospelSourceObjectReference::default(),
-            signature: meta_layout,
-        }));
-        let declaration_class = CompilerLexicalDeclarationClass::StructMetaLayout(CompilerResource{resource_handle: meta_layout_reference.clone()});
-        let meta_layout_declaration = struct_scope.declare("@meta_layout", declaration_class, DeclarationVisibility::Public, &source_context.line_context)?;
-        meta_layout_reference.borrow_mut().reference = GospelSourceObjectReference{module_name: struct_scope.module_name(), local_name: meta_layout_declaration.full_declaration_name_no_module_name()};
-
-        if let Some(module_codegen_data) = struct_scope.module_codegen() {
-            let compiled_struct_definition = GospelSourceStructDefinition{
-                name: meta_layout_reference.borrow().reference.clone(),
-                exported: meta_layout_declaration.visibility == DeclarationVisibility::Public,
-                fields: meta_layout_reference.borrow().signature.members.iter().map(|x| GospelSourceStructField{
-                    field_name: Some(x.name.clone()), field_type: Self::convert_value_type(x.value_type)
-                }).collect()
-            };
-            module_codegen_data.visitor.borrow_mut().define_struct(compiled_struct_definition).with_source_context(&source_context)?;
-        }
-        Ok(meta_layout_reference.borrow().clone())
+        Ok(function_closure.borrow().reference.clone())
     }
     fn pre_compile_type_layout_block_declaration(scope: &Rc<CompilerLexicalScope>, declaration: &BlockDeclaration) -> CompilerResult<Box<dyn CompilerStructFragmentGenerator>> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: declaration.source_context.clone()};
@@ -2134,7 +1967,7 @@ impl CompilerInstance {
         let visibility = statement.access_specifier.map(|x| Self::convert_access_specifier(x)).unwrap_or(default_visibility);
         let (function_scope, function_closure) = Self::declare_function(scope, function_name, visibility,
             ExpressionValueType::Typename, statement.template_declaration.as_ref(), true, &source_context.line_context)?;
-        let visibility_override = if !function_closure.borrow().function_reference.signature.implicit_parameters.is_empty() || function_closure.borrow().function_reference.signature.explicit_parameters.is_some() {
+        let visibility_override = if !function_closure.borrow().reference.signature.implicit_parameters.is_empty() || function_closure.borrow().reference.signature.explicit_parameters.is_some() {
             Some(DeclarationVisibility::Private)
         } else { None };
 
@@ -2146,16 +1979,14 @@ impl CompilerInstance {
                 member_doc_comment_lookup.entry(constant_name.clone()).or_default().push(constant_doc_comment.clone());
             }
         }
-        let mut function_metadata: Vec<(String, String)> = Vec::new();
         if let Some(doc_comment) = &statement.doc_comment {
-            function_metadata.push((String::from("doc"), doc_comment.clone()))
+            function_closure.borrow_mut().metadata.insert(String::from("doc"), doc_comment.clone());
         }
-        function_metadata.extend(member_doc_comment_lookup.into_iter().map(|(constant_name, constant_doc_list)| {
+        for (constant_name, constant_doc_list) in member_doc_comment_lookup {
             let constant_doc = constant_doc_list.join("\n");
-            (format!("doc_{}", constant_name), constant_doc)
-        }));
+            function_closure.borrow_mut().metadata.insert(format!("doc_{}", constant_name), constant_doc);
+        };
 
-        let meta_layout = Self::compile_struct_meta_layout(&function_scope, statement)?;
         let fragments = statement.declarations.iter().map(|struct_inner_declaration| {
             Self::pre_compile_type_layout_inner_declaration(&function_scope, struct_inner_declaration, visibility_override)
         }).collect_compiler_result(|| compiler_error!(&source_context, "Failed to pre-compile struct definition"))?;
@@ -2165,16 +1996,14 @@ impl CompilerInstance {
             module_codegen_data.push_delayed_function_definition(&function_scope, Box::new(CompilerStructFunctionGenerator{
                 source_context,
                 struct_kind: statement.struct_kind,
-                struct_meta_layout: meta_layout,
                 alignment_expression: statement.alignment_expression.clone(),
                 member_pack_alignment_expression: statement.member_pack_expression.clone(),
                 base_class_expressions: statement.base_class_expressions.clone(),
                 allow_partial_types, generate_prototype_layout: generate_prototype_layouts,
                 fragments,
-                function_metadata,
             }))?;
         }
-        Ok(function_closure.borrow().function_reference.clone())
+        Ok(function_closure.borrow().reference.clone())
     }
 }
 
@@ -2224,9 +2053,6 @@ pub enum CompilerLexicalDeclarationClass {
     /// Represents a local variable declaration
     #[strum(to_string = "local variable")]
     LocalVariable(CompilerLocalVariableDeclaration),
-    /// Represents a meta-layout of source code struct
-    #[strum(to_string = "struct meta layout")]
-    StructMetaLayout(CompilerResource<CompilerStructMetaLayoutReference>),
 }
 
 /// Describes a visibility of a declaration relative to other declarations
@@ -2309,7 +2135,8 @@ pub struct CompilerBlockDeclaration {
 /// Represents a function declaration
 #[derive(Debug, Clone)]
 pub struct CompilerFunctionDeclaration {
-    pub function_reference: CompilerFunctionReference,
+    pub reference: CompilerFunctionReference,
+    pub metadata: BTreeMap<String, String>,
 }
 
 trait CompilerFunctionCodeGenerator : Debug {
