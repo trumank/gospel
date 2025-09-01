@@ -192,12 +192,16 @@ impl CodeGenerationContext {
                 generated_fields.push(field_tokens);
             }
         }
-        let static_type_impl = if is_parameterless_type {
-            Some(quote! { gsb_codegen_implement_static_type!(#type_name, #full_type_name); })
-        } else { None };
+        let type_impl_arguments = if is_parameterless_type {
+            quote! { static_type }
+        } else { quote!{ dynamic_type } };
         Ok(quote! {
-            gsb_codegen_generate_type_struct!(#type_name, #full_type_name, { #type_doc_comment });
-            #static_type_impl
+            #type_doc_comment
+            #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+            pub struct #type_name<M: gospel_runtime::memory_access::Memory> {
+                inner_ptr: gospel_runtime::runtime_type_model::DynamicPtr<M>,
+            }
+            gsb_codegen_implement_type!(#type_name, #full_type_name, #type_impl_arguments);
             impl<M: gospel_runtime::memory_access::Memory> #type_name<M> {
                 #(#generated_fields)*
             }
@@ -219,7 +223,7 @@ impl CodeGenerationContext {
         }
         let bindings_mod_name = Ident::new(&self.bindings_mod_name, Span::call_site());
         let result_file_token_stream = quote! {
-            #[macro_use(gsb_codegen_generate_type_struct, gsb_codegen_implement_field, gsb_codegen_implement_static_type)]
+            #[macro_use(gsb_codegen_implement_type, gsb_codegen_implement_field)]
             extern crate gospel_runtime;
 
             #[allow(warnings, unused)]

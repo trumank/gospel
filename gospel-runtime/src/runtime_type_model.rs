@@ -1,10 +1,11 @@
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, RwLock};
 use anyhow::anyhow;
 use paste::paste;
-use gospel_typelib::type_model::{MutableTypeGraph, PrimitiveType, ResolvedUDTMemberLayout, Type, TypeLayoutCache, UserDefinedTypeMember};
+use gospel_typelib::type_model::{CVQualifiedType, MutableTypeGraph, PrimitiveType, ResolvedUDTMemberLayout, Type, TypeLayoutCache, UserDefinedTypeMember};
 use crate::memory_access::{Memory, OpaquePtr};
 
 /// Type ptr namespace represents a type hierarchy used by a hierarchy of related type pointers
@@ -12,6 +13,13 @@ use crate::memory_access::{Memory, OpaquePtr};
 pub struct TypePtrNamespace {
     pub type_graph: Arc<RwLock<dyn MutableTypeGraph>>,
     pub layout_cache: Arc<RwLock<TypeLayoutCache>>,
+}
+impl TypePtrNamespace {
+    pub fn can_assign_ptr_value(&self, to_pointee_type_index: usize, from_pointee_type_index: usize) -> anyhow::Result<bool> {
+        let type_graph = self.type_graph.read().unwrap();
+        // TODO: This should be relaxed to allow integral conversions between integers of the same width, as well as enums
+        Ok(type_graph.base_type_index(to_pointee_type_index) == type_graph.base_type_index(from_pointee_type_index))
+    }
 }
 
 #[derive(Clone)]
@@ -23,15 +31,36 @@ impl TypePtrMetadata {
     pub fn with_type_index(&self, type_index: usize) -> Self {
         Self{namespace: self.namespace.clone(), type_index}
     }
+    pub fn with_type_index_and_cv_qualifiers(&self, new_type_index: usize) -> TypePtrMetadata {
+        let mut type_graph = self.namespace.type_graph.write().unwrap();
+        let base_new_type_index = type_graph.base_type_index(new_type_index);
+        if let Some(cv_qualified_type) = type_graph.cv_qualified_type_at_index(self.type_index) {
+            let cv_qualified_new_type_index = type_graph.store_type(Type::CVQualified(CVQualifiedType{
+                base_type_index: base_new_type_index,
+                constant: cv_qualified_type.constant,
+                volatile: cv_qualified_type.volatile,
+            }));
+            self.with_type_index(cv_qualified_new_type_index)
+        } else {
+            self.with_type_index(base_new_type_index)
+        }
+    }
+    pub fn base_type_index(&self) -> usize {
+        let type_graph = self.namespace.type_graph.read().unwrap();
+        let type_data = type_graph.type_by_index(self.type_index);
+        if let Type::CVQualified(cv_qualified_type) = type_data {
+            cv_qualified_type.base_type_index
+        } else { self.type_index }
+    }
     pub fn size_and_alignment(&self) -> anyhow::Result<(usize, usize)> {
-        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
-        let mut layout_cache = self.namespace.layout_cache.write().map_err(|x| anyhow!(x.to_string()))?;
+        let type_graph = self.namespace.type_graph.read().unwrap();
+        let mut layout_cache = self.namespace.layout_cache.write().unwrap();
         let type_data = type_graph.base_type_by_index(self.type_index);
         type_data.size_and_alignment(type_graph.deref(), layout_cache.deref_mut())
     }
     pub fn primitive_type_and_size(&self) -> anyhow::Result<Option<(PrimitiveType, usize)>> {
-        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
-        let layout_cache = self.namespace.layout_cache.read().map_err(|x| anyhow!(x.to_string()))?;
+        let type_graph = self.namespace.type_graph.read().unwrap();
+        let layout_cache = self.namespace.layout_cache.read().unwrap();
         let type_data = type_graph.base_type_by_index(self.type_index);
         if let Type::Primitive(primitive_type) = type_data {
             Ok(Some((primitive_type.clone(), primitive_type.size_and_alignment(&layout_cache.target_triplet)?)))
@@ -40,36 +69,57 @@ impl TypePtrMetadata {
             Ok(Some((underlying_primitive_type, underlying_primitive_type.size_and_alignment(&layout_cache.target_triplet)?)))
         } else { Ok(None) }
     }
-    pub fn pointer_pointee_type_index_and_is_reference(&self) -> anyhow::Result<Option<(usize, bool)>> {
-        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
+    pub fn pointer_pointee_type_index_and_is_reference(&self) -> Option<(usize, bool)> {
+        let type_graph = self.namespace.type_graph.read().unwrap();
         let type_data = type_graph.base_type_by_index(self.type_index);
         if let Type::Pointer(pointer_type) = type_data {
-            Ok(Some((pointer_type.pointee_type_index, pointer_type.is_reference)))
-        } else { Ok(None) }
+            Some((pointer_type.pointee_type_index, pointer_type.is_reference))
+        } else { None }
     }
-    pub fn array_element_type_index(&self) -> anyhow::Result<Option<usize>> {
-        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
+    pub fn array_element_type_index(&self) -> Option<usize> {
+        let type_graph = self.namespace.type_graph.read().unwrap();
         if let Type::Array(array_type) = type_graph.base_type_by_index(self.type_index) {
-            Ok(Some(array_type.element_type_index))
-        } else { Ok(None) }
+            Some(array_type.element_type_index)
+        } else { None }
     }
-    pub fn array_static_array_length(&self) -> anyhow::Result<Option<usize>> {
-        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
+    pub fn array_static_array_length(&self) -> Option<usize> {
+        let type_graph = self.namespace.type_graph.read().unwrap();
         if let Type::Array(array_type) = type_graph.base_type_by_index(self.type_index) {
-            Ok(Some(array_type.array_length))
-        } else { Ok(None) }
+            Some(array_type.array_length)
+        } else { None }
     }
-    pub fn struct_base_class_offset(&self, base_class_type_index: usize) -> anyhow::Result<Option<usize>> {
-        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
-        let mut layout_cache = self.namespace.layout_cache.write().map_err(|x| anyhow!(x.to_string()))?;
+    pub fn struct_type_name(&self) -> Option<String> {
+        let type_graph = self.namespace.type_graph.read().unwrap();
         let type_data = type_graph.base_type_by_index(self.type_index);
         if let Type::UDT(user_defined_type) = type_data {
-            user_defined_type.find_base_class_offset(type_graph.base_type_index(base_class_type_index), type_graph.deref(), layout_cache.deref_mut())
+            user_defined_type.name.clone()
+        } else { None }
+    }
+    pub fn struct_find_all_base_classes_by_type_name(&self, full_base_class_type_name: &str) -> Option<Vec<usize>> {
+        let type_graph = self.namespace.type_graph.read().unwrap();
+        let type_data = type_graph.base_type_by_index(self.type_index);
+        if let Type::UDT(user_defined_type) = type_data {
+            let all_distinct_base_classes: BTreeSet<usize> = user_defined_type.base_class_recursive_iterator(type_graph.deref()).collect();
+            let matching_base_classes: Vec<usize> = all_distinct_base_classes.into_iter()
+            .filter(|base_class_index| {
+                if let Type::UDT(base_class_type) = type_graph.type_by_index(*base_class_index) {
+                    base_class_type.name.as_ref().map(|x| x.as_str()) == Some(full_base_class_type_name)
+                } else { false }
+            }).collect();
+            Some(matching_base_classes)
+        } else { None }
+    }
+    pub fn struct_all_base_class_offsets(&self, base_class_type_index: usize) -> anyhow::Result<Option<Vec<usize>>> {
+        let type_graph = self.namespace.type_graph.read().unwrap();
+        let mut layout_cache = self.namespace.layout_cache.write().unwrap();
+        let type_data = type_graph.base_type_by_index(self.type_index);
+        if let Type::UDT(user_defined_type) = type_data {
+            Ok(Some(user_defined_type.find_all_base_class_offsets(type_graph.base_type_index(base_class_type_index), type_graph.deref(), layout_cache.deref_mut())?))
         } else { Ok(None) }
     }
     pub fn struct_field_type_index_and_offset(&self, field_name: &str) -> anyhow::Result<Option<(usize, usize)>> {
-        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
-        let mut layout_cache = self.namespace.layout_cache.write().map_err(|x| anyhow!(x.to_string()))?;
+        let type_graph = self.namespace.type_graph.read().unwrap();
+        let mut layout_cache = self.namespace.layout_cache.write().unwrap();
         let type_data = type_graph.base_type_by_index(self.type_index);
         if let Type::UDT(user_defined_type) = type_data {
             user_defined_type.find_map_member_layout(field_name, &|context| {
@@ -80,17 +130,31 @@ impl TypePtrMetadata {
             }, type_graph.deref(), layout_cache.deref_mut())
         } else { Ok(None) }
     }
-    pub fn struct_type_name(&self) -> anyhow::Result<Option<String>> {
-        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
-        let type_data = type_graph.base_type_by_index(self.type_index);
-        if let Type::UDT(user_defined_type) = type_data {
-            Ok(user_defined_type.name.clone())
+    pub fn struct_get_upcast_this_add_adjust(&self, base_class_type_index: usize) -> anyhow::Result<Option<usize>> {
+        // Check if this is the same type we are attempting to cast to, and return 0 offset in that case
+        let type_graph = self.namespace.type_graph.read().unwrap();
+        let base_base_class_type_index = type_graph.base_type_index(base_class_type_index);
+        if type_graph.base_type_index(self.type_index) == base_base_class_type_index {
+            return Ok(Some(0));
+        }
+        // We could have multiple instances of the same base class in the type hierarchy at different levels. In that case, we return the first base class that is valid, even if we have multiple,
+        // since in such cases usually the user does not care which instance we get (e.g. if this is an interface-like class with no data)
+        if let Some(base_class_offsets) = self.struct_all_base_class_offsets(base_base_class_type_index)? && !base_class_offsets.is_empty() {
+            Ok(Some(base_class_offsets[0]))
         } else { Ok(None) }
     }
-    pub fn are_types_compatible(&self, type_index_a: usize, type_index_b: usize) -> anyhow::Result<bool> {
-        let type_graph = self.namespace.type_graph.read().map_err(|x| anyhow!(x.to_string()))?;
-        // TODO: This should be relaxed to allow integral conversions between integers of the same width
-        Ok(type_graph.base_type_index(type_index_a) == type_graph.base_type_index(type_index_b))
+    pub fn struct_get_unchecked_downcast_this_sub_adjust(&self, derived_class_type_index: usize) -> anyhow::Result<Option<usize>> {
+        // Check if this is the same type we are attempting to cast to, and return 0 offset in that case
+        let type_graph = self.namespace.type_graph.read().unwrap();
+        let base_derived_class_type_index = type_graph.base_type_index(derived_class_type_index);
+        if type_graph.base_type_index(self.type_index) == base_derived_class_type_index {
+            return Ok(Some(0));
+        }
+        let derived_class_metadata = self.with_type_index(base_derived_class_type_index);
+        Ok(derived_class_metadata.struct_all_base_class_offsets(self.type_index)?.and_then(|base_class_offsets| {
+            // We cannot upcast from base class to derived class directly if it appears multiple times in the hierarchy, because we do not know which particular base class this pointer refers to
+            if base_class_offsets.len() == 1 { Some(base_class_offsets[0]) } else { None }
+        }))
     }
 }
 
@@ -170,7 +234,7 @@ impl<M: Memory> DynamicPtr<M> {
     }
     /// Returns the pointer to the array element at the given index. Performs boundaries check
     pub fn get_array_element_ptr(&self, array_element_index: usize) -> anyhow::Result<Option<Self>> {
-        if let Some(static_array_length) = self.metadata.array_static_array_length()? && array_element_index < static_array_length {
+        if let Some(static_array_length) = self.metadata.array_static_array_length() && array_element_index < static_array_length {
             Ok(Some(self.add_unchecked(array_element_index)?))
         } else { Ok(None) }
     }
@@ -182,7 +246,7 @@ impl<M: Memory> DynamicPtr<M> {
     }
     /// Attempts to read this dynamic pointer as a pointer
     pub fn read_ptr(&self) -> anyhow::Result<Option<Option<Self>>> {
-        if let Some((pointee_type_index, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference()? {
+        if let Some((pointee_type_index, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference() {
             let pointee_opaque_ptr = self.opaque_ptr.read_ptr()?;
             if pointee_opaque_ptr.is_nullptr() {
                 if is_reference_type {
@@ -194,7 +258,7 @@ impl<M: Memory> DynamicPtr<M> {
         } else { Ok(None) }
     }
     pub fn read_ptr_slice_unchecked(&self, len: usize) -> anyhow::Result<Option<Vec<Option<Self>>>> {
-        if let Some((pointee_type_index, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference()? {
+        if let Some((pointee_type_index, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference() {
             let element_metadata = self.metadata.with_type_index(pointee_type_index);
             Ok(Some(self.opaque_ptr.read_ptr_array(len)?.into_iter().map(|x| {
                 if x.is_nullptr() {
@@ -209,8 +273,8 @@ impl<M: Memory> DynamicPtr<M> {
     }
     /// Attempts to write this dynamic pointer as a pointer value. Writes address of given ptr as a value
     pub fn write_ptr(&self, value: &Self) -> anyhow::Result<()> {
-        if let Some((pointee_type_index, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference()? &&
-            self.metadata.are_types_compatible(pointee_type_index, value.metadata.type_index)? {
+        if let Some((pointee_type_index, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference() &&
+            self.metadata.namespace.can_assign_ptr_value(pointee_type_index, value.metadata.type_index)? {
             if value.is_nullptr() && is_reference_type {
                 Err(anyhow!("Cannot write value of nullptr to reference type"))
             } else { self.opaque_ptr.write_ptr(&value.opaque_ptr) }
@@ -218,15 +282,15 @@ impl<M: Memory> DynamicPtr<M> {
     }
     /// Attempts to write this dynamic pointer as a pointer value. Writes 0 address (nullptr) as a value
     pub fn write_nullptr(&self) -> anyhow::Result<()> {
-        if let Some((_, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference()? {
+        if let Some((_, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference() {
             if is_reference_type {
                 Err(anyhow!("Cannot write value of nullptr to reference type"))
             } else { self.opaque_ptr.write_nullptr() }
         } else { Err(anyhow!("Not a pointer type")) }
     }
     pub fn write_ptr_slice_unchecked(&self, buffer: &[Self]) -> anyhow::Result<()> {
-        if let Some((pointee_type_index, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference()? && !buffer.is_empty() &&
-            self.metadata.are_types_compatible(pointee_type_index, buffer[0].metadata.type_index)? {
+        if let Some((pointee_type_index, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference() && !buffer.is_empty() &&
+            self.metadata.namespace.can_assign_ptr_value(pointee_type_index, buffer[0].metadata.type_index)? {
             let raw_ptr_array: Vec<OpaquePtr<M>> = buffer.iter().map(|x| {
                 if x.is_nullptr() && is_reference_type {
                     Err(anyhow!("Cannot write value of nullptr to reference type"))

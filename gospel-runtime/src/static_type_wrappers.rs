@@ -23,13 +23,19 @@ pub struct WideChar(u32);
 pub trait TypedDynamicPtrWrapper<M: Memory> where Self: Sized {
     fn from_ptr_unchecked(ptr: DynamicPtr<M>) -> Self;
     fn get_inner_ptr(&self) -> &DynamicPtr<M>;
-    fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool>;
-    fn try_cast(ptr: &DynamicPtr<M>) -> anyhow::Result<Option<Self>> {
-        if Self::can_typecast(&ptr.metadata)? { Ok(Some(Self::from_ptr_unchecked(ptr.clone()))) } else { Ok(None) }
+    /// Returns true if the pointee type metadata given is compatible with the pointer of this type without
+    /// any changes to the pointer (e.g. derived-to-base or base-to-derived casts are not allowed in this context)
+    /// If this returns true, do_static_cast default implementation will be able to cast the pointer of the given type to this pointer instance
+    /// Keep in mind that the address pointed to in this case is left unchanged
+    fn is_pointee_type_compatible(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool>;
+    /// Casts pointer of this type to pointer of another type, returns None if cast is not possible.
+    /// Default implementation just reinterprets the pointer if the type is compatible
+    fn do_static_cast(ptr: &DynamicPtr<M>) -> anyhow::Result<Option<Self>> {
+        if Self::is_pointee_type_compatible(&ptr.metadata)? { Ok(Some(Self::from_ptr_unchecked(ptr.clone()))) } else { Ok(None) }
     }
     /// Casts pointer of this type to pointer of another type, returns None if cast is not possible
     fn cast<T: TypedDynamicPtrWrapper<M>>(&self) -> anyhow::Result<Option<T>> {
-        T::try_cast(self.get_inner_ptr())
+        T::do_static_cast(self.get_inner_ptr())
     }
     /// Casts pointer of this type to pointer of another type, returns an error if cast is not possible
     fn cast_checked<T : TypedDynamicPtrWrapper<M>>(&self) -> anyhow::Result<T> {
@@ -51,7 +57,7 @@ pub trait TypedDynamicPtrWrapper<M: Memory> where Self: Sized {
 impl<M: Memory> DynamicPtr<M> {
     /// Casts pointer of this type to pointer of another type, returns None if cast is not possible
     pub fn cast<T: TypedDynamicPtrWrapper<M>>(&self) -> anyhow::Result<Option<T>> {
-        T::try_cast(self)
+        T::do_static_cast(self)
     }
     /// Casts pointer of this type to pointer of another type, returns an error if cast is not possible
     pub fn cast_checked<T : TypedDynamicPtrWrapper<M>>(&self) -> anyhow::Result<T> {
@@ -61,11 +67,12 @@ impl<M: Memory> DynamicPtr<M> {
 
 /// Implemented for type pointers with statically known types (e.g. pointers to primitive types or complex types composed of primitive types)
 pub trait StaticallyTypedPtr<M: Memory> : TypedDynamicPtrWrapper<M> {
-    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata>;
+    /// Inserts type descriptor for this type in the type ptr namespace and returns its index
+    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<usize>;
     /// Constructs typed pointer from raw pointer and type namespace
     fn from_raw_ptr(ptr: OpaquePtr<M>, namespace: &TypePtrNamespace) -> anyhow::Result<Self> {
-        let type_ptr_metadata = Self::store_type_descriptor(namespace)?;
-        Ok(Self::from_ptr_unchecked(DynamicPtr{opaque_ptr: ptr, metadata: type_ptr_metadata}))
+        let type_index = Self::store_type_descriptor(namespace)?;
+        Ok(Self::from_ptr_unchecked(DynamicPtr{opaque_ptr: ptr, metadata: TypePtrMetadata{namespace: namespace.clone(), type_index}}))
     }
 }
 
@@ -75,7 +82,7 @@ pub trait TrivialValue : Copy + Default {
     fn write<M: Memory>(ptr: &TrivialPtr<M, Self>, value: Self) -> anyhow::Result<()>;
     fn read_slice_unchecked<M: Memory>(ptr: &TrivialPtr<M, Self>, buffer: &mut [Self]) -> anyhow::Result<()>;
     fn write_slice_unchecked<M: Memory>(ptr: &TrivialPtr<M, Self>, buffer: &[Self]) -> anyhow::Result<()>;
-    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata>;
+    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<usize>;
 }
 
 macro_rules! implement_numeric_trivial_value {
@@ -108,10 +115,10 @@ macro_rules! implement_numeric_trivial_value {
                     ptr.inner_ptr.[<write_ $value_type _slice_unchecked>](buffer)
                 }
             }
-            fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
+            fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<usize> {
                 let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
                 let type_index = type_graph.store_type(Type::Primitive($primitive_type));
-                Ok(TypePtrMetadata{namespace: namespace.clone(), type_index})
+                Ok(type_index)
             }
         }
     };
@@ -202,10 +209,10 @@ macro_rules! implement_variable_size_trivial_value {
                        Err(anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))
                     }
                 }
-                fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
+                fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<usize> {
                     let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
                     let type_index = type_graph.store_type(Type::Primitive($primitive_type));
-                    Ok(TypePtrMetadata{namespace: namespace.clone(), type_index})
+                    Ok(type_index)
                 }
             }
         }
@@ -245,10 +252,10 @@ impl TrivialValue for bool {
         }
         ptr.inner_ptr.write_u8_slice_unchecked(byte_buffer.deref())
     }
-    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
+    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<usize> {
         let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
         let type_index = type_graph.store_type(Type::Primitive(PrimitiveType::Bool));
-        Ok(TypePtrMetadata{namespace: namespace.clone(), type_index})
+        Ok(type_index)
     }
 }
 
@@ -276,12 +283,12 @@ impl<M: Memory, T : TrivialValue> TypedDynamicPtrWrapper<M> for TrivialPtr<M, T>
     fn get_inner_ptr(&self) -> &DynamicPtr<M> {
         &self.inner_ptr
     }
-    fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
+    fn is_pointee_type_compatible(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
         T::can_typecast(ptr_metadata)
     }
 }
 impl<M: Memory, T : TrivialValue> StaticallyTypedPtr<M> for TrivialPtr<M, T> {
-    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
+    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<usize> {
         T::store_type_descriptor(namespace)
     }
 }
@@ -293,10 +300,10 @@ pub struct StaticArrayPtr<M: Memory, T : TypedDynamicPtrWrapper<M>> {
 }
 impl<M: Memory, T : TypedDynamicPtrWrapper<M>> StaticArrayPtr<M, T> {
     pub fn static_len(&self) -> anyhow::Result<usize> {
-        self.inner_ptr.metadata.array_static_array_length()?.ok_or_else(|| anyhow!("Ptr does not point to a statically sized array"))
+        self.inner_ptr.metadata.array_static_array_length().ok_or_else(|| anyhow!("Ptr does not point to a statically sized array"))
     }
     pub fn element_metadata(&self) -> anyhow::Result<TypePtrMetadata> {
-        Ok(self.inner_ptr.metadata.with_type_index(self.inner_ptr.metadata.array_element_type_index()?.ok_or_else(|| anyhow!("Ptr does not point to a statically sized array"))?))
+        Ok(self.inner_ptr.metadata.with_type_index(self.inner_ptr.metadata.array_element_type_index().ok_or_else(|| anyhow!("Ptr does not point to a statically sized array"))?))
     }
     pub fn element_ptr(&self, index: usize) -> anyhow::Result<T> {
         Ok(T::from_ptr_unchecked(self.inner_ptr.get_array_element_ptr(index)?.ok_or_else(|| anyhow!("Ptr does not point to a statically sized array"))?))
@@ -329,7 +336,7 @@ impl<M: Memory, T : TypedDynamicPtrWrapper<M> + StaticallyTypedPtr<M>> StaticArr
     pub fn store_type_descriptor(namespace: &TypePtrNamespace, array_length: usize) -> anyhow::Result<TypePtrMetadata> {
         let element_type_index = T::store_type_descriptor(namespace)?;
         let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
-        let type_index = type_graph.store_type(Type::Array(ArrayType{element_type_index: element_type_index.type_index, array_length}));
+        let type_index = type_graph.store_type(Type::Array(ArrayType{element_type_index, array_length}));
         Ok(TypePtrMetadata{namespace: namespace.clone(), type_index})
     }
 }
@@ -340,10 +347,10 @@ impl<M: Memory, T : TypedDynamicPtrWrapper<M>> TypedDynamicPtrWrapper<M> for Sta
     fn get_inner_ptr(&self) -> &DynamicPtr<M> {
         &self.inner_ptr
     }
-    fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
-        if let Some(element_type_index) = ptr_metadata.array_element_type_index()? {
+    fn is_pointee_type_compatible(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
+        if let Some(element_type_index) = ptr_metadata.array_element_type_index() {
             let element_ptr_metadata = ptr_metadata.with_type_index(element_type_index);
-            T::can_typecast(&element_ptr_metadata)
+            T::is_pointee_type_compatible(&element_ptr_metadata)
         } else { Ok(false) }
     }
 }
@@ -371,19 +378,19 @@ impl<M: Memory, T : TypedDynamicPtrWrapper<M>> TypedDynamicPtrWrapper<M> for Ind
     fn get_inner_ptr(&self) -> &DynamicPtr<M> {
         &self.inner_ptr
     }
-    fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
-        if let Some((pointee_type_index, is_reference_type)) = ptr_metadata.pointer_pointee_type_index_and_is_reference()? {
+    fn is_pointee_type_compatible(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
+        if let Some((pointee_type_index, is_reference_type)) = ptr_metadata.pointer_pointee_type_index_and_is_reference() {
             let pointee_ptr_metadata = ptr_metadata.with_type_index(pointee_type_index);
-            Ok(!is_reference_type && T::can_typecast(&pointee_ptr_metadata)?)
+            Ok(!is_reference_type && T::is_pointee_type_compatible(&pointee_ptr_metadata)?)
         } else { Ok(false) }
     }
 }
 impl<M: Memory, T : TypedDynamicPtrWrapper<M> + StaticallyTypedPtr<M>> StaticallyTypedPtr<M> for IndirectPtr<M, T> {
-    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
-        let pointee_type = T::store_type_descriptor(namespace)?;
+    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<usize> {
+        let pointee_type_index = T::store_type_descriptor(namespace)?;
         let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
-        let type_index = type_graph.store_type(Type::Pointer(PointerType{pointee_type_index: pointee_type.type_index, is_reference: false}));
-        Ok(TypePtrMetadata{namespace: namespace.clone(), type_index})
+        let type_index = type_graph.store_type(Type::Pointer(PointerType{pointee_type_index, is_reference: false}));
+        Ok(type_index)
     }
 }
 
@@ -410,19 +417,19 @@ impl<M: Memory, T : TypedDynamicPtrWrapper<M>> TypedDynamicPtrWrapper<M> for Ind
     fn get_inner_ptr(&self) -> &DynamicPtr<M> {
         &self.inner_ptr
     }
-    fn can_typecast(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
-        if let Some((pointee_type_index, is_reference_type)) = ptr_metadata.pointer_pointee_type_index_and_is_reference()? {
+    fn is_pointee_type_compatible(ptr_metadata: &TypePtrMetadata) -> anyhow::Result<bool> {
+        if let Some((pointee_type_index, is_reference_type)) = ptr_metadata.pointer_pointee_type_index_and_is_reference() {
             let pointee_ptr_metadata = ptr_metadata.with_type_index(pointee_type_index);
-            Ok(is_reference_type && T::can_typecast(&pointee_ptr_metadata)?)
+            Ok(is_reference_type && T::is_pointee_type_compatible(&pointee_ptr_metadata)?)
         } else { Ok(false) }
     }
 }
 impl<M: Memory, T : TypedDynamicPtrWrapper<M> + StaticallyTypedPtr<M>> StaticallyTypedPtr<M> for IndirectRef<M, T> {
-    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
-        let pointee_type = T::store_type_descriptor(namespace)?;
+    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<usize> {
+        let pointee_type_index = T::store_type_descriptor(namespace)?;
         let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
-        let type_index = type_graph.store_type(Type::Pointer(PointerType{pointee_type_index: pointee_type.type_index, is_reference: true}));
-        Ok(TypePtrMetadata{namespace: namespace.clone(), type_index})
+        let type_index = type_graph.store_type(Type::Pointer(PointerType{pointee_type_index, is_reference: true}));
+        Ok(type_index)
     }
 }
 
@@ -442,14 +449,14 @@ impl<M: Memory> TypedDynamicPtrWrapper<M> for VoidPtr<M> {
     fn get_inner_ptr(&self) -> &DynamicPtr<M> {
         &self.inner_ptr
     }
-    fn can_typecast(_: &TypePtrMetadata) -> anyhow::Result<bool> {
+    fn is_pointee_type_compatible(_: &TypePtrMetadata) -> anyhow::Result<bool> {
         Ok(true)
     }
 }
 impl<M: Memory> StaticallyTypedPtr<M> for VoidPtr<M> {
-    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<TypePtrMetadata> {
+    fn store_type_descriptor(namespace: &TypePtrNamespace) -> anyhow::Result<usize> {
         let mut type_graph = namespace.type_graph.write().map_err(|x| anyhow!(x.to_string()))?;
         let type_index = type_graph.store_type(Type::Primitive(PrimitiveType::Void));
-        Ok(TypePtrMetadata{namespace: namespace.clone(), type_index})
+        Ok(type_index)
     }
 }

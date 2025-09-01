@@ -217,6 +217,12 @@ pub trait TypeGraphLike {
     fn base_type_by_index(&self, type_index: usize) -> &Type {
         self.type_by_index(self.base_type_index(type_index))
     }
+    fn cv_qualified_type_at_index(&self, type_index: usize) -> Option<CVQualifiedType> {
+        let type_data = self.type_by_index(type_index);
+        if let Type::CVQualified(cv_qualified_type) = type_data {
+            Some(cv_qualified_type.clone())
+        } else { None }
+    }
 }
 
 /// Trait for type graph structures that can be mutated
@@ -522,6 +528,13 @@ impl UserDefinedType {
             .filter_map(|x| if let Type::UDT(y) = type_graph.type_by_index(*x) { Some(y) } else { None })
             .any(|x| x.is_child_of(base_class_index, type_graph))
     }
+    /// Returns recursive iterator over base classes. Note that this can return the same base class multiple types
+    pub fn base_class_recursive_iterator(&self, type_graph: &dyn TypeGraphLike) -> impl Iterator<Item = usize> {
+        self.base_class_indices.iter().cloned().chain(self.base_class_indices.iter()
+            .filter_map(|x| if let Type::UDT(y) = type_graph.type_by_index(*x) { Some(y) } else { None })
+            .flat_map(|x| x.base_class_recursive_iterator(type_graph))
+            .collect::<Vec<usize>>())
+    }
     /// Attempts to find a member with the given name in this class or base classes, and returns the first member found
     pub fn find_map_member_by_name<T, S: Fn(&UserDefinedTypeMember) -> Option<T>>(&self, name: &str, mapper: &S, type_graph: &dyn TypeGraphLike) -> Option<T> {
         if let Some(direct_member) = self.members.iter().find_map(|x| if x.name() == Some(name) && let Some(mapped_value) = mapper(x) { Some(mapped_value) } else { None }) {
@@ -546,25 +559,25 @@ impl UserDefinedType {
         let layout = self.layout(type_graph, layout_cache)?;
         Ok((layout.size, layout.alignment))
     }
-    /// Returns the offset of the given base class from the start of the user defined type, or None if given type is not a base class of this type
-    pub fn find_base_class_offset(&self, base_class_index: usize, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<Option<usize>> {
+    /// Returns all offsets of the given base class from the start of the user defined type. Can return multiple results if the same base class appears multiple times at different levels in the class hierarchy
+    pub fn find_all_base_class_offsets(&self, base_class_index: usize, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<Vec<usize>> {
         let type_layout = self.layout(type_graph, layout_cache)?;
+        let mut all_base_class_offsets: Vec<usize> = Vec::new();
         // Try direct base classes first (in case of the same base class being present multiple times at different levels of class hierarchy)
         for i in 0..self.base_class_indices.len() {
             if self.base_class_indices[i] == base_class_index {
-                return Ok(Some(type_layout.base_class_offsets[i]));
+                all_base_class_offsets.push(type_layout.base_class_offsets[i]);
             }
         }
         // Try to recursively look up base classes of our base classes now
         for i in 0..self.base_class_indices.len() {
             if let Type::UDT(base_class_udt) = type_graph.type_by_index(self.base_class_indices[i]) {
-                if let Some(base_class_relative_offset) = base_class_udt.find_base_class_offset(base_class_index, type_graph, layout_cache)? {
-                    return Ok(Some(type_layout.base_class_offsets[i] + base_class_relative_offset));
-                }
+                all_base_class_offsets.extend(base_class_udt.find_all_base_class_offsets(base_class_index, type_graph, layout_cache)?.into_iter()
+                    .map(|base_class_relative_offset| type_layout.base_class_offsets[i] + base_class_relative_offset));
             }
         }
         // Did not find the base class in our class hierarchy
-        Ok(None)
+        Ok(all_base_class_offsets)
     }
     /// Attempts to find a member by name in this user defined type or its base class, and runs the map function on it
     pub fn find_map_member_layout<T, S: Fn(&MemberLayoutMapContext) -> Option<T>>(&self, name: &str, map_function: &S, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<Option<T>> {

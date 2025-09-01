@@ -1617,8 +1617,9 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        user_defined_type.find_base_class_offset(base_class_index, run_context, &mut new_type_cache)
+                        user_defined_type.find_all_base_class_offsets(base_class_index, run_context, &mut new_type_cache)
                             .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?
+                            .first().cloned() // take the first index of the base class in case there are multiple. This will be the outermost base class
                             .ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have Type #{} as a Base Class", type_index, base_class_index))? as i32
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
