@@ -86,7 +86,7 @@ macro_rules! vm_bail {
 pub struct GospelVMOptions {
     target_triplet: Option<TargetTriplet>,
     no_default_globals: bool,
-    globals: HashMap<String, i32>,
+    globals: HashMap<String, u64>,
 }
 impl Default for GospelVMOptions {
     fn default() -> Self {
@@ -103,7 +103,7 @@ impl GospelVMOptions {
         self.no_default_globals = true; self
     }
     /// Sets the given global variable to the value provided. Overrides the default value for the given global if one exists
-    pub fn with_global(mut self, name: &str, value: i32) -> Self {
+    pub fn with_global(mut self, name: &str, value: u64) -> Self {
         self.globals.insert(name.to_string(), value); self
     }
 }
@@ -156,7 +156,7 @@ impl GospelVMRunContext {
             new_type_index
         }
     }
-    fn read_global_value(&self, global_name: &str, default_value: Option<i32>) -> Option<i32> {
+    fn read_global_value(&self, global_name: &str, default_value: Option<u64>) -> Option<u64> {
         if let Some(global_value_override) = self.options.globals.get(global_name) {
             Some(*global_value_override)
         } else if let Some(default_global_value) = default_value && !self.options.no_default_globals {
@@ -339,23 +339,23 @@ impl Display for GospelVMStruct {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Display, Serialize)]
 pub enum GospelVMValue {
     #[strum(to_string = "Integer({0})")]
-    Integer(i32), // 32-bit signed integer value
+    Primitive(u64), // 64-bit primitive value with context-dependent type
     #[strum(to_string = "Closure({0})")]
-    Closure(GospelVMClosure), // pointer to a function with some number (or no) arguments captured with it
+    Closure(Box<GospelVMClosure>), // pointer to a function with some number (or no) arguments captured with it
     #[strum(to_string = "TypeLayout({0})")]
     TypeReference(usize), // index of the type in the current run context
     #[strum(to_string = "Array({0:#?})")]
     Array(Vec<GospelVMValue>), // array of values
     #[strum(to_string = "Struct({0})")]
-    Struct(GospelVMStruct), // user defined struct
+    Struct(Box<GospelVMStruct>), // user defined struct
 }
 
 #[derive(Debug, Default)]
 struct GospelGlobalStorage {
-    global_defaults: RefCell<HashMap<String, i32>>,
+    global_defaults: RefCell<HashMap<String, u64>>,
 }
 impl GospelGlobalStorage {
-    fn set_global_default_value(&self, name: &str, default_value: i32) -> anyhow::Result<()> {
+    fn set_global_default_value(&self, name: &str, default_value: u64) -> anyhow::Result<()> {
         if let Some(existing_value) = self.global_defaults.borrow().get(name) {
             if *existing_value != default_value {
                 bail!("Incompatible default values for global variable {}: current default value is {}, but new default value is {}",name, *existing_value, default_value);
@@ -366,7 +366,7 @@ impl GospelGlobalStorage {
             Ok({})
         }
     }
-    fn find_default_global_value(&self, name: &str) -> Option<i32> {
+    fn find_default_global_value(&self, name: &str) -> Option<u64> {
         self.global_defaults.borrow().get(name).cloned()
     }
 }
@@ -383,6 +383,9 @@ struct GospelExceptionHandler {
 struct GospelVMExecutionState<'a> {
     owner_container: &'a Rc<GospelVMContainer>,
     function_definition: &'a GospelFunctionDefinition,
+    // For debugging purposes, makes investigating VM issues considerably easier
+    #[allow(dead_code)]
+    function_name: String,
     argument_values: &'a Vec<GospelVMValue>,
     slots: Vec<Option<GospelVMValue>>,
     referenced_strings: Vec<&'a str>,
@@ -402,6 +405,111 @@ struct GospelVMExecutionState<'a> {
     max_recursion_depth: usize,
     max_exception_handler_depth: usize,
 }
+
+macro_rules! implement_primitive_op {
+    ($state:expr, |$operand_a:ident, $operand_b:ident| $expression:expr, $unsigned_type:ty) => {
+        let $operand_a = $state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type;
+        let $operand_b = $state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type;
+        let result = $expression as $unsigned_type;
+        $state.push_stack_check_overflow(GospelVMValue::Primitive(result as u64))?;
+    };
+    ($state:expr, |$operand_a:ident, $operand_b:ident| $expression:expr, $unsigned_type:ty, $signed_type:ty) => {
+        let $operand_a = ($state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type) as $signed_type;
+        let $operand_b = ($state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type) as $signed_type;
+        let result = ($expression as $signed_type) as $unsigned_type;
+        $state.push_stack_check_overflow(GospelVMValue::Primitive(result as u64))?;
+    };
+    ($state:expr, |$operand:ident| $expression:expr, $unsigned_type:ty) => {
+        let $operand = $state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type;
+        let result = $expression as $unsigned_type;
+        $state.push_stack_check_overflow(GospelVMValue::Primitive(result as u64))?;
+    };
+    ($state:expr, |$operand:ident| $expression:expr, $unsigned_type:ty, $signed_type:ty) => {
+        let $operand = ($state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type) as $signed_type;
+        let result = ($expression as $signed_type) as $unsigned_type;
+        $state.push_stack_check_overflow(GospelVMValue::Primitive(result as u64))?;
+    };
+}
+macro_rules! implement_variable_length_integer_op {
+    ($state:expr, $instruction:expr, |$operand_a:ident, $operand_b:ident| $expression:expr) => {
+        let instruction_encoding = $state.immediate_value_checked($instruction, 0)? as u8;
+        let operand_width = instruction_encoding & 0x4;
+        let is_operand_signed = instruction_encoding & 0x80 != 0;
+        if is_operand_signed {
+            match operand_width {
+                0 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u8, i8); },
+                1 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u16, i16); },
+                2 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u32, i32); },
+                3 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u64, i64); },
+                _ => { vm_bail!(Some($state), "Unsupported operand width: {}", operand_width); },
+            };
+        } else {
+            match operand_width {
+                0 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u8); },
+                1 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u16); },
+                2 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u32); },
+                3 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u64); },
+                _ => { vm_bail!(Some($state), "Unsupported operand width: {}", operand_width); },
+            };
+        }
+    };
+    ($state:expr, $instruction:expr, |$operand_a:ident, $operand_b:ident| $expression:expr, unsigned_only) => {
+        let instruction_encoding = $state.immediate_value_checked($instruction, 0)? as u8;
+        let operand_width = instruction_encoding & 0x4;
+        match operand_width {
+            0 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u8); },
+            1 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u16); },
+            2 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u32); },
+            3 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u64); },
+            _ => { vm_bail!(Some($state), "Unsupported operand width: {}", operand_width); },
+        };
+    };
+    ($state:expr, $instruction:expr, |$operand:ident| $expression:expr) => {
+        let instruction_encoding = $state.immediate_value_checked($instruction, 0)? as u8;
+        let operand_width = instruction_encoding & 0x4;
+        let is_operand_signed = instruction_encoding & 0x80 != 0;
+        if is_operand_signed {
+            match operand_width {
+                0 => { implement_primitive_op!($state, |$operand| $expression, u8, i8); },
+                1 => { implement_primitive_op!($state, |$operand| $expression, u16, i16); },
+                2 => { implement_primitive_op!($state, |$operand| $expression, u32, i32); },
+                3 => { implement_primitive_op!($state, |$operand| $expression, u64, i64); },
+                _ => { vm_bail!(Some($state), "Unsupported operand width: {}", operand_width); },
+            };
+        } else {
+            match operand_width {
+                0 => { implement_primitive_op!($state, |$operand| $expression, u8); },
+                1 => { implement_primitive_op!($state, |$operand| $expression, u16); },
+                2 => { implement_primitive_op!($state, |$operand| $expression, u32); },
+                3 => { implement_primitive_op!($state, |$operand| $expression, u64); },
+                _ => { vm_bail!(Some($state), "Unsupported operand width: {}", operand_width); },
+            };
+        }
+    };
+    ($state:expr, $instruction:expr, |$operand:ident| $expression:expr, signed_only) => {
+        let instruction_encoding = $state.immediate_value_checked($instruction, 0)? as u8;
+        let operand_width = instruction_encoding & 0x4;
+        match operand_width {
+            0 => { implement_primitive_op!($state, |$operand| $expression, u8, i8); },
+            1 => { implement_primitive_op!($state, |$operand| $expression, u16, i16); },
+            2 => { implement_primitive_op!($state, |$operand| $expression, u32, i32); },
+            3 => { implement_primitive_op!($state, |$operand| $expression, u64, i64); },
+            _ => { vm_bail!(Some($state), "Unsupported operand width: {}", operand_width); },
+        };
+    };
+    ($state:expr, $instruction:expr, |$operand:ident| $expression:expr, unsigned_only) => {
+        let instruction_encoding = $state.immediate_value_checked($instruction, 0)? as u8;
+        let operand_width = instruction_encoding & 0x4;
+        match operand_width {
+            0 => { implement_primitive_op!($state, |$operand| $expression, u8); },
+            1 => { implement_primitive_op!($state, |$operand| $expression, u16); },
+            2 => { implement_primitive_op!($state, |$operand| $expression, u32); },
+            3 => { implement_primitive_op!($state, |$operand| $expression, u64); },
+            _ => { vm_bail!(Some($state), "Unsupported operand width: {}", operand_width); },
+        };
+    };
+}
+
 impl<'a> GospelVMExecutionState<'a> {
     fn push_stack_check_overflow(&mut self, value: GospelVMValue) -> GospelVMResult<()> {
         if self.stack.len() > self.max_stack_size {
@@ -470,13 +578,13 @@ impl<'a> GospelVMExecutionState<'a> {
         }
         Ok(self.referenced_functions[index].clone())
     }
-    fn unwrap_value_as_int_checked(&self, value: GospelVMValue) -> GospelVMResult<i32> {
+    fn unwrap_value_as_primitive_checked(&self, value: GospelVMValue) -> GospelVMResult<u64> {
         match value {
-            GospelVMValue::Integer(unwrapped) => { Ok(unwrapped) }
-            _ => Err(vm_error!(Some(self), "Expected integer value"))
+            GospelVMValue::Primitive(unwrapped) => { Ok(unwrapped) }
+            _ => Err(vm_error!(Some(self), "Expected primitive value"))
         }
     }
-    fn unwrap_value_as_closure_checked(&self, value: GospelVMValue) -> GospelVMResult<GospelVMClosure> {
+    fn unwrap_value_as_closure_checked(&self, value: GospelVMValue) -> GospelVMResult<Box<GospelVMClosure>> {
         match value {
             GospelVMValue::Closure(unwrapped) => { Ok(unwrapped) }
             _ => Err(vm_error!(Some(self), "Expected function pointer"))
@@ -488,7 +596,7 @@ impl<'a> GospelVMExecutionState<'a> {
             _ => Err(vm_error!(Some(self), "Expected array value"))
         }
     }
-    fn unwrap_value_as_struct_checked(&self, value: GospelVMValue) -> GospelVMResult<GospelVMStruct> {
+    fn unwrap_value_as_struct_checked(&self, value: GospelVMValue) -> GospelVMResult<Box<GospelVMStruct>> {
         match value {
             GospelVMValue::Struct(unwrapped) => { Ok(unwrapped) }
             _ => Err(vm_error!(Some(self), "Expected struct value"))
@@ -534,18 +642,6 @@ impl<'a> GospelVMExecutionState<'a> {
         if let Type::CVQualified(cv_qualified_type) = run_context.type_by_index(type_index) {
             Ok(cv_qualified_type.base_type_index)
         } else { Ok(type_index) }
-    }
-    fn do_bitwise_op<F: Fn(u32, u32) -> u32>(&mut self, op: F) -> GospelVMResult<()> {
-        let stack_value_b = self.pop_stack_check_underflow().and_then(|x| self.unwrap_value_as_int_checked(x))? as u32;
-        let stack_value_a = self.pop_stack_check_underflow().and_then(|x| self.unwrap_value_as_int_checked(x))? as u32;
-        let result = op(stack_value_a, stack_value_b) as i32;
-        self.push_stack_check_overflow(GospelVMValue::Integer(result))
-    }
-    fn do_arithmetic_op_checked<F: Fn(&Self, i32, i32) -> GospelVMResult<i32>>(&mut self, op: F) -> GospelVMResult<()> {
-        let stack_value_b = self.pop_stack_check_underflow().and_then(|x| self.unwrap_value_as_int_checked(x))?;
-        let stack_value_a = self.pop_stack_check_underflow().and_then(|x| self.unwrap_value_as_int_checked(x))?;
-        let result = op(&self, stack_value_a, stack_value_b)?;
-        self.push_stack_check_overflow(GospelVMValue::Integer(result))
     }
     fn current_stack_frame(&self) -> GospelVMStackFrame {
         let module_name = self.owner_container.container_name().unwrap_or("<unknown>").to_string();
@@ -604,9 +700,23 @@ impl<'a> GospelVMExecutionState<'a> {
             match instruction.opcode() {
                 // Basic opcodes
                 GospelOpcode::Noop => {}
-                GospelOpcode::IntConstant => {
-                    let int_value = state.immediate_value_checked(instruction, 0)? as i32;
-                    state.push_stack_check_overflow(GospelVMValue::Integer(int_value))?;
+                GospelOpcode::Int8Constant => {
+                    let int_value = (state.immediate_value_checked(instruction, 0)? as u8) as u64;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(int_value))?;
+                }
+                GospelOpcode::Int16Constant => {
+                    let int_value = (state.immediate_value_checked(instruction, 0)? as u16) as u64;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(int_value))?;
+                }
+                GospelOpcode::Int32Constant => {
+                    let int_value = state.immediate_value_checked(instruction, 0)? as u64;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(int_value))?;
+                }
+                GospelOpcode::Int64Constant => {
+                    let high = state.immediate_value_checked(instruction, 0)? as u64;
+                    let low = state.immediate_value_checked(instruction, 1)? as u64;
+                    let int_value = high << 32 | low;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(int_value))?;
                 }
                 GospelOpcode::Dup => {
                     let stack_value = state.pop_stack_check_underflow()?;
@@ -634,7 +744,7 @@ impl<'a> GospelVMExecutionState<'a> {
                 }
                 GospelOpcode::Call => {
                     let number_of_arguments = state.immediate_value_checked(instruction, 0)? as usize;
-                    let mut function_arguments: Vec<GospelVMValue> = vec![GospelVMValue::Integer(0); number_of_arguments];
+                    let mut function_arguments: Vec<GospelVMValue> = vec![GospelVMValue::Primitive(0); number_of_arguments];
                     for index in 0..number_of_arguments {
                         let argument_value = state.pop_stack_check_underflow()?;
                         function_arguments[number_of_arguments - index - 1] = argument_value;
@@ -648,7 +758,7 @@ impl<'a> GospelVMExecutionState<'a> {
                 }
                 GospelOpcode::BindClosure => {
                     let number_of_arguments = state.immediate_value_checked(instruction, 0)? as usize;
-                    let mut closure_arguments: Vec<GospelVMValue> = vec![GospelVMValue::Integer(0); number_of_arguments];
+                    let mut closure_arguments: Vec<GospelVMValue> = vec![GospelVMValue::Primitive(0); number_of_arguments];
                     for index in 0..number_of_arguments {
                         let argument_value = state.pop_stack_check_underflow()?;
                         closure_arguments[number_of_arguments - index - 1] = argument_value;
@@ -690,59 +800,40 @@ impl<'a> GospelVMExecutionState<'a> {
                     state.exception_handler_stack.pop();
                 }
                 // Logical opcodes
-                GospelOpcode::And => { state.do_bitwise_op(|a, b| a & b)?; }
-                GospelOpcode::Or => { state.do_bitwise_op(|a, b| a | b)?; }
-                GospelOpcode::Xor => { state.do_bitwise_op(|a, b| a ^ b)?; }
-                GospelOpcode::Shl => { state.do_bitwise_op(|a, b| a >> b)?; }
-                GospelOpcode::Shr => { state.do_bitwise_op(|a, b| a << b)?; }
-                GospelOpcode::ReverseBits => {
-                    let stack_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as u32;
-                    let result = stack_value.reverse_bits() as i32;
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
-                }
-                GospelOpcode::Ez => {
-                    let stack_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as u32;
-                    let result = if stack_value == 0 { 1 } else { 0 };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
-                }
-                GospelOpcode::Lz => {
-                    let stack_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))?;
-                    let result = if stack_value < 0 { 1 } else { 0 };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
-                }
-                GospelOpcode::Lez => {
-                    let stack_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))?;
-                    let result = if stack_value <= 0 { 1 } else { 0 };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
-                }
+                GospelOpcode::And => { implement_variable_length_integer_op!(state, instruction, |a, b| a & b, unsigned_only); }
+                GospelOpcode::Or =>  { implement_variable_length_integer_op!(state, instruction, |a, b| a | b, unsigned_only); }
+                GospelOpcode::Xor => { implement_variable_length_integer_op!(state, instruction, |a, b| a ^ b, unsigned_only); }
+                GospelOpcode::Shl => { implement_variable_length_integer_op!(state, instruction, |a, b| a >> b, unsigned_only); }
+                GospelOpcode::Shr => { implement_variable_length_integer_op!(state, instruction, |a, b| a << b, unsigned_only); }
+                GospelOpcode::ReverseBits => { implement_variable_length_integer_op!(state, instruction, |a| a.reverse_bits(), unsigned_only); }
+                GospelOpcode::Ez =>  { implement_variable_length_integer_op!(state, instruction, |a| if a == 0 { 1 } else { 0 }, unsigned_only); }
+                GospelOpcode::Lz =>  { implement_variable_length_integer_op!(state, instruction, |a| if a <  0 { 1 } else { 0 }, signed_only); }
+                GospelOpcode::Lez => { implement_variable_length_integer_op!(state, instruction, |a| if a <= 0 { 1 } else { 0 }, signed_only); }
                 // Arithmetic opcodes
-                GospelOpcode::Add => { state.do_arithmetic_op_checked(|_, a, b| Ok(a + b))?; }
-                GospelOpcode::Sub => { state.do_arithmetic_op_checked(|_, a, b| Ok(a - b))?; }
-                GospelOpcode::Mul => { state.do_arithmetic_op_checked(|_, a, b| Ok(a * b))?; }
-                GospelOpcode::Div => {
-                    state.do_arithmetic_op_checked(|local_state, a, b| {
-                        if b == 0 { Err(vm_error!(Some(local_state), "Division by zero")) } else { Ok(a / b) }
-                    })?;
-                }
-                GospelOpcode::Rem => {
-                    state.do_arithmetic_op_checked(|local_state, a, b| {
-                        if b == 0 { Err(vm_error!(Some(local_state), "Division by zero")) } else { Ok(a % b) }
-                    })?;
-                }
-                GospelOpcode::Neg => {
-                    let stack_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))?;
-                    let result = -stack_value;
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
-                }
+                GospelOpcode::Add => { implement_variable_length_integer_op!(state, instruction, |a, b| a + b); }
+                GospelOpcode::Sub => { implement_variable_length_integer_op!(state, instruction, |a, b| a - b); }
+                GospelOpcode::Mul => { implement_variable_length_integer_op!(state, instruction, |a, b| a * b); }
+                GospelOpcode::Div => { implement_variable_length_integer_op!(state, instruction, |a, b| if b == 0 { vm_bail!(Some(state), "Division by zero"); } else { a / b }); }
+                GospelOpcode::Rem => { implement_variable_length_integer_op!(state, instruction, |a, b| if b == 0 { vm_bail!(Some(state), "Division by zero"); } else { a % b }); }
+                GospelOpcode::Neg => { implement_variable_length_integer_op!(state, instruction, |a| -a, signed_only); }
                 // Control flow opcodes
                 GospelOpcode::Branch => {
                     let target_instruction_index = state.immediate_value_checked(instruction, 0)? as usize;
                     state.jump_control_flow_checked(target_instruction_index)?;
                 }
                 GospelOpcode::Branchz => {
-                    let target_instruction_index = state.immediate_value_checked(instruction, 0)? as usize;
-                    let condition_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as u32;
-                    if condition_value == 0 {
+                    let instruction_encoding = state.immediate_value_checked(instruction, 0)? as u8;
+                    let condition_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))?;
+                    let operand_width = instruction_encoding & 0x4;
+                    let condition_result = match operand_width {
+                        0 => { condition_value as u8  == 0 },
+                        1 => { condition_value as u16 == 0 },
+                        2 => { condition_value as u32 == 0 },
+                        3 => { condition_value == 0 },
+                        _ =>  { vm_bail!(Some(state), "Unsupported operand width: {}", operand_width); },
+                    };
+                    let target_instruction_index = state.immediate_value_checked(instruction, 1)? as usize;
+                    if condition_result {
                         state.jump_control_flow_checked(target_instruction_index)?;
                     }
                 }
@@ -776,7 +867,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     let result_value = if let Some(target_triplet) = run_context.target_triplet() {
                         target_property.resolve(target_triplet)
                     } else { vm_bail!(Some(&state), "Target triplet not set to read target property {}", target_property_name); };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result_value))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result_value))?;
                 }
                 GospelOpcode::LoadGlobalVariable => {
                     let global_name_index = state.immediate_value_checked(instruction, 0)? as usize;
@@ -785,12 +876,12 @@ impl<'a> GospelVMExecutionState<'a> {
                     let default_global_value = state.owner_container.global_storage.find_default_global_value(global_name);
                     let result_value = run_context.read_global_value(global_name, default_global_value)
                         .ok_or_else(|| vm_error!(Some(&state), "Global variable {} is not defined and does not have a default value", global_name))?;
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result_value))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result_value))?;
                 }
                 GospelOpcode::LoadFunctionClosure => {
                     let function_index = state.immediate_value_checked(instruction, 0)? as usize;
                     let result_value = state.get_referenced_function_checked(function_index)?;
-                    state.push_stack_check_overflow(GospelVMValue::Closure(result_value))?;
+                    state.push_stack_check_overflow(GospelVMValue::Closure(Box::new(result_value)))?;
                 }
                 // Type creation opcodes
                 GospelOpcode::TypeAddConstantQualifier => {
@@ -835,7 +926,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
                 }
                 GospelOpcode::TypeArrayCreate => {
-                    let array_length = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
+                    let array_length = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))? as usize;
                     let element_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
 
                     let array_type = ArrayType{element_type_index, array_length};
@@ -883,7 +974,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
                 }
                 GospelOpcode::TypeUDTSetUserAlignment => {
-                    let user_type_alignment = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
+                    let user_type_alignment = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))? as usize;
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
@@ -894,7 +985,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     }
                 }
                 GospelOpcode::TypeUDTSetMemberPackAlignment => {
-                    let member_pack_alignment = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
+                    let member_pack_alignment = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))? as usize;
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
@@ -937,7 +1028,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     let field_flags = state.immediate_value_checked(instruction, 1)?;
                     let is_field_prototype = field_flags & (1 << 2) != 0;
 
-                    let raw_user_alignment = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))?;
+                    let raw_user_alignment = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))? as i64;
                     let user_alignment = if raw_user_alignment == -1 { None } else { Some(raw_user_alignment as usize) };
                     let field_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
 
@@ -964,7 +1055,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     let bitfield_flags = state.immediate_value_checked(instruction, 1)?;
                     let is_bitfield_prototype = bitfield_flags & (1 << 2) != 0;
 
-                    let bitfield_width = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
+                    let bitfield_width = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))? as usize;
 
                     // Bitfield must be of a primitive type
                     let field_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
@@ -1007,7 +1098,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     let number_of_parameters = number_of_parameter_stack_values / 2;
                     let mut parameters: Vec<FunctionParameterDeclaration> = vec![FunctionParameterDeclaration::default(); number_of_parameters];
                     for index in 0..number_of_parameters {
-                        let parameter_name_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))?;
+                        let parameter_name_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))? as u32 as i32;
                         let parameter_name = if parameter_name_index == -1 { None } else { Some(state.get_referenced_string_checked(parameter_name_index as usize)?.to_string()) };
                         let parameter_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                         parameters[number_of_parameters - index - 1] = FunctionParameterDeclaration{parameter_type_index, parameter_name};
@@ -1047,7 +1138,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
                     state.validate_type_not_finalized(type_index, run_context)?;
 
-                    run_context.types[type_index].vm_metadata = Some(metadata_struct);
+                    run_context.types[type_index].vm_metadata = Some(*metadata_struct);
                 }
                 GospelOpcode::TypeMarkPartial => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
@@ -1092,7 +1183,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     }
                 }
                 GospelOpcode::TypeEnumAddConstantWithValue => {
-                    let constant_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as u64;
+                    let constant_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))?;
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_enum_type(type_index, run_context)?;
@@ -1143,7 +1234,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     let type_index_b = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
 
                     let result = if type_index_a == type_index_b { 1 } else { 0 };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeGetBaseType => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
@@ -1152,32 +1243,32 @@ impl<'a> GospelVMExecutionState<'a> {
                 GospelOpcode::TypeIsPrimitiveType => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     let result = if matches!(run_context.type_by_index(type_index), Type::Primitive(_)) { 1 } else { 0 };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeIsPointerType => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     let result = if matches!(run_context.type_by_index(type_index), Type::Pointer(_)) { 1 } else { 0 };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeIsArrayType => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     let result = if matches!(run_context.type_by_index(type_index), Type::Array(_)) { 1 } else { 0 };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeIsFunctionType => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     let result = if matches!(run_context.type_by_index(type_index), Type::Function(_)) { 1 } else { 0 };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeIsUDTType => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     let result = if matches!(run_context.type_by_index(type_index), Type::UDT(_)) { 1 } else { 0 };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeIsEnumType => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     let result = if matches!(run_context.type_by_index(type_index), Type::Enum(_)) { 1 } else { 0 };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypePointerGetPointeeType => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
@@ -1195,7 +1286,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a pointer type; cannot determine if it is a reference type", type_index);
                     };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result_value))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result_value))?;
                 }
                 GospelOpcode::TypeArrayGetElementType => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
@@ -1211,11 +1302,11 @@ impl<'a> GospelVMExecutionState<'a> {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
 
                     let result = if let Type::Array(array_type) = run_context.type_by_index(type_index) {
-                        array_type.array_length as i32
+                        array_type.array_length as u64
                     } else {
                         vm_bail!(Some(state), "Type #{} is not an array type; cannot retrieve length", type_index);
                     };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeUDTIsBaseClassOf => {
                     let base_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
@@ -1230,7 +1321,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
                     };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeUDTHasField => {
                     let field_name_index = state.immediate_value_checked(instruction, 0)? as usize;
@@ -1246,7 +1337,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
                     };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeUDTTypeofField => {
                     let field_name_index = state.immediate_value_checked(instruction, 0)? as usize;
@@ -1271,7 +1362,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let metadata_struct = run_context.types[type_index].vm_metadata.clone()
                         .ok_or_else(|| vm_error!(Some(&state), "Type layout metadata not set on type layout"))?;
-                    state.push_stack_check_overflow(GospelVMValue::Struct(metadata_struct))?;
+                    state.push_stack_check_overflow(GospelVMValue::Struct(Box::new(metadata_struct)))?;
                 }
                 GospelOpcode::TypeFunctionIsMemberFunction => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
@@ -1281,7 +1372,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a function type; cannot determine whenever it is a member function or not", type_index);
                     };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeFunctionGetThisType => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
@@ -1309,14 +1400,14 @@ impl<'a> GospelVMExecutionState<'a> {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
 
                     let result = if let Type::Function(function_type) = run_context.type_by_index(type_index) {
-                        function_type.argument_type_indices.len() as i32
+                        function_type.argument_type_indices.len() as u64
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a function type; cannot determine argument count", type_index);
                     };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeFunctionGetArgumentType => {
-                    let argument_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
+                    let argument_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))? as usize;
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
 
                     let result_type_index = if let Type::Function(function_type) = run_context.type_by_index(type_index) {
@@ -1337,7 +1428,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     } else {
                         vm_bail!(Some(state), "Type #{} is not an enum type", type_index);
                     };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeEnumGetUnderlyingType => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
@@ -1366,7 +1457,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     } else {
                         vm_bail!(Some(state), "Type #{} is not an enum type", type_index);
                     };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeEnumConstantValueByName => {
                     let constant_name_index = state.immediate_value_checked(instruction, 0)? as usize;
@@ -1376,8 +1467,8 @@ impl<'a> GospelVMExecutionState<'a> {
                     if let Type::Enum(enum_type) = run_context.type_by_index(type_index) {
                         if let Some(constant_def) = enum_type.constants.iter().find(|x| x.name.as_ref().map(|x| x.as_str()) == Some(constant_name)) {
                             // TODO: This truncates the value. Integer should be extended to 64-bit
-                            state.push_stack_check_overflow(GospelVMValue::Integer(constant_def.value as i32))?;
-                            state.push_stack_check_overflow(GospelVMValue::Integer(if constant_def.is_signed { 1 } else { 0 }))?;
+                            state.push_stack_check_overflow(GospelVMValue::Primitive(constant_def.value))?;
+                            state.push_stack_check_overflow(GospelVMValue::Primitive(if constant_def.is_signed { 1 } else { 0 }))?;
                         } else {
                             vm_bail!(Some(state), "Constant with name {} is not found", constant_name);
                         }
@@ -1392,8 +1483,8 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let result = run_context.type_by_index(type_index).size_and_alignment(run_context, &mut new_type_cache)
-                        .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?.0 as i32;
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                        .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?.0 as u64;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeCalculateAlignment => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
@@ -1401,8 +1492,8 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let result = run_context.type_by_index(type_index).size_and_alignment(run_context, &mut new_type_cache)
-                        .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?.1 as i32;
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                        .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?.1 as u64;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeUDTCalculateUnalignedSize => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
@@ -1412,11 +1503,11 @@ impl<'a> GospelVMExecutionState<'a> {
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
                         user_defined_type.layout(run_context, &mut new_type_cache)
-                            .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?.unaligned_size as i32
+                            .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?.unaligned_size as u64
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
                     };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeUDTHasVTable => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
@@ -1430,7 +1521,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
                     };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeUDTCalculateVTableSizeAndOffset => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
@@ -1445,9 +1536,9 @@ impl<'a> GospelVMExecutionState<'a> {
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
                     };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(vtable.size as i32))?;
-                    state.push_stack_check_overflow(GospelVMValue::Integer(vtable.slot_size as i32))?;
-                    state.push_stack_check_overflow(GospelVMValue::Integer(vtable.offset as i32))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(vtable.size as u64))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(vtable.slot_size as u64))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(vtable.offset as u64))?;
                 }
                 GospelOpcode::TypeUDTCalculateBaseOffset => {
                     let base_class_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
@@ -1462,11 +1553,11 @@ impl<'a> GospelVMExecutionState<'a> {
                         user_defined_type.find_all_base_class_offsets(base_class_index, run_context, &mut new_type_cache)
                             .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?
                             .first().cloned() // take the first index of the base class in case there are multiple. This will be the outermost base class
-                            .ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have Type #{} as a Base Class", type_index, base_class_index))? as i32
+                            .ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have Type #{} as a Base Class", type_index, base_class_index))? as u64
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
                     };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(result))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
                 GospelOpcode::TypeUDTCalculateVirtualFunctionOffset => {
                     let function_name_index = state.immediate_value_checked(instruction, 0)? as usize;
@@ -1488,8 +1579,8 @@ impl<'a> GospelVMExecutionState<'a> {
                     } else {
                         vm_bail!(Some(&state), "Type #{} is not a user defined type", type_index);
                     };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(function_offset as i32))?;
-                    state.push_stack_check_overflow(GospelVMValue::Integer(vtable_offset as i32))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(function_offset as u64))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(vtable_offset as u64))?;
                 }
                 GospelOpcode::TypeUDTCalculateFieldOffset => {
                     let field_name_index = state.immediate_value_checked(instruction, 0)? as usize;
@@ -1511,7 +1602,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
                     };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(field_offset as i32))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(field_offset as u64))?;
                 }
                 GospelOpcode::TypeUDTCalculateBitfieldOffsetBitOffsetAndBitWidth => {
                     let field_name_index = state.immediate_value_checked(instruction, 0)? as usize;
@@ -1533,30 +1624,30 @@ impl<'a> GospelVMExecutionState<'a> {
                     } else {
                         vm_bail!(Some(&state), "Type #{} is not a user defined type", type_index);
                     };
-                    state.push_stack_check_overflow(GospelVMValue::Integer(field_bit_width as i32))?;
-                    state.push_stack_check_overflow(GospelVMValue::Integer(field_bit_offset as i32))?;
-                    state.push_stack_check_overflow(GospelVMValue::Integer(field_offset as i32))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(field_bit_width as u64))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(field_bit_offset as u64))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(field_offset as u64))?;
                 }
                 // Array opcodes
                 GospelOpcode::ArrayGetLength => {
                     let array = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_array_checked(x))?;
-                    state.push_stack_check_overflow(GospelVMValue::Integer(array.len() as i32))?;
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(array.len() as u64))?;
                 }
                 GospelOpcode::ArrayGetItem => {
-                    let element_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
+                    let element_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))? as usize;
                     let mut array = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_array_checked(x))?;
 
                     if array.len() <= element_index {
                         vm_bail!(Some(&state), "Array element index #{} out of bounds (number of elements: {})", element_index, array.len());
                     }
-                    state.push_stack_check_overflow(std::mem::replace(&mut array[element_index], GospelVMValue::Integer(0)))?;
+                    state.push_stack_check_overflow(std::mem::replace(&mut array[element_index], GospelVMValue::Primitive(0)))?;
                 }
                 GospelOpcode::ArrayAllocate => {
                     let array = GospelVMValue::Array(Vec::new());
                     state.push_stack_check_overflow(array)?;
                 }
                 GospelOpcode::ArrayReserve => {
-                    let reserve_amount = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
+                    let reserve_amount = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))? as usize;
                     let mut array = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_array_checked(x))?;
 
                     if array.len() + reserve_amount > i32::MAX as usize {
@@ -1577,7 +1668,7 @@ impl<'a> GospelVMExecutionState<'a> {
                 }
                 GospelOpcode::ArrayInsertItem => {
                     let new_item = state.pop_stack_check_underflow()?;
-                    let insert_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
+                    let insert_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))? as usize;
                     let mut array = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_array_checked(x))?;
 
                     if array.len() + 1 > i32::MAX as usize {
@@ -1590,7 +1681,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     state.push_stack_check_overflow(GospelVMValue::Array(array))?;
                 }
                 GospelOpcode::ArrayRemoveItem => {
-                    let remove_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_int_checked(x))? as usize;
+                    let remove_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))? as usize;
                     let mut array = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_array_checked(x))?;
 
                     if array.len() <= remove_index {
@@ -1601,7 +1692,7 @@ impl<'a> GospelVMExecutionState<'a> {
                 }
                 // Struct opcodes
                 GospelOpcode::StructAllocate => {
-                    state.push_stack_check_overflow(GospelVMValue::Struct(GospelVMStruct::default()))?;
+                    state.push_stack_check_overflow(GospelVMValue::Struct(Box::new(GospelVMStruct::default())))?;
                 }
                 GospelOpcode::StructGetField => {
                     let struct_field_name_index = state.immediate_value_checked(instruction, 0)? as usize;
@@ -1676,6 +1767,7 @@ impl GospelVMContainer {
         GospelVMExecutionState{
             owner_container: self,
             function_definition: &function_definition,
+            function_name: self.container.strings.get(function_definition.name).ok().unwrap_or("<unknown>").to_string(),
             argument_values: &closure.arguments,
             slots: vec![None; function_definition.num_slots as usize],
             referenced_strings: Vec::with_capacity(function_definition.referenced_strings.len()),

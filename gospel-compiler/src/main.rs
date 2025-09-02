@@ -41,7 +41,7 @@ struct ActionAssembleModule {
 #[derive(Debug, Clone)]
 struct GlobalVariable {
     name: String,
-    value: i32,
+    value: u64,
 }
 
 impl FromStr for GlobalVariable {
@@ -52,9 +52,9 @@ impl FromStr for GlobalVariable {
             .ok_or_else(|| anyhow!("Global variable must be in format 'NAME=<value>'"))?;
 
         let value = if let Some(hex_str) = value_str.strip_prefix("0x").or_else(|| value_str.strip_prefix("0X")) {
-            u32::from_str_radix(hex_str, 16).map(|v| v as i32)
+            u64::from_str_radix(hex_str, 16).map(|v| v)
         } else {
-            value_str.parse::<i32>()
+            value_str.parse::<u64>()
         }.map_err(|_| anyhow!("Failed to parse {value_str} as int"))?;
 
         Ok(GlobalVariable { name: name.to_string(), value })
@@ -425,9 +425,9 @@ fn do_action_call(action: ActionCallFunction) -> anyhow::Result<()> {
     // Assemble and evaluate function arguments
     let mut function_arguments: Vec<GospelVMValue> = Vec::new();
     for argument_string in &action.function_args {
-        let parsed_value = i32::from_str(argument_string)
-            .map_err(|x| anyhow!("Failed to parse argument value as integer \"{}\": {}", argument_string.clone(), x.to_string()))?;
-        function_arguments.push(GospelVMValue::Integer(parsed_value));
+        let parsed_value = u64::from_str(argument_string)
+            .map_err(|x| anyhow!("Failed to parse argument value as primitive \"{}\": {}", argument_string.clone(), x.to_string()))?;
+        function_arguments.push(GospelVMValue::Primitive(parsed_value));
     }
 
     // Evaluate the function
