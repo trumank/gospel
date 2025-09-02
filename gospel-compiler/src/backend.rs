@@ -1550,9 +1550,9 @@ impl CompilerFunctionCodeGenerator for CompilerStructFunctionGenerator {
             self.fragments.iter().map(|struct_fragment| {
                 struct_fragment.compile_fragment(&mut function_builder, type_layout_slot_index, type_layout_metadata_slot_index, true, false)
             }).chain_compiler_result(|| compiler_error!(&self.source_context, "Failed to compile struct definition (prototype pass)"))?;
-        }
-        for base_class_expression in &self.base_class_expressions {
-            function_builder.compile_udt_type_base_class_expression(&function_builder.function_scope.clone(), type_layout_slot_index, base_class_expression, true, false)?;
+            for base_class_expression in &self.base_class_expressions {
+                function_builder.compile_udt_type_base_class_expression(&function_builder.function_scope.clone(), type_layout_slot_index, base_class_expression, true, false)?;
+            }
         }
         function_builder.compile_generic_type_layout_finalization(type_layout_slot_index, Some(type_layout_metadata_slot_index), &self.source_context)?;
         function_builder.commit()
