@@ -72,7 +72,7 @@ enum AssemblerToken {
     #[regex("[A-Za-z_$@][A-Za-z0-9_$@]*(?:::[A-Za-z_$][A-Za-z0-9_$]*)?", parse_identifier)]
     #[strum(to_string = "identifier")]
     Identifier(AssemblerIdentifier),
-    #[regex("-?(?:0x[A-Za-z0-9]+)|-?(?:(?:[1-9]+[0-9]*)|0)(?:[ui](?:8|16|32|64))", parse_decimal_or_hex_integer_literal)]
+    #[regex("(?:-?(?:0x[A-Za-z0-9]+)|-?(?:(?:[1-9]+[0-9]*)|0))(?:(?:u|i)(?:8|16|32|64))?", parse_decimal_or_hex_integer_literal)]
     #[strum(to_string = "integer literal")]
     IntegerLiteral(AssemblerIntegerLiteral),
     #[regex("(?:\"(?:[^\"\\\\]|(?:\\\\\")|(?:\\\\\\\\))*\")", parse_string_literal)]
@@ -96,12 +96,12 @@ fn parse_string_literal(lex: &mut Lexer<AssemblerToken>) -> Option<String> {
 fn parse_decimal_or_hex_integer_literal(lex: &mut Lexer<AssemblerToken>) -> Option<AssemblerIntegerLiteral> {
     let mut string_slice: &str = lex.slice();
     if string_slice.ends_with("i64") {
+        string_slice = &string_slice[0..string_slice.len() - 3];
         let mut sign_multiplier = 1;
         if string_slice.starts_with('-') {
             string_slice = &string_slice[1..];
             sign_multiplier = -1;
         }
-        string_slice = &string_slice[0..string_slice.len() - 3];
         if string_slice.starts_with("0x") {
             string_slice = &string_slice[2..];
             i64::from_str_radix(string_slice, 16).ok()
@@ -109,12 +109,12 @@ fn parse_decimal_or_hex_integer_literal(lex: &mut Lexer<AssemblerToken>) -> Opti
             i64::from_str_radix(string_slice, 10).ok()
         }.map(|x| AssemblerIntegerLiteral{raw_value: (x * sign_multiplier) as u64, is_signed: true, bit_width: 64})
     } else if string_slice.ends_with("i32") {
+        string_slice = &string_slice[0..string_slice.len() - 3];
         let mut sign_multiplier = 1;
         if string_slice.starts_with('-') {
             string_slice = &string_slice[1..];
             sign_multiplier = -1;
         }
-        string_slice = &string_slice[0..string_slice.len() - 3];
         if string_slice.starts_with("0x") {
             string_slice = &string_slice[2..];
             i32::from_str_radix(string_slice, 16).ok()
@@ -122,12 +122,12 @@ fn parse_decimal_or_hex_integer_literal(lex: &mut Lexer<AssemblerToken>) -> Opti
             i32::from_str_radix(string_slice, 10).ok()
         }.map(|x| AssemblerIntegerLiteral{raw_value: (x * sign_multiplier) as u32 as u64, is_signed: true, bit_width: 32})
     } else if string_slice.ends_with("i16") {
+        string_slice = &string_slice[0..string_slice.len() - 3];
         let mut sign_multiplier = 1;
         if string_slice.starts_with('-') {
             string_slice = &string_slice[1..];
             sign_multiplier = -1;
         }
-        string_slice = &string_slice[0..string_slice.len() - 3];
         if string_slice.starts_with("0x") {
             string_slice = &string_slice[2..];
             i16::from_str_radix(string_slice, 16).ok()
@@ -135,12 +135,12 @@ fn parse_decimal_or_hex_integer_literal(lex: &mut Lexer<AssemblerToken>) -> Opti
             i16::from_str_radix(string_slice, 10).ok()
         }.map(|x| AssemblerIntegerLiteral{raw_value: (x * sign_multiplier) as u16 as u64, is_signed: true, bit_width: 16})
     } else if string_slice.ends_with("i8") {
+        string_slice = &string_slice[0..string_slice.len() - 2];
         let mut sign_multiplier = 1;
         if string_slice.starts_with('-') {
             string_slice = &string_slice[1..];
             sign_multiplier = -1;
         }
-        string_slice = &string_slice[0..string_slice.len() - 3];
         if string_slice.starts_with("0x") {
             string_slice = &string_slice[2..];
             i8::from_str_radix(string_slice, 16).ok()
@@ -172,7 +172,7 @@ fn parse_decimal_or_hex_integer_literal(lex: &mut Lexer<AssemblerToken>) -> Opti
             u16::from_str_radix(string_slice, 10).ok()
         }.map(|x| AssemblerIntegerLiteral{raw_value: x as u64, is_signed: false, bit_width: 16})
     } else if string_slice.ends_with("u8") {
-        string_slice = &string_slice[0..string_slice.len() - 3];
+        string_slice = &string_slice[0..string_slice.len() - 2];
         if string_slice.starts_with("0x") {
             string_slice = &string_slice[2..];
             u8::from_str_radix(string_slice, 16).ok()
@@ -180,7 +180,17 @@ fn parse_decimal_or_hex_integer_literal(lex: &mut Lexer<AssemblerToken>) -> Opti
             u8::from_str_radix(string_slice, 10).ok()
         }.map(|x| AssemblerIntegerLiteral{raw_value: x as u64, is_signed: false, bit_width: 8})
     } else {
-        None
+        let mut sign_multiplier = 1;
+        if string_slice.starts_with('-') {
+            string_slice = &string_slice[1..];
+            sign_multiplier = -1;
+        }
+        if string_slice.starts_with("0x") {
+            string_slice = &string_slice[2..];
+            i32::from_str_radix(string_slice, 16).ok()
+        } else {
+            i32::from_str_radix(string_slice, 10).ok()
+        }.map(|x| AssemblerIntegerLiteral{raw_value: (x * sign_multiplier) as u32 as u64, is_signed: true, bit_width: 32})
     }
 }
 

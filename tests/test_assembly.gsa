@@ -1,115 +1,81 @@
 global test_global = 5;
 
-function InvokerType invoke: Closure -> TypeReference max_slots 0 {
-    LoadArgumentValue invoke;
+function InvokerType max_slots 0 {
+    LoadArgumentValue 0;
     Call 0;
     SetReturnValue;
 };
 
-function ClosureCallFunction first: Integer second: Integer -> Integer max_slots 0 {
-    LoadArgumentValue first;
-    LoadArgumentValue second;
-    Add;
+function ClosureCallFunction max_slots 0 {
+    LoadArgumentValue 0;
+    LoadArgumentValue 1;
+    Add 0x82u32;
     SetReturnValue;
 };
 
-function ClosureTest -> Integer max_slots 1 {
+function ClosureTest max_slots 1 {
     LoadFunctionClosure function ClosureCallFunction;
-    IntConstant 5;
+    Int32Constant 5;
     BindClosure 1;
     StoreSlot 0;
-    IntConstant 7;
+    Int32Constant 7;
     LoadSlot 0;
     Call 1;
     SetReturnValue;
 };
 
-function ArrayTest -> Array max_slots 0 {
+function ArrayTest max_slots 0 {
     ArrayAllocate;
-    IntConstant 3;
+    Int32Constant 3;
     ArrayReserve;
-    IntConstant 15;
+    Int32Constant 15;
     ArrayPushItem;
-    IntConstant 0;
-    IntConstant 10;
+    Int32Constant 0;
+    Int32Constant 10;
     ArrayInsertItem;
     Dup;
     Dup;
     ArrayGetLength;
-    IntConstant 1;
-    Sub;
+    Int32Constant 1;
+    Sub 0x82u32;
     ArrayGetItem;
-    IntConstant 1;
-    Add;
+    Int32Constant 1;
+    Add 0x82u32;
     ArrayPushItem;
     SetReturnValue;
 };
 
-function AbortTest -> Integer max_slots 0 {
+function AbortTest max_slots 0 {
     RaiseException "abort test";
 };
 
-structure TestStruct {
-    named_field: Integer;
-    test_field: Integer;
-    Integer;
-};
-
-structure LocalStruct {
-    Integer;
-};
-
-function StructTest -> Struct max_slots 1 {
-    StructAllocate TestStruct;
-    IntConstant 15;
-    StructSetLocalField TestStruct 0;
-    IntConstant 10;
-    StructSetNamedField TestStruct "test_field";
-    Dup;
-    Dup;
-    StructGetLocalField TestStruct 1;
-    StoreSlot 0;
-    StructGetNamedField TestStruct "named_field";
-    LoadSlot 0;
-    Mul;
-    StructSetLocalField TestStruct 2;
-    SetReturnValue;
-};
-
-function LocalStructTest -> Struct max_slots 0 {
-    StructAllocate structure LocalStruct;
-    IntConstant 20;
-    StructSetLocalField structure LocalStruct 0;
-    SetReturnValue;
-};
-
-function ExceptionHandlerTest value: Integer -> Integer max_slots 0 {
-    IntConstant 5;
+function ExceptionHandlerTest max_slots 0 {
+    Int32Constant 5;
     PushExceptionHandler A;
     Pop;
-    IntConstant 2;
-    LoadArgumentValue value;
-    IntConstant 1;
-    Sub;
-    Ez;
-    Branchz B;
+    Int32Constant 2;
+    LoadArgumentValue 0;
+    Int32Constant 1;
+    Sub 0x82u32;
+    Ez 0x82u32;
+    Branchz 0x82u32 B;
     RaiseException "Value of 1 is bad";
 B:  PopExceptionHandler;
     Branch C;
-A:  IntConstant 1;
-    Sub;
+A:  Int32Constant 1;
+    Sub 0x82u32;
 C:  SetReturnValue;
 };
 
-function ProblematicType -> TypeReference;
+function ProblematicType;
 
-function AffectedType -> TypeReference max_slots 1 {
+function AffectedType max_slots 1 {
     TypeUDTAllocate "AffectedType" "Struct";
     StoreSlot 0;
     LoadSlot 0;
     LoadFunctionClosure function test_assembly::ProblematicType;
     Call 0;
-    IntConstant -1;
+    Int32Constant -1;
     TypeUDTAddField "dependent_field" 0;
     LoadSlot 0;
     TypeFinalize;
@@ -117,7 +83,7 @@ function AffectedType -> TypeReference max_slots 1 {
     SetReturnValue;
 };
 
-function ProblematicType -> TypeReference max_slots 1 {
+function ProblematicType max_slots 1 {
     TypeUDTAllocate "ProblematicType" "Struct";
     StoreSlot 0;
     LoadSlot 0;
@@ -126,14 +92,14 @@ function ProblematicType -> TypeReference max_slots 1 {
     LoadFunctionClosure function test_assembly::AffectedType;
     Call 0;
     TypePointerCreate;
-    IntConstant -1;
+    Int64Constant -1i64;
     TypeUDTAddField "pointer_field" 0;
     RaiseException "Exception before ProblematicType is finalized";
     LoadSlot 0;
     TypeFinalize;
 };
 
-function VMFunctionCallConsistencyBug -> TypeReference max_slots 1 {
+function VMFunctionCallConsistencyBug max_slots 1 {
     PushExceptionHandler A;
     LoadFunctionClosure function test_assembly::ProblematicType;
     Call 0;
@@ -142,4 +108,18 @@ function VMFunctionCallConsistencyBug -> TypeReference max_slots 1 {
 A:  LoadFunctionClosure function test_assembly::AffectedType;
     Call 0;
     SetReturnValue;
+};
+
+global UE_VERSION = 504u64;
+
+function ArithmeticTest max_slots 1 {
+    LoadGlobalVariable "UE_VERSION";
+    Int32Constant 0x198u32;
+    Sub 0x82u32;
+    Lz 0x82u32;
+    Branchz 0x82u32 A;
+    Int32Constant 55u32;
+    Branch B;
+A:  Int32Constant 57u32;
+B:  SetReturnValue;
 };

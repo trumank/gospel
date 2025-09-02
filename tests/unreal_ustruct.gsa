@@ -227,30 +227,10 @@ function unreal$UStruct max_slots 2 {
   L193: TypePointerCreate; // unreal.gs:657
   L194: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:657
   L195: TypeUDTAddField 0x13u32 0x0u32; // unreal.gs:657
-  L196: PushExceptionHandler 0xcbu32; // unreal.gs:633
-  L197: LoadSlot 0x0u32; // unreal.gs:633
-  L198: LoadFunctionClosure 0x0u32; // unreal.gs:633
-  L199: Call 0x0u32; // unreal.gs:633
-  L200: TypeUDTAddBaseClass 0x4u32; // unreal.gs:633
-  L201: PopExceptionHandler; // unreal.gs:633
-  L202: Branch 0xcbu32; // unreal.gs:633
-  L203: PushExceptionHandler 0xd8u32; // unreal.gs:633
-  L204: LoadGlobalVariable 0x2u32; // unreal.gs:633
-  L205: Int32Constant 0x1a6u32; // unreal.gs:633
-  L206: Permute; // unreal.gs:633
-  L207: Sub 0x82u32; // unreal.gs:633
-  L208: Lez 0x82u32; // unreal.gs:633
-  L209: Branchz 0x82u32 0xd6u32; // unreal.gs:633
-  L210: LoadSlot 0x0u32; // unreal.gs:633
-  L211: LoadFunctionClosure 0x1u32; // unreal.gs:633
-  L212: Call 0x0u32; // unreal.gs:633
-  L213: TypeUDTAddBaseClass 0x4u32; // unreal.gs:633
-  L214: PopExceptionHandler; // unreal.gs:633
-  L215: Branch 0xd8u32; // unreal.gs:633
-  L216: LoadSlot 0x0u32; // unreal.gs:633
-  L217: TakeSlot 0x1u32; // unreal.gs:633
-  L218: TypeUDTAttachMetadata; // unreal.gs:633
-  L219: LoadSlot 0x0u32; // unreal.gs:633
-  L220: TypeFinalize; // unreal.gs:633
-  L221: Return; // unreal.gs:633
+  L196: LoadSlot 0x0u32; // unreal.gs:633
+  L197: TakeSlot 0x1u32; // unreal.gs:633
+  L198: TypeUDTAttachMetadata; // unreal.gs:633
+  L199: LoadSlot 0x0u32; // unreal.gs:633
+  L200: TypeFinalize; // unreal.gs:633
+  L201: Return; // unreal.gs:633
 };

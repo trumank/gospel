@@ -408,14 +408,14 @@ struct GospelVMExecutionState<'a> {
 
 macro_rules! implement_primitive_op {
     ($state:expr, |$operand_a:ident, $operand_b:ident| $expression:expr, $unsigned_type:ty) => {
-        let $operand_a = $state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type;
         let $operand_b = $state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type;
+        let $operand_a = $state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type;
         let result = $expression as $unsigned_type;
         $state.push_stack_check_overflow(GospelVMValue::Primitive(result as u64))?;
     };
     ($state:expr, |$operand_a:ident, $operand_b:ident| $expression:expr, $unsigned_type:ty, $signed_type:ty) => {
-        let $operand_a = ($state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type) as $signed_type;
         let $operand_b = ($state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type) as $signed_type;
+        let $operand_a = ($state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type) as $signed_type;
         let result = ($expression as $signed_type) as $unsigned_type;
         $state.push_stack_check_overflow(GospelVMValue::Primitive(result as u64))?;
     };
