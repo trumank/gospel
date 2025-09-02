@@ -510,6 +510,12 @@ macro_rules! implement_variable_length_integer_op {
     };
 }
 
+#[derive(Debug, Clone)]
+enum GospelVMInnerExecutionResult {
+    CallFunctionAndReEnter(Box<GospelVMClosure>),
+    DoneExecution,
+}
+
 impl<'a> GospelVMExecutionState<'a> {
     fn push_stack_check_overflow(&mut self, value: GospelVMValue) -> GospelVMResult<()> {
         if self.stack.len() > self.max_stack_size {
@@ -684,15 +690,25 @@ impl<'a> GospelVMExecutionState<'a> {
                 state.jump_control_flow_checked(exception_handler.target_instruction_index)?;
                 continue;
             }
-            // There is no exception handler. Just return the result and check that the function has actually written return value
-            inner_run_result?;
-            if state.return_value_slot.borrow().is_none() {
-                vm_bail!(Some(&state), "Function did not return a value");
+            // There is no exception handler. Check the inner function result
+            match inner_run_result? {
+                GospelVMInnerExecutionResult::CallFunctionAndReEnter(closure_to_call) => {
+                    // We need to call the function provided, push return value on the stack and then re-enter the VM
+                    let return_value = closure_to_call.execute_internal(Vec::new(), run_context, Some(&state))?;
+                    state.push_stack_check_overflow(return_value)?;
+                    continue;
+                }
+                GospelVMInnerExecutionResult::DoneExecution => {
+                    // We are done with the function. Just return the result and check that the function has actually written return value
+                    if state.return_value_slot.borrow().is_none() {
+                        vm_bail!(Some(&state), "Function did not return a value");
+                    }
+                    return Ok({});
+                }
             }
-            return Ok({});
         }
     }
-    fn run_inner(state: &mut GospelVMExecutionState, run_context: &mut GospelVMRunContext) -> GospelVMResult<()> {
+    fn run_inner(state: &mut GospelVMExecutionState, run_context: &mut GospelVMRunContext) -> GospelVMResult<GospelVMInnerExecutionResult> {
         // Main VM loop
         while state.current_instruction_index < state.function_definition.code.len() {
             let instruction = &state.function_definition.code[state.current_instruction_index];
@@ -749,12 +765,14 @@ impl<'a> GospelVMExecutionState<'a> {
                         let argument_value = state.pop_stack_check_underflow()?;
                         function_arguments[number_of_arguments - index - 1] = argument_value;
                     }
-                    let closure = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_closure_checked(x))?;
+                    let mut closure = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_closure_checked(x))?;
+                    closure.arguments.extend(function_arguments.into_iter());
+
                     if state.recursion_counter >= state.max_recursion_depth {
                         vm_bail!(Some(&state), "Recursion limit reached");
                     }
-                    let return_value = closure.execute_internal(function_arguments, run_context, Some(&state))?;
-                    state.push_stack_check_overflow(return_value)?;
+                    // Request the outer run loop to call the function for us to avoid holding the stack space for this function execution while calling the next one
+                    return Ok(GospelVMInnerExecutionResult::CallFunctionAndReEnter(closure));
                 }
                 GospelOpcode::BindClosure => {
                     let number_of_arguments = state.immediate_value_checked(instruction, 0)? as usize;
@@ -1716,7 +1734,7 @@ impl<'a> GospelVMExecutionState<'a> {
                 }
             };
         }
-        Ok({})
+        Ok(GospelVMInnerExecutionResult::DoneExecution)
     }
 }
 
