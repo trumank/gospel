@@ -457,43 +457,37 @@ impl CompilerFunctionBuilder {
             BinaryOperator::LogicalLess => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
                 let instruction_encoding = Self::instruction_encoding_for_expression_type(left_side_type, source_context)?;
-                // left < right = (left - right) < 0
-                self.function_definition.add_int_instruction(GospelOpcode::Sub, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
-                self.function_definition.add_int_instruction(GospelOpcode::Lz, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
+                self.function_definition.add_int_instruction(GospelOpcode::CmpLess, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::LogicalMore => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
                 let instruction_encoding = Self::instruction_encoding_for_expression_type(left_side_type, source_context)?;
-                // left > right = (left - right) > 0 = (right - left) < 0
+                // left > right = right < left
                 self.function_definition.add_simple_instruction(GospelOpcode::Permute, Self::get_line_number(source_context)).with_source_context(source_context)?;
-                self.function_definition.add_int_instruction(GospelOpcode::Sub, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
-                self.function_definition.add_int_instruction(GospelOpcode::Lz, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
+                self.function_definition.add_int_instruction(GospelOpcode::CmpLess, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::LogicalLessEquals => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
                 let instruction_encoding = Self::instruction_encoding_for_expression_type(left_side_type, source_context)?;
-                // left <= right = (left - right) <= 0
-                self.function_definition.add_int_instruction(GospelOpcode::Sub, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
-                self.function_definition.add_int_instruction(GospelOpcode::Lez, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
+                // left <= right
+                self.function_definition.add_int_instruction(GospelOpcode::CmpLeq, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::LogicalMoreEquals => {
                 Self::check_expression_type(source_context, ExpressionValueType::Int, left_side_type)?;
                 let instruction_encoding = Self::instruction_encoding_for_expression_type(left_side_type, source_context)?;
-                // left >= right = (left - right) >= 0 = (right - left) <= 0
+                // left >= right = right <= left
                 self.function_definition.add_simple_instruction(GospelOpcode::Permute, Self::get_line_number(source_context)).with_source_context(source_context)?;
-                self.function_definition.add_int_instruction(GospelOpcode::Sub, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
-                self.function_definition.add_int_instruction(GospelOpcode::Lez, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
+                self.function_definition.add_int_instruction(GospelOpcode::CmpLeq, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::Equals => {
-                // Use Ez for integer comparison, and TypeIsSameType for types
+                // Use CmpEq for integer comparison, and TypeIsSameType for types
                 if left_side_type == ExpressionValueType::Int {
                     let instruction_encoding = Self::instruction_encoding_for_expression_type(left_side_type, source_context)?;
-                    self.function_definition.add_int_instruction(GospelOpcode::Sub, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
-                    self.function_definition.add_int_instruction(GospelOpcode::Ez, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
+                    self.function_definition.add_int_instruction(GospelOpcode::CmpEq, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
                 } else if left_side_type == ExpressionValueType::Typename {
                     self.function_definition.add_simple_instruction(GospelOpcode::TypeIsSameType, Self::get_line_number(source_context)).with_source_context(source_context)?;
                 } else {
@@ -505,16 +499,15 @@ impl CompilerFunctionBuilder {
                 // Use Ez for integer comparison, and TypeIsSameType for types
                 if left_side_type == ExpressionValueType::Int {
                     let instruction_encoding = Self::instruction_encoding_for_expression_type(left_side_type, source_context)?;
-                    self.function_definition.add_int_instruction(GospelOpcode::Sub, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
-                    self.function_definition.add_int_instruction(GospelOpcode::Ez, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
+                    self.function_definition.add_int_instruction(GospelOpcode::CmpEq, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
                 } else if left_side_type == ExpressionValueType::Typename {
                     self.function_definition.add_simple_instruction(GospelOpcode::TypeIsSameType, Self::get_line_number(source_context)).with_source_context(source_context)?;
                 } else {
                     compiler_bail!(source_context, "Comparison is only allowed for integers and types");
                 }
-                // Ez and TypeIsSameType both return 64-bit value with only the first bit set or not set. Since we return Int as expression type, logically here we should pass the encoding of int as well (even though it does not matter)
+                // CmpEq and TypeIsSameType both return 64-bit value with only the first bit set or not set. Since we return Int as expression type, logically here we should pass the encoding of int as well (even though it does not matter)
                 let result_instruction_encoding = Self::instruction_encoding_for_expression_type(ExpressionValueType::Int, source_context)?;
-                self.function_definition.add_int_instruction(GospelOpcode::Ez, result_instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
+                self.function_definition.add_int_instruction(GospelOpcode::Eqz, result_instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
                 Ok(ExpressionValueType::Int)
             }
             BinaryOperator::ShortCircuitAnd => {
@@ -536,7 +529,7 @@ impl CompilerFunctionBuilder {
         self.function_definition.add_simple_instruction(GospelOpcode::Dup, Self::get_line_number(source_context)).with_source_context(source_context)?;
         if operator == BinaryOperator::ShortCircuitOr {
             // If the left side value is not zero, jump to the end of the operator (and return that value, which is non-zero in this case)
-            self.function_definition.add_int_instruction(GospelOpcode::Ez, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
+            self.function_definition.add_int_instruction(GospelOpcode::Eqz, instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
         } else if operator == BinaryOperator::ShortCircuitAnd {
             // If the left side value is zero, jump to the end of the operator (and return that value, which is zero in this case)
         } else {
@@ -596,7 +589,7 @@ impl CompilerFunctionBuilder {
             UnaryOperator::BoolNegate => {
                 Self::check_expression_type(&source_context, ExpressionValueType::Int, inner_expression_type)?;
                 let instruction_encoding = Self::instruction_encoding_for_expression_type(inner_expression_type, &source_context)?;
-                self.function_definition.add_int_instruction(GospelOpcode::Ez, instruction_encoding, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+                self.function_definition.add_int_instruction(GospelOpcode::Eqz, instruction_encoding, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
                 Ok(ExpressionValueType::Int)
             }
             UnaryOperator::BitwiseInverse => {

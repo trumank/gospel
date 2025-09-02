@@ -56,8 +56,7 @@ function ExceptionHandlerTest max_slots 0 {
     Int32Constant 2;
     LoadArgumentValue 0;
     Int32Constant 1;
-    Sub 0x82u32;
-    Ez 0x82u32;
+    CmpEq 0x82u32;
     Branchz 0x82u32 B;
     RaiseException "Value of 1 is bad";
 B:  PopExceptionHandler;
@@ -115,8 +114,7 @@ global UE_VERSION = 504u64;
 function ArithmeticTest max_slots 1 {
     LoadGlobalVariable "UE_VERSION";
     Int32Constant 0x198u32;
-    Sub 0x82u32;
-    Lz 0x82u32;
+    CmpLess 0x82u32;
     Branchz 0x82u32 A;
     Int32Constant 55u32;
     Branch B;

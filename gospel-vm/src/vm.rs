@@ -827,9 +827,10 @@ impl<'a> GospelVMExecutionState<'a> {
                 GospelOpcode::Shl => { implement_variable_length_integer_op!(state, instruction, |a, b| a >> b, unsigned_only); }
                 GospelOpcode::Shr => { implement_variable_length_integer_op!(state, instruction, |a, b| a << b, unsigned_only); }
                 GospelOpcode::ReverseBits => { implement_variable_length_integer_op!(state, instruction, |a| a.reverse_bits(), unsigned_only); }
-                GospelOpcode::Ez =>  { implement_variable_length_integer_op!(state, instruction, |a| if a == 0 { 1 } else { 0 }, unsigned_only); }
-                GospelOpcode::Lz =>  { implement_variable_length_integer_op!(state, instruction, |a| if a <  0 { 1 } else { 0 }, signed_only); }
-                GospelOpcode::Lez => { implement_variable_length_integer_op!(state, instruction, |a| if a <= 0 { 1 } else { 0 }, signed_only); }
+                GospelOpcode::CmpEq => { implement_variable_length_integer_op!(state, instruction, |a, b| if a == b { 1 } else { 0 }, unsigned_only); }
+                GospelOpcode::CmpLess => { implement_variable_length_integer_op!(state, instruction, |a, b| if a < b { 1 } else { 0 }); }
+                GospelOpcode::CmpLeq => { implement_variable_length_integer_op!(state, instruction, |a, b| if a <= b { 1 } else { 0 }); }
+                GospelOpcode::Eqz => { implement_variable_length_integer_op!(state, instruction, |a| if a == 0 { 1 } else { 0 }, unsigned_only); }
                 // Arithmetic opcodes
                 GospelOpcode::Add => { implement_variable_length_integer_op!(state, instruction, |a, b| a + b); }
                 GospelOpcode::Sub => { implement_variable_length_integer_op!(state, instruction, |a, b| a - b); }
