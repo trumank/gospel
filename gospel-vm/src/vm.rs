@@ -513,6 +513,7 @@ macro_rules! implement_variable_length_integer_op {
 #[derive(Debug, Clone)]
 enum GospelVMInnerExecutionResult {
     CallFunctionAndReEnter(Box<GospelVMClosure>),
+    ContinueExecution,
     DoneExecution,
 }
 
@@ -680,7 +681,12 @@ impl<'a> GospelVMExecutionState<'a> {
 
         loop {
             // Enter the VM from the current position
-            let inner_run_result = Self::run_inner(state, run_context);
+            let mut inner_run_result = Self::run_inner(state, run_context);
+
+            // If VM exited because we need to call the function, call the function, and then handle the result of that like we would have result of run_inner
+            if let Ok(GospelVMInnerExecutionResult::CallFunctionAndReEnter(closure_to_call)) = inner_run_result {
+                inner_run_result = Self::run_call_inner(state, run_context, closure_to_call);
+            }
 
             // If there was an exception, and we have an exception handler stack entry, attempt VM re-entry from the exception handler
             if inner_run_result.is_err() && !state.exception_handler_stack.is_empty() {
@@ -690,23 +696,20 @@ impl<'a> GospelVMExecutionState<'a> {
                 state.jump_control_flow_checked(exception_handler.target_instruction_index)?;
                 continue;
             }
-            // There is no exception handler. Check the inner function result
-            match inner_run_result? {
-                GospelVMInnerExecutionResult::CallFunctionAndReEnter(closure_to_call) => {
-                    // We need to call the function provided, push return value on the stack and then re-enter the VM
-                    let return_value = closure_to_call.execute_internal(Vec::new(), run_context, Some(&state))?;
-                    state.push_stack_check_overflow(return_value)?;
-                    continue;
+
+            // Check if we are done with the function. In that case, just return the result and check that the function has actually written return value
+            if let GospelVMInnerExecutionResult::DoneExecution = inner_run_result? {
+                if state.return_value_slot.borrow().is_none() {
+                    vm_bail!(Some(&state), "Function did not return a value");
                 }
-                GospelVMInnerExecutionResult::DoneExecution => {
-                    // We are done with the function. Just return the result and check that the function has actually written return value
-                    if state.return_value_slot.borrow().is_none() {
-                        vm_bail!(Some(&state), "Function did not return a value");
-                    }
-                    return Ok({});
-                }
+                return Ok({});
             }
         }
+    }
+    fn run_call_inner(state: &mut GospelVMExecutionState, run_context: &mut GospelVMRunContext, closure_to_call: Box<GospelVMClosure>) -> GospelVMResult<GospelVMInnerExecutionResult> {
+        let return_value = closure_to_call.execute_internal(Vec::new(), run_context, Some(&state))?;
+        state.push_stack_check_overflow(return_value)?;
+        Ok(GospelVMInnerExecutionResult::ContinueExecution)
     }
     fn run_inner(state: &mut GospelVMExecutionState, run_context: &mut GospelVMRunContext) -> GospelVMResult<GospelVMInnerExecutionResult> {
         // Main VM loop
