@@ -433,7 +433,7 @@ macro_rules! implement_primitive_op {
 macro_rules! implement_variable_length_integer_op {
     ($state:expr, $instruction:expr, |$operand_a:ident, $operand_b:ident| $expression:expr) => {
         let instruction_encoding = $state.immediate_value_checked($instruction, 0)? as u8;
-        let operand_width = instruction_encoding & 0x4;
+        let operand_width = instruction_encoding & 0x3;
         let is_operand_signed = instruction_encoding & 0x80 != 0;
         if is_operand_signed {
             match operand_width {
@@ -455,7 +455,7 @@ macro_rules! implement_variable_length_integer_op {
     };
     ($state:expr, $instruction:expr, |$operand_a:ident, $operand_b:ident| $expression:expr, unsigned_only) => {
         let instruction_encoding = $state.immediate_value_checked($instruction, 0)? as u8;
-        let operand_width = instruction_encoding & 0x4;
+        let operand_width = instruction_encoding & 0x3;
         match operand_width {
             0 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u8); },
             1 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u16); },
@@ -466,7 +466,7 @@ macro_rules! implement_variable_length_integer_op {
     };
     ($state:expr, $instruction:expr, |$operand:ident| $expression:expr) => {
         let instruction_encoding = $state.immediate_value_checked($instruction, 0)? as u8;
-        let operand_width = instruction_encoding & 0x4;
+        let operand_width = instruction_encoding & 0x3;
         let is_operand_signed = instruction_encoding & 0x80 != 0;
         if is_operand_signed {
             match operand_width {
@@ -488,7 +488,7 @@ macro_rules! implement_variable_length_integer_op {
     };
     ($state:expr, $instruction:expr, |$operand:ident| $expression:expr, signed_only) => {
         let instruction_encoding = $state.immediate_value_checked($instruction, 0)? as u8;
-        let operand_width = instruction_encoding & 0x4;
+        let operand_width = instruction_encoding & 0x3;
         match operand_width {
             0 => { implement_primitive_op!($state, |$operand| $expression, u8, i8); },
             1 => { implement_primitive_op!($state, |$operand| $expression, u16, i16); },
@@ -499,7 +499,7 @@ macro_rules! implement_variable_length_integer_op {
     };
     ($state:expr, $instruction:expr, |$operand:ident| $expression:expr, unsigned_only) => {
         let instruction_encoding = $state.immediate_value_checked($instruction, 0)? as u8;
-        let operand_width = instruction_encoding & 0x4;
+        let operand_width = instruction_encoding & 0x3;
         match operand_width {
             0 => { implement_primitive_op!($state, |$operand| $expression, u8); },
             1 => { implement_primitive_op!($state, |$operand| $expression, u16); },
