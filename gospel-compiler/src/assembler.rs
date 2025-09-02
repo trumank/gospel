@@ -1,7 +1,7 @@
 ﻿use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use anyhow::{anyhow};
+use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
 use strum::Display;
 use gospel_vm::bytecode::{GospelInstruction, GospelOpcode};
@@ -15,6 +15,14 @@ enum AssemblerIdentifier {
     Local(String),
     #[strum(to_string = "{container_name}::{local_name}")]
     Qualified{container_name: String, local_name: String},
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AssemblerIntegerLiteral {
+    // Note that this value is zero-extended to 64 bits, even if it is signed
+    raw_value: u64,
+    is_signed: bool,
+    bit_width: usize,
 }
 
 #[derive(Logos, Debug, Clone, PartialEq, Display)]
@@ -58,9 +66,9 @@ enum AssemblerToken {
     #[regex("[A-Za-z_$@][A-Za-z0-9_$@]*(?:::[A-Za-z_$][A-Za-z0-9_$]*)?", parse_identifier)]
     #[strum(to_string = "identifier")]
     Identifier(AssemblerIdentifier),
-    #[regex("-?(?:0x[A-Za-z0-9]+)|-?(?:(?:[1-9]+[0-9]*)|0)", parse_decimal_or_hex_integer_literal)]
+    #[regex("-?(?:0x[A-Za-z0-9]+)|-?(?:(?:[1-9]+[0-9]*)|0)(?:[ui](?:8|16|32|64))", parse_decimal_or_hex_integer_literal)]
     #[strum(to_string = "integer literal")]
-    IntegerLiteral(i32),
+    IntegerLiteral(AssemblerIntegerLiteral),
     #[regex("(?:\"(?:[^\"\\\\]|(?:\\\\\")|(?:\\\\\\\\))*\")", parse_string_literal)]
     #[strum(to_string = "string literal")]
     StringLiteral(String),
@@ -79,18 +87,94 @@ fn parse_string_literal(lex: &mut Lexer<AssemblerToken>) -> Option<String> {
     let raw_literal: &str = lex.slice();
     Some(raw_literal[1..(raw_literal.len() - 1)].replace("\\\\", "\\"))
 }
-fn parse_decimal_or_hex_integer_literal(lex: &mut Lexer<AssemblerToken>) -> Option<i32> {
+fn parse_decimal_or_hex_integer_literal(lex: &mut Lexer<AssemblerToken>) -> Option<AssemblerIntegerLiteral> {
     let mut string_slice: &str = lex.slice();
-    let mut sign_multiplier = 1;
-    if string_slice.starts_with('-') {
-        string_slice = &string_slice[1..];
-        sign_multiplier = -1;
-    }
-    if string_slice.starts_with("0x") {
-        string_slice = &string_slice[2..];
-        i32::from_str_radix(string_slice, 16).ok().map(|x| x * sign_multiplier)
+    if string_slice.ends_with("i64") {
+        let mut sign_multiplier = 1;
+        if string_slice.starts_with('-') {
+            string_slice = &string_slice[1..];
+            sign_multiplier = -1;
+        }
+        string_slice = &string_slice[0..string_slice.len() - 3];
+        if string_slice.starts_with("0x") {
+            string_slice = &string_slice[2..];
+            i64::from_str_radix(string_slice, 16).ok()
+        } else {
+            i64::from_str_radix(string_slice, 10).ok()
+        }.map(|x| AssemblerIntegerLiteral{raw_value: (x * sign_multiplier) as u64, is_signed: true, bit_width: 64})
+    } else if string_slice.ends_with("i32") {
+        let mut sign_multiplier = 1;
+        if string_slice.starts_with('-') {
+            string_slice = &string_slice[1..];
+            sign_multiplier = -1;
+        }
+        string_slice = &string_slice[0..string_slice.len() - 3];
+        if string_slice.starts_with("0x") {
+            string_slice = &string_slice[2..];
+            i32::from_str_radix(string_slice, 16).ok()
+        } else {
+            i32::from_str_radix(string_slice, 10).ok()
+        }.map(|x| AssemblerIntegerLiteral{raw_value: (x * sign_multiplier) as u32 as u64, is_signed: true, bit_width: 32})
+    } else if string_slice.ends_with("i16") {
+        let mut sign_multiplier = 1;
+        if string_slice.starts_with('-') {
+            string_slice = &string_slice[1..];
+            sign_multiplier = -1;
+        }
+        string_slice = &string_slice[0..string_slice.len() - 3];
+        if string_slice.starts_with("0x") {
+            string_slice = &string_slice[2..];
+            i16::from_str_radix(string_slice, 16).ok()
+        } else {
+            i16::from_str_radix(string_slice, 10).ok()
+        }.map(|x| AssemblerIntegerLiteral{raw_value: (x * sign_multiplier) as u16 as u64, is_signed: true, bit_width: 16})
+    } else if string_slice.ends_with("i8") {
+        let mut sign_multiplier = 1;
+        if string_slice.starts_with('-') {
+            string_slice = &string_slice[1..];
+            sign_multiplier = -1;
+        }
+        string_slice = &string_slice[0..string_slice.len() - 3];
+        if string_slice.starts_with("0x") {
+            string_slice = &string_slice[2..];
+            i8::from_str_radix(string_slice, 16).ok()
+        } else {
+            i8::from_str_radix(string_slice, 10).ok()
+        }.map(|x| AssemblerIntegerLiteral{raw_value: (x * sign_multiplier) as u8 as u64, is_signed: true, bit_width: 8})
+    } else if string_slice.ends_with("u64") {
+        string_slice = &string_slice[0..string_slice.len() - 3];
+        if string_slice.starts_with("0x") {
+            string_slice = &string_slice[2..];
+            u64::from_str_radix(string_slice, 16).ok()
+        } else {
+            u64::from_str_radix(string_slice, 10).ok()
+        }.map(|x| AssemblerIntegerLiteral{raw_value: x, is_signed: false, bit_width: 64})
+    } else if string_slice.ends_with("u32") {
+        string_slice = &string_slice[0..string_slice.len() - 3];
+        if string_slice.starts_with("0x") {
+            string_slice = &string_slice[2..];
+            u32::from_str_radix(string_slice, 16).ok()
+        } else {
+            u32::from_str_radix(string_slice, 10).ok()
+        }.map(|x| AssemblerIntegerLiteral{raw_value: x as u64, is_signed: false, bit_width: 32})
+    } else if string_slice.ends_with("u16") {
+        string_slice = &string_slice[0..string_slice.len() - 3];
+        if string_slice.starts_with("0x") {
+            string_slice = &string_slice[2..];
+            u16::from_str_radix(string_slice, 16).ok()
+        } else {
+            u16::from_str_radix(string_slice, 10).ok()
+        }.map(|x| AssemblerIntegerLiteral{raw_value: x as u64, is_signed: false, bit_width: 16})
+    } else if string_slice.ends_with("u8") {
+        string_slice = &string_slice[0..string_slice.len() - 3];
+        if string_slice.starts_with("0x") {
+            string_slice = &string_slice[2..];
+            u8::from_str_radix(string_slice, 16).ok()
+        } else {
+            u8::from_str_radix(string_slice, 10).ok()
+        }.map(|x| AssemblerIntegerLiteral{raw_value: x as u64, is_signed: false, bit_width: 8})
     } else {
-        i32::from_str_radix(string_slice, 10).ok().map(|x| x * sign_multiplier)
+        None
     }
 }
 
@@ -163,9 +247,9 @@ impl FunctionCodeAssembler<'_> {
 
         // Parse provided immediate value tokens and try to encode them
         while current_token != AssemblerToken::StatementSeparator {
-            let immediate_value: u32 = match &current_token {
+            match &current_token {
                 AssemblerToken::Identifier(identifier) => {
-                    match identifier {
+                    let result_value = match identifier {
                         AssemblerIdentifier::Local(local_identifier) => {
                             // Local identifier can refer to a local variable, argument, label, or a global variable
                             if let Some(local_variable_slot_index) = self.local_variable_slots.get(local_identifier) {
@@ -193,32 +277,42 @@ impl FunctionCodeAssembler<'_> {
                             // Refers to a function
                             self.function_definition.add_function_reference_internal(GospelSourceObjectReference{module_name: container_name.clone(), local_name: local_name.clone()})
                         }
-                    }
+                    };
+                    instruction_immediate_operands.push(result_value);
                 }
                 AssemblerToken::IntegerLiteral(integer_value) => {
                     // Integer literals are converted to immediate operands directly
-                    *integer_value as u32
+                    match integer_value.bit_width {
+                        8 => { instruction_immediate_operands.push(integer_value.raw_value as u8 as u32); }
+                        16 => { instruction_immediate_operands.push(integer_value.raw_value as u16 as u32); }
+                        32 => { instruction_immediate_operands.push(integer_value.raw_value as u32); }
+                        64 => { instruction_immediate_operands.push((integer_value.raw_value >> 32) as u32); instruction_immediate_operands.push(integer_value.raw_value as u32); }
+                        _ => { bail!("Unsupported integer bit width"); }
+                    };
                 }
                 AssemblerToken::StringLiteral(string_literal) => {
                     // String literals are treated as string references
-                    self.function_definition.add_string_reference_internal(string_literal)
+                    let string_reference_index = self.function_definition.add_string_reference_internal(string_literal);
+                    instruction_immediate_operands.push(string_reference_index);
                 }
                 AssemblerToken::FunctionSpecifier => {
                     let function_reference = match ctx.next_identifier()? {
                         AssemblerIdentifier::Local(name) => GospelSourceObjectReference{module_name: self.module_name.clone(), local_name: name},
                         AssemblerIdentifier::Qualified{container_name, local_name} => GospelSourceObjectReference{module_name: container_name, local_name}
                     };
-                    self.function_definition.add_function_reference_internal(function_reference)
+                    let function_reference_index = self.function_definition.add_function_reference_internal(function_reference);
+                    instruction_immediate_operands.push(function_reference_index);
                 }
                 AssemblerToken::GlobalVariableSpecifier => {
                     let global_name = ctx.next_local_identifier()?;
-                    self.function_definition.add_string_reference_internal(global_name.as_str())
+                    let string_reference_index = self.function_definition.add_string_reference_internal(global_name.as_str());
+                    instruction_immediate_operands.push(string_reference_index);
                 }
                 other => {
-                    return Err(ctx.fail(format!("Expected integer literal, string literal, identifier or address taken value as instruction immediate operand, got {}", other)))
+                    return Err(ctx.fail(format!("Expected integer literal, string literal, identifier or address taken value as instruction immediate operand, got {}", other)));
                 }
             };
-            instruction_immediate_operands.push(immediate_value);
+
             current_token = ctx.next_checked()?;
         }
 
@@ -292,7 +386,7 @@ impl GospelAssembler {
         // Parse max slots attribute and then the function body open bracket
         let slot_count_token = ctx.next_checked()?;
         let max_slot_count = if let AssemblerToken::IntegerLiteral(slot_count) = slot_count_token {
-            slot_count as u32
+            slot_count.raw_value as u32
         } else { return Err(ctx.fail(format!("Expected integer literal, got {}", slot_count_token))); };
         ctx.next_expect_token(AssemblerToken::EnterScope)?;
 
@@ -329,7 +423,7 @@ impl GospelAssembler {
         ctx.next_expect_token(AssemblerToken::AssignmentOperator)?;
         let next_token = ctx.next_checked()?;
         let default_value = if let AssemblerToken::IntegerLiteral(integer_default_value) = next_token {
-            integer_default_value
+            integer_default_value.raw_value
         } else {
             return Err(ctx.fail(format!("Expected integer literal, got {}", next_token)));
         };

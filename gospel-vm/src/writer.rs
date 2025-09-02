@@ -104,21 +104,28 @@ impl GospelSourceFunctionDefinition {
     pub fn add_load_argument_value_instruction(&mut self, argument_index: u32, line_number: i32) -> anyhow::Result<u32> {
         Ok(self.add_instruction_internal(GospelInstruction::create(GospelOpcode::LoadArgumentValue, &[argument_index])?, line_number))
     }
-    pub fn add_int_constant_instruction(&mut self, value: i32, line_number: i32) -> anyhow::Result<u32> {
-        Ok(self.add_instruction_internal(GospelInstruction::create(GospelOpcode::IntConstant, &[value as u32])?, line_number))
+    pub fn add_int_instruction(&mut self, opcode: GospelOpcode, value: u32, line_number: i32) -> anyhow::Result<u32> {
+        Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[value])?, line_number))
+    }
+    pub fn add_int64_constant_instruction(&mut self, value: u64, line_number: i32) -> anyhow::Result<u32> {
+        Ok(self.add_instruction_internal(GospelInstruction::create(GospelOpcode::Int64Constant, &[(value >> 32) as u32, value as u32])?, line_number))
     }
     pub fn add_control_flow_instruction_no_fixup(&mut self, opcode: GospelOpcode, target_instruction_index: u32, line_number: i32) -> anyhow::Result<u32> {
-        if opcode != GospelOpcode::Branch && opcode != GospelOpcode::Branchz {
+        if opcode != GospelOpcode::Branch && opcode != GospelOpcode::PushExceptionHandler {
             bail!("Invalid opcode for control flow instruction (Branch and BranchIfNot are allowed)");
         }
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[target_instruction_index])?, line_number))
     }
     pub fn add_control_flow_instruction(&mut self, opcode: GospelOpcode, line_number: i32) -> anyhow::Result<(u32, GospelJumpLabelFixup)> {
-        if opcode != GospelOpcode::Branch && opcode != GospelOpcode::Branchz && opcode != GospelOpcode::PushExceptionHandler {
+        if opcode != GospelOpcode::Branch && opcode != GospelOpcode::PushExceptionHandler {
             bail!("Invalid opcode for control flow instruction (Branch and BranchIfNot are allowed)");
         }
         let jump_instruction = self.add_instruction_internal(GospelInstruction::create(opcode, &[u32::MAX])?, line_number);
         Ok((jump_instruction, GospelJumpLabelFixup{instruction_index: jump_instruction, operand_index: 0}))
+    }
+    pub fn add_conditional_branch_instruction(&mut self, instruction_encoding: u32, line_number: i32) -> anyhow::Result<(u32, GospelJumpLabelFixup)> {
+        let jump_instruction = self.add_instruction_internal(GospelInstruction::create(GospelOpcode::Branchz, &[instruction_encoding, u32::MAX])?, line_number);
+        Ok((jump_instruction, GospelJumpLabelFixup{instruction_index: jump_instruction, operand_index: 1}))
     }
     pub fn fixup_control_flow_instruction(&mut self, fixup: GospelJumpLabelFixup, target_instruction_index: u32) -> anyhow::Result<()> {
         if fixup.instruction_index as usize >= self.code.len() {
@@ -177,7 +184,7 @@ impl GospelSourceFunctionDefinition {
 /// Generic sink for building gospel modules (into containers or reference containers)
 pub trait GospelModuleVisitor : Debug {
     fn module_name(&self) -> Option<String>;
-    fn define_global(&mut self, name: &str, default_value: i32) -> anyhow::Result<()>;
+    fn define_global(&mut self, name: &str, default_value: u64) -> anyhow::Result<()>;
     fn declare_function(&mut self, name: GospelSourceObjectReference) -> anyhow::Result<()>;
     fn define_function(&mut self, name: GospelSourceObjectReference, source: GospelSourceFunctionDefinition) -> anyhow::Result<()>;
 }
@@ -264,7 +271,7 @@ impl GospelModuleVisitor for GospelContainerWriter {
     fn module_name(&self) -> Option<String> {
         Some(self.container_name.clone())
     }
-    fn define_global(&mut self, name: &str, value: i32) -> anyhow::Result<()> {
+    fn define_global(&mut self, name: &str, value: u64) -> anyhow::Result<()> {
         if let Some(existing_global_index) = self.globals_lookup.get(name) {
             let existing_global = &mut self.container.globals[*existing_global_index as usize];
             if existing_global.default_value != value {

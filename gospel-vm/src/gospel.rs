@@ -12,12 +12,12 @@ pub enum GospelTargetProperty {
 }
 impl GospelTargetProperty {
     /// Resolves a value of the platform config property
-    pub fn resolve(self, target: &TargetTriplet) -> i32 {
+    pub fn resolve(self, target: &TargetTriplet) -> u64 {
         match self {
-            GospelTargetProperty::TargetArch => { target.arch as i32 }
-            GospelTargetProperty::TargetOS => { target.sys as i32 }
-            GospelTargetProperty::TargetEnv => { target.env as i32 }
-            GospelTargetProperty::AddressSize => { target.address_size() as i32 }
+            GospelTargetProperty::TargetArch => { target.arch as u64 }
+            GospelTargetProperty::TargetOS => { target.sys as u64 }
+            GospelTargetProperty::TargetEnv => { target.env as u64 }
+            GospelTargetProperty::AddressSize => { target.address_size() as u64 }
         }
     }
 }

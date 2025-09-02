@@ -30,7 +30,7 @@ impl Default for GospelContainerHeader {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub(crate) struct GospelGlobalDefinition {
     pub name: u32, // name of the global, index to the string table
-    pub default_value: i32, // default value of the global
+    pub default_value: u64, // default value of the global
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

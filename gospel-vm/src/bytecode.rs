@@ -10,62 +10,68 @@ pub enum GospelOpcode {
     // Basic opcodes
     Noop = 0x00, // ; ->
     #[strum(props(immediate_count = "1", stack_out_count = "1"))]
-    IntConstant = 0x01, // <imm>; -> [push stack]
+    Int8Constant = 0x01, // <imm>; -> [push stack]
+    #[strum(props(immediate_count = "1", stack_out_count = "1"))]
+    Int16Constant = 0x02, // <imm>; -> [push stack]
+    #[strum(props(immediate_count = "1", stack_out_count = "1"))]
+    Int32Constant = 0x03, // <imm>; -> [push stack]
+    #[strum(props(immediate_count = "2", stack_out_count = "1"))]
+    Int64Constant = 0x04, // <imm> <imm>; -> [push stack]
     #[strum(props(stack_in_count = "1", stack_out_count = "2"))]
-    Dup = 0x02, // ; [pop stack] -> [push stack], [push stack]
+    Dup = 0x05, // ; [pop stack] -> [push stack], [push stack]
     #[strum(props(stack_in_count = "2", stack_out_count = "2"))]
-    Permute = 0x03, // ; [pop stack], [pop stack] -> [push stack], [push stack]
+    Permute = 0x06, // ; [pop stack], [pop stack] -> [push stack], [push stack]
     #[strum(props(stack_in_count = "1"))]
-    Pop = 0x04, // ; [pop stack] ->
+    Pop = 0x07, // ; [pop stack] ->
     #[strum(props(stack_in_count = "1"))]
-    SetReturnValue = 0x05, // ; [pop stack] ->
+    SetReturnValue = 0x08, // ; [pop stack] ->
     #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1", stack_variable_input_count_immediate = "0"))]
-    Call = 0x06, // <imm>; [pop stack] [pop stack] x <imm> -> [push stack]
+    Call = 0x09, // <imm>; [pop stack] [pop stack] x <imm> -> [push stack]
     #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1", stack_variable_input_count_immediate = "0"))]
-    BindClosure = 0x07, // <imm>; [pop stack] [pop stack] x <imm> -> [push stack]
+    BindClosure = 0x0A, // <imm>; [pop stack] [pop stack] x <imm> -> [push stack]
     #[strum(props(immediate_count = "1"))]
-    RaiseException = 0x08, // <imm>; ->
-    Return = 0x0A, // ; ->
+    RaiseException = 0x0B, // <imm>; ->
+    Return = 0x0C, // ; ->
     #[strum(props(immediate_count = "1"))]
-    PushExceptionHandler = 0xB, // <imm>; ->
-    PopExceptionHandler = 0xC, // ; ->
+    PushExceptionHandler = 0xD, // <imm>; ->
+    PopExceptionHandler = 0xE, // ; ->
     // Logical opcodes
-    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
-    And = 0x20, // ; [pop stack], [pop stack] -> [push stack]
-    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
-    Or = 0x21, // ; [pop stack], [pop stack] -> [push stack]
-    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
-    Xor = 0x22, // ; [pop stack], [pop stack] -> [push stack]
-    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
-    Shl = 0x23, // ; [pop stack], [pop stack] -> [push stack]
-    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
-    Shr = 0x24, // ; [pop stack], [pop stack] -> [push stack]
-    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
-    ReverseBits = 0x25, // ; [pop stack] -> [push stack]
-    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
-    Ez = 0x27, // ; [pop stack] -> [push stack]
-    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
-    Lz = 0x28, // ; [pop stack] -> [push stack]
-    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
-    Lez = 0x29, // ; [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "2", stack_out_count = "1"))]
+    And = 0x20, // <imm>; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "2", stack_out_count = "1"))]
+    Or = 0x21,  // <imm>; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "2", stack_out_count = "1"))]
+    Xor = 0x22, // <imm>; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "2", stack_out_count = "1"))]
+    Shl = 0x23, // <imm>; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "2", stack_out_count = "1"))]
+    Shr = 0x24, // <imm>; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
+    ReverseBits = 0x25, // <imm>; [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
+    Ez = 0x27,  // <imm>; [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
+    Lz = 0x28,  // <imm>; [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
+    Lez = 0x29, // <imm>; [pop stack] -> [push stack]
     // Arithmetic opcodes
-    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
-    Add = 0x30, // ; [pop stack], [pop stack] -> [push stack]
-    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
-    Sub = 0x31, // ; [pop stack], [pop stack] -> [push stack]
-    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
-    Mul = 0x32, // ; [pop stack], [pop stack] -> [push stack]
-    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
-    Div = 0x33, // ; [pop stack], [pop stack] -> [push stack]
-    #[strum(props(stack_in_count = "2", stack_out_count = "1"))]
-    Rem = 0x34, // ; [pop stack], [pop stack] -> [push stack]
-    #[strum(props(stack_in_count = "1", stack_out_count = "1"))]
-    Neg = 0x35, // ; [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "2", stack_out_count = "1"))]
+    Add = 0x30, // <imm>; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "2", stack_out_count = "1"))]
+    Sub = 0x31, // <imm>; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "2", stack_out_count = "1"))]
+    Mul = 0x32, // <imm>; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "2", stack_out_count = "1"))]
+    Div = 0x33, // <imm>; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "2", stack_out_count = "1"))]
+    Rem = 0x34, // <imm>; [pop stack], [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
+    Neg = 0x35, // <imm>; [pop stack] -> [push stack]
     // Control flow opcodes
     #[strum(props(immediate_count = "1"))]
     Branch = 0x40, // <imm>; ->
-    #[strum(props(immediate_count = "1", stack_in_count = "1"))]
-    Branchz = 0x41, // <imm>; [pop stack] ->
+    #[strum(props(immediate_count = "2", stack_in_count = "1"))]
+    Branchz = 0x41, // <imm> <imm>; [pop stack] ->
     // Data storage opcodes
     #[strum(props(immediate_count = "1", stack_out_count = "1"))]
     LoadArgumentValue = 0x50, // <imm>; -> [push stack]
