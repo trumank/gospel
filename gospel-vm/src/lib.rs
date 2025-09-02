@@ -3,3 +3,4 @@ pub mod gospel;
 pub mod module;
 pub mod vm;
 pub mod writer;
+pub mod reader;

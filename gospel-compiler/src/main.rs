@@ -8,8 +8,11 @@ use std::rc::Rc;
 use std::str::FromStr;
 use anyhow::{anyhow};
 use clap::{Args, Parser, ValueEnum};
+use itertools::Itertools;
+use gospel_compiler::assembler::disassemble_function;
 use gospel_typelib::type_model::{ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, TypeLayoutCache, TypeTree};
 use gospel_vm::module::{GospelContainer};
+use gospel_vm::reader::GospelContainerReader;
 use gospel_vm::vm::{GospelVMContainer, GospelVMOptions, GospelVMRunContext, GospelVMState, GospelVMTypeContainer, GospelVMValue};
 use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter};
 use crate::assembler::GospelAssembler;
@@ -128,6 +131,12 @@ struct ActionDisassembleModule {
     /// Module container to disassemble
     #[arg(index = 1)]
     input: PathBuf,
+    /// Name of the function to disassemble. If not provided, all functions are disassembled
+    #[arg(long, short)]
+    function_name: Option<String>,
+    /// Output to write the result disassembly to. If not provided, result is written to stdout
+    #[arg(long, short)]
+    output: Option<PathBuf>,
 }
 
 #[derive(Parser, Debug)]
@@ -444,9 +453,26 @@ fn do_action_disassemble(action: ActionDisassembleModule) -> anyhow::Result<()> 
         .map_err(|x| anyhow!("Failed to open container file {}: {}", action.input.to_string_lossy(), x.to_string()))?;
 
     // Parse the module interface based on the file type and create the reflector object
-    // TODO: Implement disassembler and necessary API later
-    let _parsed_container = GospelContainer::read(&file_buffer)
+    let parsed_container = GospelContainer::read(&file_buffer)
         .map_err(|x| anyhow!("Failed to parse module container file: {}", x.to_string()))?;
+    let container_reader = GospelContainerReader{container: parsed_container};
+    
+    let result_disassembly_string = if let Some(function_name) = action.function_name {
+        let target_function = container_reader.container_function_by_name(&function_name)
+            .map_err(|x| anyhow!("Failed to read function data: {}", x))?
+            .ok_or_else(|| anyhow!("Function with name {} is not found in the container", &function_name))?;
+        disassemble_function(&target_function)
+    } else {
+        container_reader.container_functions().map_err(|x| anyhow!("Failed to read function data: {}", x))?.iter()
+            .map(|function_data| disassemble_function(function_data))
+            .join("\n")
+    };
+
+    if let Some(output_file_path) = action.output {
+        write(output_file_path, result_disassembly_string.as_bytes())?;
+    } else {
+        println!("{}", result_disassembly_string);
+    }
     Ok({})
 }
 

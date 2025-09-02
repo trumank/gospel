@@ -1,5 +1,6 @@
 ﻿use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::iter::once;
 use std::rc::Rc;
 use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
@@ -7,6 +8,8 @@ use strum::Display;
 use gospel_vm::bytecode::{GospelInstruction, GospelOpcode};
 use gospel_vm::writer::{GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceFunctionDefinition, GospelSourceObjectReference};
 use std::str::FromStr;
+use itertools::Itertools;
+use gospel_vm::reader::{GospelFunctionData};
 use crate::lex_util::get_line_number_and_offset_from_index;
 
 #[derive(Debug, Clone, PartialEq, Eq, Display)]
@@ -36,6 +39,9 @@ enum AssemblerToken {
     #[token("global")]
     #[strum(to_string = "global")]
     GlobalVariableSpecifier,
+    #[token("local")]
+    #[strum(to_string = "local")]
+    LocalSpecifier,
     #[token("max_slots")]
     #[strum(to_string = "max_slots")]
     MaxSlotsSpecifier,
@@ -321,29 +327,7 @@ impl FunctionCodeAssembler<'_> {
             .map_err(|x| ctx.fail(x.to_string()))?;
         Ok(self.function_definition.add_instruction_internal(result_instruction, line_number as i32))
     }
-    fn parse_function_statement(&mut self, start_token: AssemblerToken, ctx: &mut GospelLexerContext) -> anyhow::Result<()> {
-        let mut current_token = start_token;
-
-        // First token could be instruction name or identifier, we cannot tell until we parse the next token
-        let label_or_instruction_name = if let AssemblerToken::Identifier(identifier) = current_token {
-            current_token = ctx.next_checked()?;
-            ctx.expect_local_identifier(identifier)?
-        } else {
-            return Err(ctx.fail(format!("Expected identifier, got {}", current_token)))
-        };
-        let statement_label_name: Option<String>;
-        let instruction_name: String;
-
-        // If current token is a label separator, first identifier is a label, and next one is the instruction name
-        if current_token == AssemblerToken::NameSeparator {
-            statement_label_name = Some(label_or_instruction_name);
-            instruction_name = ctx.next_local_identifier()?;
-            current_token = ctx.next_checked()?;
-        } else {
-            statement_label_name = None;
-            instruction_name = label_or_instruction_name;
-        }
-
+    fn parse_named_instruction(&mut self, instruction_name: String, ctx: &mut GospelLexerContext, current_token: AssemblerToken, statement_label_name: Option<String>) -> anyhow::Result<()> {
         let result_instruction_index = self.parse_code_instruction(&instruction_name, current_token, ctx)?;
         if let Some(jump_label_name) = statement_label_name {
             self.label_lookup.insert(jump_label_name.clone(), result_instruction_index);
@@ -357,8 +341,52 @@ impl FunctionCodeAssembler<'_> {
         }
         Ok({})
     }
+    fn parse_function_statement(&mut self, start_token: AssemblerToken, ctx: &mut GospelLexerContext) -> anyhow::Result<()> {
+        let mut current_token = start_token;
+
+        // First token could be instruction name or identifier, we cannot tell until we parse the next token
+        let label_or_instruction_name = if let AssemblerToken::Identifier(identifier) = current_token {
+            current_token = ctx.next_checked()?;
+            ctx.expect_local_identifier(identifier)?
+        } else {
+            return Err(ctx.fail(format!("Expected identifier, got {}", current_token)))
+        };
+
+        // If current token is a label separator, first identifier is a label, and next one is the instruction name
+        if current_token == AssemblerToken::NameSeparator {
+            current_token = ctx.next_checked()?;
+
+            if let AssemblerToken::StringLiteral(string_literal) = current_token {
+                // If this is a string literal, this is a direct string reference, possibly from disassembled code
+                let string_reference_index = self.function_definition.add_string_reference_internal(&string_literal);
+                self.label_lookup.insert(label_or_instruction_name, string_reference_index);
+                ctx.next_expect_token(AssemblerToken::StatementSeparator)?;
+            } else if current_token == AssemblerToken::FunctionSpecifier {
+                // If this is a function reference, this is a direct function reference, possibly from disassembled code
+                let function_reference = match ctx.next_identifier()? {
+                    AssemblerIdentifier::Local(name) => GospelSourceObjectReference{module_name: self.module_name.clone(), local_name: name},
+                    AssemblerIdentifier::Qualified{container_name, local_name} => GospelSourceObjectReference{module_name: container_name, local_name}
+                };
+                let function_reference_index = self.function_definition.add_function_reference_internal(function_reference);
+                self.label_lookup.insert(label_or_instruction_name, function_reference_index);
+                ctx.next_expect_token(AssemblerToken::StatementSeparator)?;
+            } else if let AssemblerToken::Identifier(identifier) = current_token {
+                // This is a normal opcode with a jump label target
+                let instruction_name = ctx.expect_local_identifier(identifier)?;
+                current_token = ctx.next_checked()?;
+                self.parse_named_instruction(instruction_name, ctx, current_token, Some(label_or_instruction_name))?;
+            } else {
+                return Err(ctx.fail(format!("Expected local identifier, string literal or function specifier, got {}", current_token)));
+            }
+        } else {
+            // If there is no label, this should be a normal opcode
+            self.parse_named_instruction(label_or_instruction_name, ctx, current_token, None)?;
+        }
+        Ok({})
+    }
 }
 
+#[derive(Debug)]
 pub struct GospelAssembler {
     visitor: Rc<RefCell<dyn GospelModuleVisitor>>,
     global_variable_names: HashSet<String>,
@@ -379,19 +407,24 @@ impl GospelAssembler {
         if scope_enter_or_terminator_token == AssemblerToken::StatementSeparator {
             return self.visitor.borrow_mut().declare_function(function_declaration)
                 .map_err(|x| ctx.fail(x.to_string()))
-        } else if scope_enter_or_terminator_token != AssemblerToken::MaxSlotsSpecifier {
+        } else if scope_enter_or_terminator_token != AssemblerToken::LocalSpecifier && scope_enter_or_terminator_token != AssemblerToken::MaxSlotsSpecifier {
             return Err(ctx.fail(format!("Expected ; or max_slots, got {}", scope_enter_or_terminator_token)))
         }
 
+        // Parse optional visibility attribute
+        let visibility_or_slot_count_token = ctx.next_checked()?;
+        let (is_exported, slot_count_token) = if visibility_or_slot_count_token == AssemblerToken::LocalSpecifier {
+            (false, ctx.next_checked()?)
+        } else { (true, visibility_or_slot_count_token) };
+
         // Parse max slots attribute and then the function body open bracket
-        let slot_count_token = ctx.next_checked()?;
         let max_slot_count = if let AssemblerToken::IntegerLiteral(slot_count) = slot_count_token {
             slot_count.raw_value as u32
         } else { return Err(ctx.fail(format!("Expected integer literal, got {}", slot_count_token))); };
         ctx.next_expect_token(AssemblerToken::EnterScope)?;
 
         // This is a function definition, parse the function body now
-        let mut function_definition = GospelSourceFunctionDefinition::create(true, ctx.file_name.to_string());
+        let mut function_definition = GospelSourceFunctionDefinition::create(is_exported, ctx.file_name.to_string());
         function_definition.num_slots = max_slot_count;
         let module_name = self.visitor.borrow().module_name().ok_or_else(|| anyhow!("Cannot compile declarations for unknown module name"))?;
         let mut function_assembler = FunctionCodeAssembler{
@@ -457,4 +490,38 @@ impl GospelAssembler {
         }
         Ok({})
     }
+}
+
+/// Disassembles the given function into a source code strings
+pub fn disassemble_function(function_data: &GospelFunctionData) -> String {
+    let mut result_lines: Vec<String> = Vec::new();
+
+    if function_data.exported {
+        result_lines.push(format!("function {} max_slots {} {{", function_data.function_name, function_data.max_local_slots));
+    } else {
+        result_lines.push(format!("function {} local max_slots {} {{", function_data.function_name, function_data.max_local_slots));
+    }
+
+    for local_function_index in 0..function_data.referenced_functions.len() {
+        let referenced_function = &function_data.referenced_functions[local_function_index];
+        result_lines.push(format!("  F{:03}: function {}:{};", local_function_index, referenced_function.module_name, referenced_function.local_name));
+    }
+    for local_string_index in 0..function_data.referenced_strings.len() {
+        let escaped_string = function_data.referenced_strings[local_string_index].escape_default().to_string();
+        result_lines.push(format!("  S{:03}: \"{}\";", local_string_index, escaped_string));
+    }
+    for instruction_index in 0..function_data.code.len() {
+        let instruction_name = function_data.code[instruction_index].opcode().to_string();
+        let operand_strings: Vec<String> = function_data.code[instruction_index].immediate_operands().iter().cloned().map(|operand_value| format!("0x{:x}u32", operand_value)).collect();
+        let result_instruction_encoding = once(instruction_name).chain(operand_strings.into_iter()).join(" ");
+
+        if let Some(debug_data) = &function_data.debug_data && instruction_index < debug_data.instruction_line_numbers.len() {
+            result_lines.push(format!("  L{:03}: {}; // {}:{}", instruction_index, result_instruction_encoding, debug_data.source_file_name, debug_data.instruction_line_numbers[instruction_index]));
+        } else {
+            result_lines.push(format!("  L{:03}: {};", instruction_index, result_instruction_encoding));
+        }
+    }
+
+    result_lines.push(String::from("};"));
+    result_lines.join("\n")
 }

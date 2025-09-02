@@ -1,0 +1,256 @@
+function unreal$UStruct max_slots 2 {
+  F000: function unreal:unreal$UField;
+  F001: function unreal:unreal$FStructBaseChain;
+  F002: function unreal:unreal$UStruct;
+  F003: function unreal:unreal$FField;
+  F004: function unreal:unreal$int32_t;
+  F005: function unreal:unreal$uint16_t;
+  F006: function unreal:unreal$TArray;
+  F007: function unreal:unreal$uint8_t;
+  F008: function unreal:unreal$TArray@default_value@1;
+  F009: function unreal:unreal$ZProperty;
+  F010: function unreal:unreal$UObject;
+  F011: function unreal:unreal$STUB;
+  S000: "unreal:unreal$UStruct";
+  S001: "Class";
+  S002: "UE_VERSION";
+  S003: "SuperStruct";
+  S004: "Children";
+  S005: "ChildProperties";
+  S006: "PropertiesSize";
+  S007: "MinAlignment";
+  S008: "StructStateFlags";
+  S009: "Script";
+  S010: "PropertyLink";
+  S011: "RefLink";
+  S012: "DestructorLink";
+  S013: "PostConstructLink";
+  S014: "RollbackLink";
+  S015: "ScriptAndPropertyObjectReferences";
+  S016: "ScriptObjectReferences";
+  S017: "UnresolvedScriptProperties";
+  S018: "UnversionedSchema";
+  S019: "UnversionedGameSchema";
+  L000: TypeUDTAllocate 0x0u32 0x1u32; // unreal.gs:633
+  L001: StoreSlot 0x0u32; // unreal.gs:633
+  L002: LoadSlot 0x0u32; // unreal.gs:633
+  L003: SetReturnValue; // unreal.gs:633
+  L004: StructAllocate; // unreal.gs:633
+  L005: StoreSlot 0x1u32; // unreal.gs:633
+  L006: LoadSlot 0x0u32; // unreal.gs:633
+  L007: LoadFunctionClosure 0x0u32; // unreal.gs:633
+  L008: Call 0x0u32; // unreal.gs:633
+  L009: TypeUDTAddBaseClass 0x0u32; // unreal.gs:633
+  L010: LoadGlobalVariable 0x2u32; // unreal.gs:633
+  L011: Int32Constant 0x1a6u32; // unreal.gs:633
+  L012: Permute; // unreal.gs:633
+  L013: Sub 0x82u32; // unreal.gs:633
+  L014: Lez 0x82u32; // unreal.gs:633
+  L015: Branchz 0x82u32 0x14u32; // unreal.gs:633
+  L016: LoadSlot 0x0u32; // unreal.gs:633
+  L017: LoadFunctionClosure 0x1u32; // unreal.gs:633
+  L018: Call 0x0u32; // unreal.gs:633
+  L019: TypeUDTAddBaseClass 0x0u32; // unreal.gs:633
+  L020: LoadSlot 0x0u32; // unreal.gs:634
+  L021: LoadFunctionClosure 0x2u32; // unreal.gs:634
+  L022: Call 0x0u32; // unreal.gs:634
+  L023: TypePointerCreate; // unreal.gs:634
+  L024: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:634
+  L025: TypeUDTAddField 0x3u32 0x0u32; // unreal.gs:634
+  L026: LoadSlot 0x0u32; // unreal.gs:635
+  L027: LoadFunctionClosure 0x0u32; // unreal.gs:635
+  L028: Call 0x0u32; // unreal.gs:635
+  L029: TypePointerCreate; // unreal.gs:635
+  L030: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:635
+  L031: TypeUDTAddField 0x4u32 0x0u32; // unreal.gs:635
+  L032: LoadGlobalVariable 0x2u32; // unreal.gs:636
+  L033: Int32Constant 0x1a9u32; // unreal.gs:636
+  L034: Permute; // unreal.gs:636
+  L035: Sub 0x82u32; // unreal.gs:636
+  L036: Lez 0x82u32; // unreal.gs:636
+  L037: Branchz 0x82u32 0x2cu32; // unreal.gs:636
+  L038: LoadSlot 0x0u32; // unreal.gs:636
+  L039: LoadFunctionClosure 0x3u32; // unreal.gs:636
+  L040: Call 0x0u32; // unreal.gs:636
+  L041: TypePointerCreate; // unreal.gs:636
+  L042: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:636
+  L043: TypeUDTAddField 0x5u32 0x0u32; // unreal.gs:636
+  L044: LoadSlot 0x0u32; // unreal.gs:637
+  L045: LoadFunctionClosure 0x4u32; // unreal.gs:637
+  L046: Call 0x0u32; // unreal.gs:637
+  L047: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:637
+  L048: TypeUDTAddField 0x6u32 0x0u32; // unreal.gs:637
+  L049: LoadGlobalVariable 0x2u32; // unreal.gs:638
+  L050: Int32Constant 0x1fau32; // unreal.gs:638
+  L051: Permute; // unreal.gs:638
+  L052: Sub 0x82u32; // unreal.gs:638
+  L053: Lez 0x82u32; // unreal.gs:638
+  L054: Branchz 0x82u32 0x42u32; // unreal.gs:638
+  L055: LoadSlot 0x0u32; // unreal.gs:639
+  L056: LoadFunctionClosure 0x5u32; // unreal.gs:639
+  L057: Call 0x0u32; // unreal.gs:639
+  L058: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:639
+  L059: TypeUDTAddField 0x7u32 0x0u32; // unreal.gs:639
+  L060: LoadSlot 0x0u32; // unreal.gs:640
+  L061: LoadFunctionClosure 0x5u32; // unreal.gs:640
+  L062: Call 0x0u32; // unreal.gs:640
+  L063: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:640
+  L064: TypeUDTAddField 0x8u32 0x0u32; // unreal.gs:640
+  L065: Branch 0x4du32; // unreal.gs:638
+  L066: LoadGlobalVariable 0x2u32; // unreal.gs:641
+  L067: Int32Constant 0x198u32; // unreal.gs:641
+  L068: Permute; // unreal.gs:641
+  L069: Sub 0x82u32; // unreal.gs:641
+  L070: Lez 0x82u32; // unreal.gs:641
+  L071: Branchz 0x82u32 0x4du32; // unreal.gs:641
+  L072: LoadSlot 0x0u32; // unreal.gs:641
+  L073: LoadFunctionClosure 0x4u32; // unreal.gs:641
+  L074: Call 0x0u32; // unreal.gs:641
+  L075: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:641
+  L076: TypeUDTAddField 0x7u32 0x0u32; // unreal.gs:641
+  L077: LoadSlot 0x0u32; // unreal.gs:642
+  L078: LoadFunctionClosure 0x6u32; // unreal.gs:642
+  L079: LoadFunctionClosure 0x7u32; // unreal.gs:642
+  L080: Call 0x0u32; // unreal.gs:642
+  L081: LoadFunctionClosure 0x8u32; // unreal.gs:642
+  L082: LoadFunctionClosure 0x7u32; // unreal.gs:642
+  L083: Call 0x0u32; // unreal.gs:642
+  L084: Call 0x1u32; // unreal.gs:642
+  L085: Call 0x2u32; // unreal.gs:642
+  L086: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:642
+  L087: TypeUDTAddField 0x9u32 0x0u32; // unreal.gs:642
+  L088: LoadGlobalVariable 0x2u32; // unreal.gs:643
+  L089: Int32Constant 0x198u32; // unreal.gs:643
+  L090: Sub 0x82u32; // unreal.gs:643
+  L091: Lz 0x82u32; // unreal.gs:643
+  L092: Branchz 0x82u32 0x62u32; // unreal.gs:643
+  L093: LoadSlot 0x0u32; // unreal.gs:643
+  L094: LoadFunctionClosure 0x4u32; // unreal.gs:643
+  L095: Call 0x0u32; // unreal.gs:643
+  L096: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:643
+  L097: TypeUDTAddField 0x7u32 0x0u32; // unreal.gs:643
+  L098: LoadSlot 0x0u32; // unreal.gs:645
+  L099: LoadFunctionClosure 0x9u32; // unreal.gs:645
+  L100: Call 0x0u32; // unreal.gs:645
+  L101: TypePointerCreate; // unreal.gs:645
+  L102: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:645
+  L103: TypeUDTAddField 0xau32 0x0u32; // unreal.gs:645
+  L104: LoadSlot 0x0u32; // unreal.gs:646
+  L105: LoadFunctionClosure 0x9u32; // unreal.gs:646
+  L106: Call 0x0u32; // unreal.gs:646
+  L107: TypePointerCreate; // unreal.gs:646
+  L108: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:646
+  L109: TypeUDTAddField 0xbu32 0x0u32; // unreal.gs:646
+  L110: LoadSlot 0x0u32; // unreal.gs:647
+  L111: LoadFunctionClosure 0x9u32; // unreal.gs:647
+  L112: Call 0x0u32; // unreal.gs:647
+  L113: TypePointerCreate; // unreal.gs:647
+  L114: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:647
+  L115: TypeUDTAddField 0xcu32 0x0u32; // unreal.gs:647
+  L116: LoadSlot 0x0u32; // unreal.gs:648
+  L117: LoadFunctionClosure 0x9u32; // unreal.gs:648
+  L118: Call 0x0u32; // unreal.gs:648
+  L119: TypePointerCreate; // unreal.gs:648
+  L120: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:648
+  L121: TypeUDTAddField 0xdu32 0x0u32; // unreal.gs:648
+  L122: LoadGlobalVariable 0x2u32; // unreal.gs:649
+  L123: Int32Constant 0x199u32; // unreal.gs:649
+  L124: Sub 0x82u32; // unreal.gs:649
+  L125: Ez 0x82u32; // unreal.gs:649
+  L126: Branchz 0x82u32 0x85u32; // unreal.gs:649
+  L127: LoadSlot 0x0u32; // unreal.gs:649
+  L128: LoadFunctionClosure 0x9u32; // unreal.gs:649
+  L129: Call 0x0u32; // unreal.gs:649
+  L130: TypePointerCreate; // unreal.gs:649
+  L131: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:649
+  L132: TypeUDTAddField 0xeu32 0x0u32; // unreal.gs:649
+  L133: LoadGlobalVariable 0x2u32; // unreal.gs:651
+  L134: Int32Constant 0x1a9u32; // unreal.gs:651
+  L135: Permute; // unreal.gs:651
+  L136: Sub 0x82u32; // unreal.gs:651
+  L137: Lez 0x82u32; // unreal.gs:651
+  L138: Branchz 0x82u32 0x99u32; // unreal.gs:651
+  L139: LoadSlot 0x0u32; // unreal.gs:651
+  L140: LoadFunctionClosure 0x6u32; // unreal.gs:651
+  L141: LoadFunctionClosure 0xau32; // unreal.gs:651
+  L142: Call 0x0u32; // unreal.gs:651
+  L143: TypePointerCreate; // unreal.gs:651
+  L144: LoadFunctionClosure 0x8u32; // unreal.gs:651
+  L145: LoadFunctionClosure 0xau32; // unreal.gs:651
+  L146: Call 0x0u32; // unreal.gs:651
+  L147: TypePointerCreate; // unreal.gs:651
+  L148: Call 0x1u32; // unreal.gs:651
+  L149: Call 0x2u32; // unreal.gs:651
+  L150: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:651
+  L151: TypeUDTAddField 0xfu32 0x0u32; // unreal.gs:651
+  L152: Branch 0xa6u32; // unreal.gs:651
+  L153: LoadSlot 0x0u32; // unreal.gs:652
+  L154: LoadFunctionClosure 0x6u32; // unreal.gs:652
+  L155: LoadFunctionClosure 0xau32; // unreal.gs:652
+  L156: Call 0x0u32; // unreal.gs:652
+  L157: TypePointerCreate; // unreal.gs:652
+  L158: LoadFunctionClosure 0x8u32; // unreal.gs:652
+  L159: LoadFunctionClosure 0xau32; // unreal.gs:652
+  L160: Call 0x0u32; // unreal.gs:652
+  L161: TypePointerCreate; // unreal.gs:652
+  L162: Call 0x1u32; // unreal.gs:652
+  L163: Call 0x2u32; // unreal.gs:652
+  L164: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:652
+  L165: TypeUDTAddField 0x10u32 0x0u32; // unreal.gs:652
+  L166: LoadGlobalVariable 0x2u32; // unreal.gs:654
+  L167: Int32Constant 0x1a9u32; // unreal.gs:654
+  L168: Permute; // unreal.gs:654
+  L169: Sub 0x82u32; // unreal.gs:654
+  L170: Lez 0x82u32; // unreal.gs:654
+  L171: Branchz 0x82u32 0xc4u32; // unreal.gs:654
+  L172: LoadSlot 0x0u32; // unreal.gs:655
+  L173: LoadFunctionClosure 0xbu32; // unreal.gs:655
+  L174: Call 0x0u32; // unreal.gs:655
+  L175: TypePointerCreate; // unreal.gs:655
+  L176: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:655
+  L177: TypeUDTAddField 0x11u32 0x0u32; // unreal.gs:655
+  L178: LoadGlobalVariable 0x2u32; // unreal.gs:656
+  L179: Int32Constant 0x1f4u32; // unreal.gs:656
+  L180: Sub 0x82u32; // unreal.gs:656
+  L181: Lez 0x82u32; // unreal.gs:656
+  L182: Branchz 0x82u32 0xbeu32; // unreal.gs:656
+  L183: LoadSlot 0x0u32; // unreal.gs:656
+  L184: LoadFunctionClosure 0xbu32; // unreal.gs:656
+  L185: Call 0x0u32; // unreal.gs:656
+  L186: TypePointerCreate; // unreal.gs:656
+  L187: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:656
+  L188: TypeUDTAddField 0x12u32 0x0u32; // unreal.gs:656
+  L189: Branch 0xc4u32; // unreal.gs:656
+  L190: LoadSlot 0x0u32; // unreal.gs:657
+  L191: LoadFunctionClosure 0xbu32; // unreal.gs:657
+  L192: Call 0x0u32; // unreal.gs:657
+  L193: TypePointerCreate; // unreal.gs:657
+  L194: Int64Constant 0xffffffffu32 0xffffffffu32; // unreal.gs:657
+  L195: TypeUDTAddField 0x13u32 0x0u32; // unreal.gs:657
+  L196: PushExceptionHandler 0xcbu32; // unreal.gs:633
+  L197: LoadSlot 0x0u32; // unreal.gs:633
+  L198: LoadFunctionClosure 0x0u32; // unreal.gs:633
+  L199: Call 0x0u32; // unreal.gs:633
+  L200: TypeUDTAddBaseClass 0x4u32; // unreal.gs:633
+  L201: PopExceptionHandler; // unreal.gs:633
+  L202: Branch 0xcbu32; // unreal.gs:633
+  L203: PushExceptionHandler 0xd8u32; // unreal.gs:633
+  L204: LoadGlobalVariable 0x2u32; // unreal.gs:633
+  L205: Int32Constant 0x1a6u32; // unreal.gs:633
+  L206: Permute; // unreal.gs:633
+  L207: Sub 0x82u32; // unreal.gs:633
+  L208: Lez 0x82u32; // unreal.gs:633
+  L209: Branchz 0x82u32 0xd6u32; // unreal.gs:633
+  L210: LoadSlot 0x0u32; // unreal.gs:633
+  L211: LoadFunctionClosure 0x1u32; // unreal.gs:633
+  L212: Call 0x0u32; // unreal.gs:633
+  L213: TypeUDTAddBaseClass 0x4u32; // unreal.gs:633
+  L214: PopExceptionHandler; // unreal.gs:633
+  L215: Branch 0xd8u32; // unreal.gs:633
+  L216: LoadSlot 0x0u32; // unreal.gs:633
+  L217: TakeSlot 0x1u32; // unreal.gs:633
+  L218: TypeUDTAttachMetadata; // unreal.gs:633
+  L219: LoadSlot 0x0u32; // unreal.gs:633
+  L220: TypeFinalize; // unreal.gs:633
+  L221: Return; // unreal.gs:633
+};
