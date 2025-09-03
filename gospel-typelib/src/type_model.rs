@@ -71,6 +71,7 @@ pub enum TargetEnvironment {
     MSVC,
     Gnu,
     Macho,
+    Android,
 }
 
 /// Target triplet defines the target which the type layouts are being calculated for
@@ -105,7 +106,10 @@ impl TargetTriplet {
     pub fn current_target() -> Option<TargetTriplet> {
         let current_arch = TargetArchitecture::current_arch();
         let current_os = TargetOperatingSystem::current_os();
-        let default_env = current_os.as_ref().and_then(|x| x.default_env());
+        let default_env = current_os.as_ref().and_then(|x| {
+            // Default environment for android OS is android, despite the OS being reported as linux (due to it being linux based)
+            if std::env::consts::OS == "android" { Some(TargetEnvironment::Android) } else { x.default_env() }
+        });
 
         if current_arch.is_none() || current_os.is_none() || default_env.is_none() {
             None
