@@ -158,6 +158,9 @@ struct CommandLineCompilerOptions {
     /// Whenever prototype UDT layout metadata should be written
     #[arg(long)]
     generate_prototypes: bool,
+    /// Whenever implicit integer narrowing conversions are allowed
+    #[arg(long)]
+    allow_implicit_narrowing: bool,
 }
 impl CommandLineCompilerOptions {
     fn create_compiler_instance(&self) -> anyhow::Result<Rc<CompilerInstance>> {
@@ -167,6 +170,9 @@ impl CommandLineCompilerOptions {
         }
         if self.generate_prototypes {
             compiler_options = compiler_options.generate_prototype_layouts();
+        }
+        if self.allow_implicit_narrowing {
+            compiler_options = compiler_options.allow_implicit_narrowing_conversions();
         }
         Ok(CompilerInstance::create(compiler_options))
     }

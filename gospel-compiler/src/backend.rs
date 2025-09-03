@@ -275,7 +275,7 @@ impl CompilerFunctionBuilder {
     fn compile_cv_qualified_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &CVQualifiedExpression) -> CompilerResult<ExpressionValueType> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
         let base_expression_type = self.compile_expression(scope, &expression.base_expression)?;
-        Self::check_expression_type(&source_context, ExpressionValueType::Typename, &base_expression_type)?;
+        self.coerce_to_expression_type(&base_expression_type, &ExpressionValueType::Typename, &source_context)?;
         if expression.constant {
             self.function_definition.add_simple_instruction(GospelOpcode::TypeAddConstantQualifier, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         }
@@ -289,7 +289,7 @@ impl CompilerFunctionBuilder {
         let cast_expression_type = self.compile_expression(scope, &expression.cast_expression)?;
         if let ExpressionValueType::Integer(target_integral_value_type) = &expression.target_type {
             // Casting to an integral type can be done from a bool or another integral type
-            self.coerce_to_integral_type(target_integral_value_type.clone(), &cast_expression_type, true, &source_context)
+            self.coerce_to_integral_type(target_integral_value_type, &cast_expression_type, true, &source_context)
         } else if let ExpressionValueType::Bool = &expression.target_type {
             // Casting to bool type can be done from any other type that can be normally coerced to bool in other contexts
             self.coerce_to_bool_type(&cast_expression_type, &source_context)
@@ -309,7 +309,7 @@ impl CompilerFunctionBuilder {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
 
         let target_expression_type = self.compile_expression(scope, &expression.type_expression)?;
-        Self::check_expression_type(&source_context, ExpressionValueType::Typename, &target_expression_type)?;
+        self.coerce_to_expression_type(&target_expression_type, &ExpressionValueType::Typename, &source_context)?;
         self.function_definition.add_simple_instruction(GospelOpcode::TypeUDTGetMetadata, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
 
         if let Some(template_arguments) = &expression.template_arguments {
@@ -326,7 +326,7 @@ impl CompilerFunctionBuilder {
             Ok(expression.member_type.clone())
         }
     }
-    fn coerce_to_integral_type(&mut self, desired_type: IntegralType, actual_type: &ExpressionValueType, allow_narrowing_conversion: bool, source_context: &CompilerSourceContext) -> CompilerResult<ExpressionValueType> {
+    fn coerce_to_integral_type(&mut self, desired_type: &IntegralType, actual_type: &ExpressionValueType, allow_narrowing_conversion: bool, source_context: &CompilerSourceContext) -> CompilerResult<ExpressionValueType> {
         let from_instruction_encoding = Self::check_integral_or_bool_type_instruction_encoding(actual_type, source_context)?;
         let to_instruction_encoding = Self::integral_type_instruction_encoding(&desired_type);
 
@@ -337,7 +337,7 @@ impl CompilerFunctionBuilder {
         }
         let combined_instruction_encoding = (to_instruction_encoding << 16) | from_instruction_encoding;
         self.function_definition.add_int_instruction(GospelOpcode::IntCast, combined_instruction_encoding, Self::get_line_number(source_context)).with_source_context(source_context)?;
-        Ok(ExpressionValueType::Integer(desired_type))
+        Ok(ExpressionValueType::Integer(desired_type.clone()))
     }
     fn integral_type_instruction_encoding(value_type: &IntegralType) -> u32 {
         let bit_width_encoding: u32 = match value_type.bit_width {
@@ -383,14 +383,29 @@ impl CompilerFunctionBuilder {
             Err(compiler_error!(source_context, "Expected integral type, got {}", source_context))
         }
     }
+    fn coerce_to_expression_type(&mut self, actual_type: &ExpressionValueType, desired_type: &ExpressionValueType, source_context: &CompilerSourceContext) -> CompilerResult<ExpressionValueType> {
+        if desired_type == actual_type {
+            // Types of expressions match, nothing to be done here
+            Ok(actual_type.clone())
+        } else if let ExpressionValueType::Integer(desired_integral_value_type) = desired_type {
+            // Attempt to convert expression value to the integral type
+            self.coerce_to_integral_type(desired_integral_value_type, actual_type, false, source_context)
+        } else if let ExpressionValueType::Bool = desired_type {
+            // Attempt to convert expression value to bool
+            self.coerce_to_bool_type(actual_type, source_context)
+        } else {
+            // Do not know how to convert to another types implicitly
+            compiler_bail!(source_context, "Expression type mismatch: expected {}, got {}", desired_type, actual_type);
+        }
+    }
     fn compile_array_type_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &ArrayTypeExpression) -> CompilerResult<ExpressionValueType> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
 
         let element_expression_type = self.compile_expression(scope, &expression.element_type_expression)?;
-        Self::check_expression_type(&source_context, ExpressionValueType::Typename, &element_expression_type)?;
+        self.coerce_to_expression_type(&element_expression_type, &ExpressionValueType::Typename, &source_context)?;
 
         let length_expression_type = self.compile_expression(scope, &expression.array_length_expression)?;
-        Self::coerce_to_integral_type(self, IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}, &length_expression_type, false, &source_context)?;
+        Self::coerce_to_integral_type(self, &IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}, &length_expression_type, false, &source_context)?;
 
         self.function_definition.add_simple_instruction(GospelOpcode::TypeArrayCreate, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         Ok(ExpressionValueType::Typename)
@@ -493,24 +508,24 @@ impl CompilerFunctionBuilder {
             Ok(left_side_type.clone())
         } else if let ExpressionValueType::Integer(left_side_integral_type) = left_side_type && let ExpressionValueType::Bool = right_side_type {
             // Right side bool gets promoted to an integer
-            self.coerce_to_integral_type(left_side_integral_type.clone(), right_side_type, false, source_context)?;
+            self.coerce_to_integral_type(left_side_integral_type, right_side_type, false, source_context)?;
             Ok(left_side_type.clone())
         }  else if let ExpressionValueType::Bool = left_side_type && let ExpressionValueType::Integer(right_side_integral_type) = right_side_type {
             // Left side bool gets promoted to an integer
             self.function_definition.add_simple_instruction(GospelOpcode::Permute, Self::get_line_number(source_context)).with_source_context(source_context)?;
-            self.coerce_to_integral_type(right_side_integral_type.clone(), left_side_type, false, source_context)?;
+            self.coerce_to_integral_type(right_side_integral_type, left_side_type, false, source_context)?;
             self.function_definition.add_simple_instruction(GospelOpcode::Permute, Self::get_line_number(source_context)).with_source_context(source_context)?;
             Ok(right_side_type.clone())
         } else if let ExpressionValueType::Integer(left_side_integral_type) = left_side_type && let ExpressionValueType::Integer(right_side_integral_type) = right_side_type {
             // Either left side or right side get converted to an integral type with a larger bit width. If the bit width is the same, type on the left wins
             if left_side_integral_type.bit_width >= right_side_integral_type.bit_width {
                 // Left side is of the bigger or the same bit width than the right side, so right side needs to be widened to the left side type
-                self.coerce_to_integral_type(left_side_integral_type.clone(), &right_side_type, false, source_context)?;
+                self.coerce_to_integral_type(left_side_integral_type, &right_side_type, false, source_context)?;
                 Ok(left_side_type.clone())
             } else {
                 // Right side is of the bigger bit width than the left side, so left side needs to be widened to the right side type
                 self.function_definition.add_simple_instruction(GospelOpcode::Permute, Self::get_line_number(source_context)).with_source_context(source_context)?;
-                self.coerce_to_integral_type(right_side_integral_type.clone(), &left_side_type, false, source_context)?;
+                self.coerce_to_integral_type(right_side_integral_type, &left_side_type, false, source_context)?;
                 self.function_definition.add_simple_instruction(GospelOpcode::Permute, Self::get_line_number(source_context)).with_source_context(source_context)?;
                 Ok(right_side_type.clone())
             }
@@ -699,22 +714,22 @@ impl CompilerFunctionBuilder {
 
         match expression.operator {
             UnaryOperator::StructAlignOf => {
-                Self::check_expression_type(&source_context, ExpressionValueType::Typename, &inner_expression_type)?;
+                self.coerce_to_expression_type(&inner_expression_type, &ExpressionValueType::Typename, &source_context)?;
                 self.function_definition.add_simple_instruction(GospelOpcode::TypeCalculateAlignment, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
                 Ok(ExpressionValueType::Integer(IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}))
             }
             UnaryOperator::StructSizeOf => {
-                Self::check_expression_type(&source_context, ExpressionValueType::Typename, &inner_expression_type)?;
+                self.coerce_to_expression_type(&inner_expression_type, &ExpressionValueType::Typename, &source_context)?;
                 self.function_definition.add_simple_instruction(GospelOpcode::TypeCalculateSize, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
                 Ok(ExpressionValueType::Integer(IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}))
             }
             UnaryOperator::CreatePointerType => {
-                Self::check_expression_type(&source_context, ExpressionValueType::Typename, &inner_expression_type)?;
+                self.coerce_to_expression_type(&inner_expression_type, &ExpressionValueType::Typename, &source_context)?;
                 self.function_definition.add_simple_instruction(GospelOpcode::TypePointerCreate, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
                 Ok(ExpressionValueType::Typename)
             }
             UnaryOperator::CreateReferenceType => {
-                Self::check_expression_type(&source_context, ExpressionValueType::Typename, &inner_expression_type)?;
+                self.coerce_to_expression_type(&inner_expression_type, &ExpressionValueType::Typename, &source_context)?;
                 self.function_definition.add_simple_instruction(GospelOpcode::TypePointerCreateReference, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
                 Ok(ExpressionValueType::Typename)
             }
@@ -809,14 +824,14 @@ impl CompilerFunctionBuilder {
                 if parameter_index < parameter_expressions.len() {
                     // This function parameter has been provided by the user, so push its value on the stack
                     let provided_parameter_type = self.compile_expression(scope, &parameter_expressions[parameter_index])?;
-                    Self::check_expression_type(source_context, parameter_types[parameter_index].parameter_type.clone(), &provided_parameter_type)?;
+                    self.coerce_to_expression_type(&provided_parameter_type, &parameter_types[parameter_index].parameter_type, &source_context)?;
                     // Cache the parameter value expression in case we need it as an input for evaluation of the default argument value down the line
                     currently_provided_parameter_expressions.push(parameter_expressions[parameter_index].clone());
                 } else if let Some(default_parameter_value_provider) = &parameter_types[parameter_index].default_value {
                     // This function has a default parameter value, so compile the call to the function producing it
                     // Such a function can receive implicit parameters from the parent scope, as well as the values of the parameters before this one
                     let default_value_type = self.compile_static_function_call(scope, default_parameter_value_provider, source_context, Some(&currently_provided_parameter_expressions), true)?;
-                    Self::check_expression_type(source_context, parameter_types[parameter_index].parameter_type.clone(), &default_value_type)?;
+                    self.coerce_to_expression_type(&default_value_type, &parameter_types[parameter_index].parameter_type, &source_context)?;
                 } else {
                     // There is no default value for this argument
                     compiler_bail!(source_context, "Template {} argument at index #{} has no default value, and no explicit value was provided", function.function, parameter_index + 1);
@@ -887,7 +902,8 @@ impl CompilerFunctionBuilder {
     fn compile_return_value_expression(&mut self, scope: &Rc<CompilerLexicalScope>, source_context: &ASTSourceContext, expression: &Expression) -> CompilerResult<()> {
         let actual_source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: source_context.clone()};
         let return_value_type = self.compile_expression(scope, expression)?;
-        Self::check_expression_type(&scope.source_context, self.function_signature.return_value_type.clone(), &return_value_type)?;
+        let expected_return_value_type = self.function_signature.return_value_type.clone();
+        self.coerce_to_expression_type(&return_value_type, &expected_return_value_type, &actual_source_context)?;
         self.function_definition.add_simple_instruction(GospelOpcode::SetReturnValue, Self::get_line_number(&actual_source_context)).with_source_context(&actual_source_context)?;
         self.function_definition.add_simple_instruction(GospelOpcode::Return, Self::get_line_number(&actual_source_context)).with_source_context(&actual_source_context)?;
         Ok({})
@@ -911,12 +927,12 @@ impl CompilerFunctionBuilder {
                 let right_side_type = self.compile_expression(scope, &statement.assignment_expression)?;
                 let operator_result_type = self.compile_binary_operator(&local_variable.variable_type, &right_side_type, &source_context, assignment_operator)?;
 
-                Self::check_expression_type(&source_context, local_variable.variable_type.clone(), &operator_result_type)?;
+                self.coerce_to_expression_type(&operator_result_type, &local_variable.variable_type, &source_context)?;
                 self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, local_variable.value_slot, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             } else {
                 // This is a direct assignment
                 let right_side_type = self.compile_expression(scope, &statement.assignment_expression)?;
-                Self::check_expression_type(&source_context, local_variable.variable_type.clone(), &right_side_type)?;
+                self.coerce_to_expression_type(&right_side_type, &local_variable.variable_type, &source_context)?;
                 self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, local_variable.value_slot, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             }
             Ok({})
@@ -933,7 +949,7 @@ impl CompilerFunctionBuilder {
 
         if let Some(variable_initializer) = &statement.initializer {
             let initializer_type = self.compile_expression(scope, variable_initializer)?;
-            Self::check_expression_type(&source_context, statement.value_type.clone(), &initializer_type)?;
+            self.coerce_to_expression_type(&initializer_type, &statement.value_type, &source_context)?;
             self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         }
         Ok({})
@@ -1078,7 +1094,7 @@ impl CompilerFunctionBuilder {
             Ok(ExpressionValueType::Integer(IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}))
         } else {
             // Should be an integer alignment otherwise
-            self.coerce_to_integral_type(IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}, &source_alignment_expression_type, false, source_context)
+            self.coerce_to_integral_type(&IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}, &source_alignment_expression_type, false, source_context)
         }
     }
     fn compile_condition_wrapped_expression<S: FnOnce(&mut Self, &Expression, &CompilerSourceContext) -> CompilerResult<()>>(&mut self, scope: &Rc<CompilerLexicalScope>, conditional_declaration: &ExpressionWithCondition, code_generator: S) -> CompilerResult<()> {
@@ -1119,7 +1135,7 @@ impl CompilerFunctionBuilder {
         self.compile_condition_wrapped_expression(scope, alignment_expression, |builder, expression, source_context| {
             builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             let expression_type = builder.compile_coerce_alignment_expression(scope, expression, source_context)?;
-            CompilerFunctionBuilder::coerce_to_integral_type(builder, IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}, &expression_type, false, source_context)?;
+            CompilerFunctionBuilder::coerce_to_integral_type(builder, &IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}, &expression_type, false, source_context)?;
             builder.function_definition.add_simple_instruction(GospelOpcode::TypeUDTSetUserAlignment, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             Ok({})
         })
@@ -1128,7 +1144,7 @@ impl CompilerFunctionBuilder {
         self.compile_condition_wrapped_expression(scope, member_pack_alignment_expression, |builder, expression, source_context| {
             builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             let expression_type = builder.compile_expression(scope, expression)?;
-            CompilerFunctionBuilder::coerce_to_integral_type(builder, IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}, &expression_type, false, source_context)?;
+            CompilerFunctionBuilder::coerce_to_integral_type(builder, &IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}, &expression_type, false, source_context)?;
             builder.function_definition.add_simple_instruction(GospelOpcode::TypeUDTSetMemberPackAlignment, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             Ok({})
         })
@@ -1137,7 +1153,7 @@ impl CompilerFunctionBuilder {
         self.compile_condition_wrapped_expression(scope, base_class_expression, |builder, expression, source_context| {
             builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             let expression_type = builder.compile_expression(scope, expression)?;
-            Self::check_expression_type(&source_context, ExpressionValueType::Typename, &expression_type)?;
+            builder.coerce_to_expression_type(&expression_type, &ExpressionValueType::Typename, &source_context)?;
             let base_class_flags = if is_prototype_pass { 1 << 2 } else { 0 };
             builder.function_definition.add_udt_base_class_instruction(base_class_flags, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             Ok({})
@@ -1162,7 +1178,7 @@ impl CompilerFunctionBuilder {
         self.compile_condition_wrapped_expression(scope, underlying_type_expression, |inner_builder, underlying_type_expression, source_context| {
             inner_builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             let underlying_expression_type = inner_builder.compile_expression(scope, underlying_type_expression)?;
-            Self::check_expression_type(source_context, ExpressionValueType::Typename, &underlying_expression_type)?;
+            inner_builder.coerce_to_expression_type(&underlying_expression_type, &ExpressionValueType::Typename, &source_context)?;
             inner_builder.function_definition.add_simple_instruction(GospelOpcode::TypeEnumSetUnderlyingType, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             Ok({})
         })
@@ -1209,12 +1225,6 @@ impl CompilerFunctionBuilder {
         self.function_definition.add_simple_instruction(GospelOpcode::TypeFinalize, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
 
         self.function_definition.add_simple_instruction(GospelOpcode::Return, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
-        Ok({})
-    }
-    fn check_expression_type(context: &CompilerSourceContext, expected_type: ExpressionValueType, actual_type: &ExpressionValueType) -> CompilerResult<()> {
-        if &expected_type != actual_type {
-            compiler_bail!(context, "Expression type mismatch: expected {}, got {}", expected_type, actual_type);
-        }
         Ok({})
     }
     fn get_line_number(source_context: &CompilerSourceContext) -> i32 {
@@ -1497,7 +1507,7 @@ impl CompilerStructMemberFragment {
         builder.compile_condition_wrapped_expression(&self.scope, alignment_expression, |builder, expression, source_context| {
             builder.function_definition.add_simple_instruction(GospelOpcode::Pop, CompilerFunctionBuilder::get_line_number(source_context)).with_source_context(source_context)?;
             let alignment_expression_type = builder.compile_coerce_alignment_expression(&self.scope, expression, &self.source_context)?;
-            CompilerFunctionBuilder::coerce_to_integral_type(builder, IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}, &alignment_expression_type, false, &self.source_context)?;
+            CompilerFunctionBuilder::coerce_to_integral_type(builder, &IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}, &alignment_expression_type, false, &self.source_context)?;
             Ok({})
         })
     }
@@ -1507,18 +1517,18 @@ impl CompilerStructMemberFragment {
         // Compile member type expression
         let member_type_expression_type = builder.compile_expression(&self.scope, &self.member_type_expression)?;
         let member_flags = if is_prototype_pass { 1 << 2 } else { 0 } as u32;
-        CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Typename, &member_type_expression_type)?;
+        builder.coerce_to_expression_type(&member_type_expression_type, &ExpressionValueType::Typename, &self.source_context)?;
 
         if let Some(bitfield_width_expression) = &self.bitfield_width_expression {
             // If there is a bitfield width expression, this is a bitfield member
             let bitfield_width_expression_type = builder.compile_expression(&self.scope, bitfield_width_expression)?;
-            CompilerFunctionBuilder::coerce_to_integral_type(builder, IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}, &bitfield_width_expression_type, false, &self.source_context)?;
+            CompilerFunctionBuilder::coerce_to_integral_type(builder, &IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}, &bitfield_width_expression_type, false, &self.source_context)?;
             builder.function_definition.add_type_member_instruction(GospelOpcode::TypeUDTAddBitfield, self.member_name.as_ref(), member_flags, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         } else {
             // If array size expression is present, we need to convert the given member type to an array implicitly
             if let Some(array_size_expression) = &self.array_size_expression {
                 let array_size_expression_type = builder.compile_expression(&self.scope, array_size_expression)?;
-                CompilerFunctionBuilder::coerce_to_integral_type(builder, IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}, &array_size_expression_type, false, &self.source_context)?;
+                CompilerFunctionBuilder::coerce_to_integral_type(builder, &IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}, &array_size_expression_type, false, &self.source_context)?;
                 builder.function_definition.add_simple_instruction(GospelOpcode::TypeArrayCreate, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
             }
 
@@ -1590,12 +1600,12 @@ impl CompilerStructVirtualFunctionFragment {
         builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
 
         let return_value_expression_type = builder.compile_expression(&self.scope, &self.return_type_expression)?;
-        CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Typename, &return_value_expression_type)?;
+        builder.coerce_to_expression_type(&return_value_expression_type, &ExpressionValueType::Typename, &self.source_context)?;
         let function_flags = (if self.constant { 1 << 0 } else { 0 }) | (if self.is_override { 1 << 1 } else { 0 }) | (if is_prototype_pass { 1 << 2 } else { 0 });
 
         for argument_index in 0..self.parameters.len() {
             let argument_expression_type = builder.compile_expression(&self.scope, &self.parameters[argument_index].parameter_type)?;
-            CompilerFunctionBuilder::check_expression_type(&self.source_context, ExpressionValueType::Typename, &argument_expression_type)?;
+            builder.coerce_to_expression_type(&argument_expression_type, &ExpressionValueType::Typename, &self.source_context)?;
 
             if let Some(argument_name) = &self.parameters[argument_index].parameter_name {
                 let argument_name_index = builder.function_definition.add_string_reference_internal(argument_name.as_str());
