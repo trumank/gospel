@@ -1,0 +1,25 @@
+function additional_module_file$SuperLargeEnum max_slots 1 {
+  S000: "minimal_module:additional_module_file$SuperLargeEnum";
+  S001: "Scoped";
+  S002: "UnsignedLongLongInt";
+  S003: "SuperLargeConstant";
+  S004: "NextConstant";
+  L000: TypeEnumAllocate 0x0u32 0x1u32; // additional_module_file.gs:15
+  L001: StoreSlot 0x0u32; // additional_module_file.gs:15
+  L002: LoadSlot 0x0u32; // additional_module_file.gs:15
+  L003: SetReturnValue; // additional_module_file.gs:15
+  L004: LoadSlot 0x0u32; // additional_module_file.gs:15
+  L005: TypePrimitiveCreate 0x2u32; // additional_module_file.gs:15
+  L006: TypeEnumSetUnderlyingType; // additional_module_file.gs:15
+  L007: LoadSlot 0x0u32; // additional_module_file.gs:16
+  L008: Int64Constant 0x0u32 0x1u32; // additional_module_file.gs:16
+  L009: Int32Constant 0x2eu32; // additional_module_file.gs:16
+  L010: IntCast 0x30082u32; // additional_module_file.gs:16
+  L011: Shl 0x3u32; // additional_module_file.gs:16
+  L012: TypeEnumAddConstantWithValue 0x3u32 0x0u32 0x3u32; // additional_module_file.gs:16
+  L013: LoadSlot 0x0u32; // additional_module_file.gs:17
+  L014: TypeEnumAddConstant 0x4u32 0x0u32; // additional_module_file.gs:17
+  L015: LoadSlot 0x0u32; // additional_module_file.gs:15
+  L016: TypeFinalize; // additional_module_file.gs:15
+  L017: Return; // additional_module_file.gs:15
+};

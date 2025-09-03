@@ -12,6 +12,11 @@ enum TestUnscopedEnum {
     ConstantWithoutValue if (sizeof(MinimalStruct) == 16),
 };
 
+enum class SuperLargeEnum : unsigned long long int {
+    SuperLargeConstant = 1u64 << 46,
+    NextConstant,
+};
+
 enum class TestScopedEnum : uint64_t {
     InitialValue
 };
