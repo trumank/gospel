@@ -68,7 +68,7 @@ struct Test {
 };
 
 struct alignas(int) EmptyStruct {};
-constexpr int SizeofEmptyStruct = sizeof(EmptyStruct);
+constexpr unsigned long int SizeofEmptyStruct = sizeof(EmptyStruct);
 
 template<int Test = 5> struct TemplateWithDefault {};
 type DefaultInstantiation = TemplateWithDefault<>;
@@ -86,15 +86,15 @@ union TestUnion {
     char Test4;
     char& const ConstCharReference;
 };
-constexpr int SizeofTestUnion = sizeof(TestUnion const *volatile const);
-constexpr int ConstEqualityTest = TestUnion const == TestUnion;
+constexpr unsigned long int SizeofTestUnion = sizeof(TestUnion const *volatile const);
+constexpr bool ConstEqualityTest = TestUnion const == TestUnion;
 
 template<int Condition>
 struct member_pack(2) if (Condition == 1) alignas(4) if (Condition == 1) TestAlignmentStruct {
     long long int TestMember;
 };
-constexpr int TestAlignmentStruct1 = alignof(TestAlignmentStruct<1>);
-constexpr int TestAlignmentStruct2 = alignof(TestAlignmentStruct<2>);
+constexpr unsigned long int TestAlignmentStruct1 = alignof(TestAlignmentStruct<1>);
+constexpr unsigned long int TestAlignmentStruct2 = alignof(TestAlignmentStruct<2>);
 
 class TestClassWithVirtualFunctions {
     virtual ~TestClassWithVirtualFunctions();
@@ -112,4 +112,4 @@ class TestClassWithNoUniqueVirtualFunctions : Test, TestClassWithVirtualFunction
     virtual void TestFunction1() const override;
 };
 
-constexpr int SizeofTestClassWithVirtualFunctions = sizeof(TestClassWithVirtualFunctions);
+constexpr unsigned long int SizeofTestClassWithVirtualFunctions = sizeof(TestClassWithVirtualFunctions);
