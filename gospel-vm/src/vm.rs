@@ -1123,12 +1123,13 @@ impl<'a> GospelVMExecutionState<'a> {
                     state.push_stack_check_overflow(GospelVMValue::TypeReference(result_type_index))?;
                 }
                 GospelOpcode::TypeEnumSetUnderlyingType => {
+                    let underlying_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+
                     state.validate_type_index_enum_type(type_index, run_context)?;
                     state.validate_type_not_finalized(type_index, run_context)?;
 
                     // Enum underlying type must be a primitive type
-                    let underlying_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     let underlying_type = if let Type::Primitive(primitive_type) = &run_context.type_by_index(underlying_type_index) && primitive_type.is_integral() {
                         primitive_type.clone()
                     } else {
