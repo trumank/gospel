@@ -69,6 +69,8 @@ pub enum GospelOpcode {
     Rem = 0x34, // <imm>; [pop stack], [pop stack] -> [push stack]
     #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
     Neg = 0x35, // <imm>; [pop stack] -> [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
+    IntCast = 0x36, // <imm> <imm>; [pop stack] -> [push stack]
     // Control flow opcodes
     #[strum(props(immediate_count = "1"))]
     Branch = 0x40, // <imm>; ->
@@ -213,8 +215,8 @@ pub enum GospelOpcode {
     TypeEnumGetUnderlyingType = 0xB9, // ; [pop stack] -> [push stack]
     #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
     TypeEnumHasConstantByName = 0xBA, // <imm>; [pop stack] -> [push stack]
-    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "2"))]
-    TypeEnumConstantValueByName = 0xBB, // <imm>; [pop stack] -> [push stack] [push stack]
+    #[strum(props(immediate_count = "1", stack_in_count = "1", stack_out_count = "1"))]
+    TypeEnumConstantValueByName = 0xBB, // <imm>; [pop stack] -> [push stack]
     // Type creation opcode extensions
     #[strum(props(stack_in_count = "2"))]
     TypeUDTSetMemberPackAlignment = 0xC0, // ; [pop stack] [pop stack] ->
@@ -224,8 +226,8 @@ pub enum GospelOpcode {
     TypeEnumAllocate = 0xC2,  // <imm> <imm>; -> [push stack]
     #[strum(props(stack_in_count = "2"))]
     TypeEnumSetUnderlyingType = 0xC3, // ; [pop stack] [pop stack] ->
-    #[strum(props(immediate_count = "2", stack_in_count = "2"))]
-    TypeEnumAddConstantWithValue = 0xC4, // <imm> <imm>; [pop stack] [pop stack] ->
+    #[strum(props(immediate_count = "3", stack_in_count = "2"))]
+    TypeEnumAddConstantWithValue = 0xC4, // <imm> <imm> <imm>; [pop stack] [pop stack] ->
     #[strum(props(immediate_count = "2", stack_in_count = "1"))]
     TypeEnumAddConstant = 0xC5, // <imm> <imm>; [pop stack] ->
 }

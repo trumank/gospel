@@ -15,7 +15,8 @@ use crate::gospel::{GospelFunctionDefinition, GospelObjectIndex, GospelTargetPro
 use crate::writer::{GospelSourceObjectReference};
 use serde::{Deserialize, Serialize, Serializer};
 use serde::ser::SerializeStruct;
-use gospel_typelib::type_model::{ArrayType, CVQualifiedType, FunctionType, PointerType, PrimitiveType, ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeBitfield, UserDefinedTypeField, UserDefinedTypeKind, UserDefinedTypeMember, FunctionDeclaration, FunctionParameterDeclaration, TypeLayoutCache, EnumType, EnumKind, EnumConstant};
+use gospel_typelib::map_integral_value;
+use gospel_typelib::type_model::{ArrayType, CVQualifiedType, FunctionType, PointerType, PrimitiveType, ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeBitfield, UserDefinedTypeField, UserDefinedTypeKind, UserDefinedTypeMember, FunctionDeclaration, FunctionParameterDeclaration, TypeLayoutCache, EnumType, EnumKind, EnumConstant, IntegralType, IntegerSignedness, BitWidth};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GospelVMStackFrame {
@@ -406,107 +407,23 @@ struct GospelVMExecutionState<'a> {
     max_exception_handler_depth: usize,
 }
 
-macro_rules! implement_primitive_op {
-    ($state:expr, |$operand_a:ident, $operand_b:ident| $expression:expr, $unsigned_type:ty) => {
-        let $operand_b = $state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type;
-        let $operand_a = $state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type;
-        let result = $expression as $unsigned_type;
-        $state.push_stack_check_overflow(GospelVMValue::Primitive(result as u64))?;
-    };
-    ($state:expr, |$operand_a:ident, $operand_b:ident| $expression:expr, $unsigned_type:ty, $signed_type:ty) => {
-        let $operand_b = ($state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type) as $signed_type;
-        let $operand_a = ($state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type) as $signed_type;
-        let result = ($expression as $signed_type) as $unsigned_type;
-        $state.push_stack_check_overflow(GospelVMValue::Primitive(result as u64))?;
-    };
-    ($state:expr, |$operand:ident| $expression:expr, $unsigned_type:ty) => {
-        let $operand = $state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type;
-        let result = $expression as $unsigned_type;
-        $state.push_stack_check_overflow(GospelVMValue::Primitive(result as u64))?;
-    };
-    ($state:expr, |$operand:ident| $expression:expr, $unsigned_type:ty, $signed_type:ty) => {
-        let $operand = ($state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))? as $unsigned_type) as $signed_type;
-        let result = ($expression as $signed_type) as $unsigned_type;
-        $state.push_stack_check_overflow(GospelVMValue::Primitive(result as u64))?;
-    };
-}
 macro_rules! implement_variable_length_integer_op {
-    ($state:expr, $instruction:expr, |$operand_a:ident, $operand_b:ident| $expression:expr) => {
+    ($state:expr, $instruction:expr, |$operand_a:ident, $operand_b:ident| $expression:expr, $specifier:ident) => {
         let instruction_encoding = $state.immediate_value_checked($instruction, 0)? as u8;
-        let operand_width = instruction_encoding & 0x3;
-        let is_operand_signed = instruction_encoding & 0x80 != 0;
-        if is_operand_signed {
-            match operand_width {
-                0 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u8, i8); },
-                1 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u16, i16); },
-                2 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u32, i32); },
-                3 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u64, i64); },
-                _ => { vm_bail!(Some($state), "Unsupported operand width: {}", operand_width); },
-            };
-        } else {
-            match operand_width {
-                0 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u8); },
-                1 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u16); },
-                2 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u32); },
-                3 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u64); },
-                _ => { vm_bail!(Some($state), "Unsupported operand width: {}", operand_width); },
-            };
-        }
+        let integral_value_type = GospelVMExecutionState::decode_integral_value_type(instruction_encoding);
+
+        let raw_value_b = $state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))?;
+        let raw_value_a = $state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))?;
+        let result = map_integral_value!(integral_value_type, raw_value_a, raw_value_b, |$operand_a, $operand_b| $expression, $specifier);
+        $state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
     };
-    ($state:expr, $instruction:expr, |$operand_a:ident, $operand_b:ident| $expression:expr, unsigned_only) => {
+    ($state:expr, $instruction:expr, |$operand:ident| $expression:expr, $specifier:ident) => {
         let instruction_encoding = $state.immediate_value_checked($instruction, 0)? as u8;
-        let operand_width = instruction_encoding & 0x3;
-        match operand_width {
-            0 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u8); },
-            1 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u16); },
-            2 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u32); },
-            3 => { implement_primitive_op!($state, |$operand_a, $operand_b| $expression, u64); },
-            _ => { vm_bail!(Some($state), "Unsupported operand width: {}", operand_width); },
-        };
-    };
-    ($state:expr, $instruction:expr, |$operand:ident| $expression:expr) => {
-        let instruction_encoding = $state.immediate_value_checked($instruction, 0)? as u8;
-        let operand_width = instruction_encoding & 0x3;
-        let is_operand_signed = instruction_encoding & 0x80 != 0;
-        if is_operand_signed {
-            match operand_width {
-                0 => { implement_primitive_op!($state, |$operand| $expression, u8, i8); },
-                1 => { implement_primitive_op!($state, |$operand| $expression, u16, i16); },
-                2 => { implement_primitive_op!($state, |$operand| $expression, u32, i32); },
-                3 => { implement_primitive_op!($state, |$operand| $expression, u64, i64); },
-                _ => { vm_bail!(Some($state), "Unsupported operand width: {}", operand_width); },
-            };
-        } else {
-            match operand_width {
-                0 => { implement_primitive_op!($state, |$operand| $expression, u8); },
-                1 => { implement_primitive_op!($state, |$operand| $expression, u16); },
-                2 => { implement_primitive_op!($state, |$operand| $expression, u32); },
-                3 => { implement_primitive_op!($state, |$operand| $expression, u64); },
-                _ => { vm_bail!(Some($state), "Unsupported operand width: {}", operand_width); },
-            };
-        }
-    };
-    ($state:expr, $instruction:expr, |$operand:ident| $expression:expr, signed_only) => {
-        let instruction_encoding = $state.immediate_value_checked($instruction, 0)? as u8;
-        let operand_width = instruction_encoding & 0x3;
-        match operand_width {
-            0 => { implement_primitive_op!($state, |$operand| $expression, u8, i8); },
-            1 => { implement_primitive_op!($state, |$operand| $expression, u16, i16); },
-            2 => { implement_primitive_op!($state, |$operand| $expression, u32, i32); },
-            3 => { implement_primitive_op!($state, |$operand| $expression, u64, i64); },
-            _ => { vm_bail!(Some($state), "Unsupported operand width: {}", operand_width); },
-        };
-    };
-    ($state:expr, $instruction:expr, |$operand:ident| $expression:expr, unsigned_only) => {
-        let instruction_encoding = $state.immediate_value_checked($instruction, 0)? as u8;
-        let operand_width = instruction_encoding & 0x3;
-        match operand_width {
-            0 => { implement_primitive_op!($state, |$operand| $expression, u8); },
-            1 => { implement_primitive_op!($state, |$operand| $expression, u16); },
-            2 => { implement_primitive_op!($state, |$operand| $expression, u32); },
-            3 => { implement_primitive_op!($state, |$operand| $expression, u64); },
-            _ => { vm_bail!(Some($state), "Unsupported operand width: {}", operand_width); },
-        };
+        let integral_value_type = GospelVMExecutionState::decode_integral_value_type(instruction_encoding);
+
+        let raw_value = $state.pop_stack_check_underflow().and_then(|x| $state.unwrap_value_as_primitive_checked(x))?;
+        let result = map_integral_value!(integral_value_type, raw_value, |$operand| $expression, $specifier);
+        $state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
     };
 }
 
@@ -649,6 +566,17 @@ impl<'a> GospelVMExecutionState<'a> {
         if let Type::CVQualified(cv_qualified_type) = run_context.type_by_index(type_index) {
             Ok(cv_qualified_type.base_type_index)
         } else { Ok(type_index) }
+    }
+    fn decode_integral_value_type(instruction_encoding: u8) -> IntegralType {
+        let signedness = if instruction_encoding & 0x80 != 0 { IntegerSignedness::Signed } else { IntegerSignedness::Unsigned };
+        let bit_width = match instruction_encoding & 0x3 {
+            0 => BitWidth::Width8,
+            1 => BitWidth::Width16,
+            2 => BitWidth::Width32,
+            3 => BitWidth::Width64,
+            _ => unreachable!(),
+        };
+        IntegralType{signedness, bit_width}
     }
     fn current_stack_frame(&self) -> GospelVMStackFrame {
         let module_name = self.owner_container.container_name().unwrap_or("<unknown>").to_string();
@@ -821,23 +749,32 @@ impl<'a> GospelVMExecutionState<'a> {
                     state.exception_handler_stack.pop();
                 }
                 // Logical opcodes
-                GospelOpcode::And => { implement_variable_length_integer_op!(state, instruction, |a, b| a & b, unsigned_only); }
-                GospelOpcode::Or =>  { implement_variable_length_integer_op!(state, instruction, |a, b| a | b, unsigned_only); }
-                GospelOpcode::Xor => { implement_variable_length_integer_op!(state, instruction, |a, b| a ^ b, unsigned_only); }
-                GospelOpcode::Shl => { implement_variable_length_integer_op!(state, instruction, |a, b| a >> b, unsigned_only); }
-                GospelOpcode::Shr => { implement_variable_length_integer_op!(state, instruction, |a, b| a << b, unsigned_only); }
-                GospelOpcode::ReverseBits => { implement_variable_length_integer_op!(state, instruction, |a| a.reverse_bits(), unsigned_only); }
-                GospelOpcode::CmpEq => { implement_variable_length_integer_op!(state, instruction, |a, b| if a == b { 1 } else { 0 }, unsigned_only); }
-                GospelOpcode::CmpLess => { implement_variable_length_integer_op!(state, instruction, |a, b| if a < b { 1 } else { 0 }); }
-                GospelOpcode::CmpLeq => { implement_variable_length_integer_op!(state, instruction, |a, b| if a <= b { 1 } else { 0 }); }
-                GospelOpcode::Eqz => { implement_variable_length_integer_op!(state, instruction, |a| if a == 0 { 1 } else { 0 }, unsigned_only); }
+                GospelOpcode::And => { implement_variable_length_integer_op!(state, instruction, |a, b| a & b, unsigned); }
+                GospelOpcode::Or => { implement_variable_length_integer_op!(state, instruction, |a, b| a | b, unsigned); }
+                GospelOpcode::Xor => { implement_variable_length_integer_op!(state, instruction, |a, b| a ^ b, unsigned); }
+                GospelOpcode::Shl => { implement_variable_length_integer_op!(state, instruction, |a, b| a >> b, unsigned); }
+                GospelOpcode::Shr => { implement_variable_length_integer_op!(state, instruction, |a, b| a << b, unsigned); }
+                GospelOpcode::ReverseBits => { implement_variable_length_integer_op!(state, instruction, |a| a.reverse_bits(), unsigned); }
+                GospelOpcode::CmpEq => { implement_variable_length_integer_op!(state, instruction, |a, b| if a == b { 1 } else { 0 }, unsigned); }
+                GospelOpcode::CmpLess => { implement_variable_length_integer_op!(state, instruction, |a, b| if a < b { 1 } else { 0 }, mixed); }
+                GospelOpcode::CmpLeq => { implement_variable_length_integer_op!(state, instruction, |a, b| if a <= b { 1 } else { 0 }, mixed); }
+                GospelOpcode::Eqz => { implement_variable_length_integer_op!(state, instruction, |a| if a == 0 { 1 } else { 0 }, unsigned); }
                 // Arithmetic opcodes
-                GospelOpcode::Add => { implement_variable_length_integer_op!(state, instruction, |a, b| a + b); }
-                GospelOpcode::Sub => { implement_variable_length_integer_op!(state, instruction, |a, b| a - b); }
-                GospelOpcode::Mul => { implement_variable_length_integer_op!(state, instruction, |a, b| a * b); }
-                GospelOpcode::Div => { implement_variable_length_integer_op!(state, instruction, |a, b| if b == 0 { vm_bail!(Some(state), "Division by zero"); } else { a / b }); }
-                GospelOpcode::Rem => { implement_variable_length_integer_op!(state, instruction, |a, b| if b == 0 { vm_bail!(Some(state), "Division by zero"); } else { a % b }); }
-                GospelOpcode::Neg => { implement_variable_length_integer_op!(state, instruction, |a| -a, signed_only); }
+                GospelOpcode::Add => { implement_variable_length_integer_op!(state, instruction, |a, b| a + b, mixed); }
+                GospelOpcode::Sub => { implement_variable_length_integer_op!(state, instruction, |a, b| a - b, mixed); }
+                GospelOpcode::Mul => { implement_variable_length_integer_op!(state, instruction, |a, b| a * b, mixed); }
+                GospelOpcode::Div => { implement_variable_length_integer_op!(state, instruction, |a, b| if b == 0 { vm_bail!(Some(state), "Division by zero"); } else { a / b }, mixed); }
+                GospelOpcode::Rem => { implement_variable_length_integer_op!(state, instruction, |a, b| if b == 0 { vm_bail!(Some(state), "Division by zero"); } else { a % b }, mixed); }
+                GospelOpcode::Neg => { implement_variable_length_integer_op!(state, instruction, |a| -a, signed); }
+                GospelOpcode::IntCast => {
+                    let instruction_encoding = state.immediate_value_checked(instruction, 0)?;
+                    let from_value_type = Self::decode_integral_value_type(instruction_encoding as u8);
+                    let to_value_type = Self::decode_integral_value_type((instruction_encoding >> 16) as u8);
+
+                    let raw_from_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))?;
+                    let result_value = IntegralType::cast_integral_value(raw_from_value, &from_value_type, &to_value_type);
+                    state.push_stack_check_overflow(GospelVMValue::Primitive(result_value))?;
+                }
                 // Control flow opcodes
                 GospelOpcode::Branch => {
                     let target_instruction_index = state.immediate_value_checked(instruction, 0)? as usize;
@@ -845,17 +782,14 @@ impl<'a> GospelVMExecutionState<'a> {
                 }
                 GospelOpcode::Branchz => {
                     let instruction_encoding = state.immediate_value_checked(instruction, 0)? as u8;
-                    let condition_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))?;
-                    let operand_width = instruction_encoding & 0x4;
-                    let condition_result = match operand_width {
-                        0 => { condition_value as u8  == 0 },
-                        1 => { condition_value as u16 == 0 },
-                        2 => { condition_value as u32 == 0 },
-                        3 => { condition_value == 0 },
-                        _ =>  { vm_bail!(Some(state), "Unsupported operand width: {}", operand_width); },
-                    };
+                    let integral_value_type = Self::decode_integral_value_type(instruction_encoding);
+                    let raw_condition_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))?;
+
+                    // This will remove any value bits that the instruction encoding does not specify to be checked
+                    let condition_result = map_integral_value!(integral_value_type, raw_condition_value, |a| a, unsigned);
                     let target_instruction_index = state.immediate_value_checked(instruction, 1)? as usize;
-                    if condition_result {
+
+                    if condition_result == 0 {
                         state.jump_control_flow_checked(target_instruction_index)?;
                     }
                 }
@@ -1205,7 +1139,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     }
                 }
                 GospelOpcode::TypeEnumAddConstantWithValue => {
-                    let constant_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))?;
+                    let raw_constant_value = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))?;
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_enum_type(type_index, run_context)?;
@@ -1216,13 +1150,15 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let constant_flags_index = state.immediate_value_checked(instruction, 1)? as usize;
                     let is_constant_prototype = constant_flags_index & (1 << 2) != 0;
-                    let is_constant_signed = constant_flags_index & (1 << 3) != 0;
+
+                    let instruction_encoding = state.immediate_value_checked(instruction, 2)? as u8;
+                    let integral_value_type = Self::decode_integral_value_type(instruction_encoding);
 
                     if constant_name.is_some() && let Some(constant_prototypes) = &mut run_context.types[type_index].enum_constant_prototypes {
                         constant_prototypes.insert(constant_name.as_ref().unwrap().clone());
                     }
                     if !is_constant_prototype && let Type::Enum(enum_type) = &mut run_context.types[type_index].wrapped_type {
-                        enum_type.constants.push(EnumConstant{name: constant_name, value: constant_value, is_signed: is_constant_signed});
+                        enum_type.constants.push(EnumConstant{name: constant_name, raw_value: raw_constant_value, integral_type: integral_value_type});
                     }
                 }
                 GospelOpcode::TypeEnumAddConstant => {
@@ -1239,14 +1175,18 @@ impl<'a> GospelVMExecutionState<'a> {
                     if constant_name.is_some() && let Some(constant_prototypes) = &mut run_context.types[type_index].enum_constant_prototypes {
                         constant_prototypes.insert(constant_name.as_ref().unwrap().clone());
                     }
+                    let target_triplet_option = run_context.target_triplet().cloned();
                     if !is_constant_prototype && let Type::Enum(enum_type) = &mut run_context.types[type_index].wrapped_type {
-                        let (constant_value, is_constant_signed) = if let Some(last_constant_def) = enum_type.constants.last() {
-                            if last_constant_def.is_signed {
-                                let last_constant_value = last_constant_def.value as i64;
-                                ((last_constant_value + 1) as u64, true)
-                            } else { (last_constant_def.value + 1, false) }
-                        } else { (0, false) };
-                        enum_type.constants.push(EnumConstant{name: constant_name, value: constant_value, is_signed: is_constant_signed});
+                        let (raw_value, integral_type) = if let Some(last_constant_def) = enum_type.constants.last() {
+                            (map_integral_value!(last_constant_def.integral_type, last_constant_def.raw_value, |value| value + 1, mixed), last_constant_def.integral_type.clone())
+                        } else if let Some(target_triplet) = target_triplet_option && let Ok(constant_integral_type) = enum_type.default_constant_integral_type(&target_triplet) {
+                            // This is the first constant defined in the enum. Use accurate underlying time when possible
+                            (0, constant_integral_type)
+                        } else {
+                            // Fallback to int as the default constant type otherwise
+                            (0, IntegralType{bit_width: BitWidth::Width32, signedness: IntegerSignedness::Signed})
+                        };
+                        enum_type.constants.push(EnumConstant{name: constant_name, raw_value, integral_type});
                     }
                 }
                 // Type access opcodes
@@ -1487,12 +1427,19 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_base_type_index_checked(x, run_context))?;
                     if let Type::Enum(enum_type) = run_context.type_by_index(type_index) {
-                        if let Some(constant_def) = enum_type.constants.iter().find(|x| x.name.as_ref().map(|x| x.as_str()) == Some(constant_name)) {
-                            // TODO: This truncates the value. Integer should be extended to 64-bit
-                            state.push_stack_check_overflow(GospelVMValue::Primitive(constant_def.value))?;
-                            state.push_stack_check_overflow(GospelVMValue::Primitive(if constant_def.is_signed { 1 } else { 0 }))?;
+                        if run_context.types[type_index].partial_type {
+                            vm_bail!(Some(state), "Cannot calculate enum constant values for partial enumeration types");
+                        }
+                        if let Some(target_triplet) = run_context.target_triplet() {
+                            if let Some(constant) = enum_type.constants.iter().find(|x| x.name.as_ref().map(|x| x.as_str()) == Some(constant_name)) {
+                                let result_constant_value = enum_type.constant_value(constant, target_triplet)
+                                    .map_err(|x| vm_error!(Some(&state), "Failed to calculate enum constant value: {}", x))?;
+                                state.push_stack_check_overflow(GospelVMValue::Primitive(result_constant_value))?;
+                            } else {
+                                vm_bail!(Some(state), "Constant with name {} is not found", constant_name);
+                            }
                         } else {
-                            vm_bail!(Some(state), "Constant with name {} is not found", constant_name);
+                            vm_bail!(Some(state), "Cannot calculate enum constant values without a target triplet");
                         }
                     } else {
                         vm_bail!(Some(state), "Type #{} is not an enum type", type_index);

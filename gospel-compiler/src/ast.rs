@@ -2,16 +2,21 @@ use std::fmt::{Display, Formatter};
 use std::iter::{empty, once};
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
-use gospel_typelib::type_model::{EnumKind, PrimitiveType, UserDefinedTypeKind};
+use gospel_typelib::type_model::{EnumKind, PrimitiveType, UserDefinedTypeKind, IntegralType};
 
 /// Describes value type of the expression in the source grammar
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Display, Default, EnumString)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, EnumString)]
 pub enum ExpressionValueType {
-    #[default]
-    Int,
+    Integer(IntegralType),
     Typename,
+    Bool,
     Closure,
     MetaStruct,
+}
+impl Default for ExpressionValueType {
+    fn default() -> Self {
+        ExpressionValueType::Integer(IntegralType::default())
+    }
 }
 
 /// Describes a source level access specifier
@@ -205,7 +210,16 @@ pub struct IdentifierExpression {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntegerConstantExpression {
-    pub constant_value: i32,
+    /// Converted to unsigned type and zero-extended to 64-bit
+    pub raw_constant_value: u64,
+    pub constant_type: IntegralType,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoolConstantExpression {
+    pub bool_value: bool,
     #[serde(default)]
     pub source_context: ASTSourceContext,
 }
@@ -240,10 +254,19 @@ pub struct CVQualifiedExpression {
     pub source_context: ASTSourceContext,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StaticCastExpression {
+    pub cast_expression: Expression,
+    pub target_type: ExpressionValueType,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
+}
+
 /// Represents a generic expression
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Expression {
     IntegerConstantExpression(Box<IntegerConstantExpression>),
+    BoolConstantExpression(Box<BoolConstantExpression>),
     IdentifierExpression(Box<IdentifierExpression>),
     ConditionalExpression(Box<ConditionalExpression>),
     StructDeclarationExpression(Box<StructStatement>),
@@ -255,6 +278,7 @@ pub enum Expression {
     BuiltinIdentifierExpression(Box<BuiltinIdentifierExpression>),
     PrimitiveTypeExpression(Box<PrimitiveTypeExpression>),
     CVQualifiedExpression(Box<CVQualifiedExpression>),
+    StaticCastExpression(Box<StaticCastExpression>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -89,14 +89,14 @@ impl TargetTriplet {
         8 // All currently supported architectures are 64-bit
     }
     /// Returns the size of the "long" type for the provided target triplet
-    pub fn long_size(&self) -> usize {
+    pub fn long_size(&self) -> BitWidth {
         // 4 on Win32, 8 on everything else
-        if self.sys == TargetOperatingSystem::Win32 { 4 } else { 8 }
+        if self.sys == TargetOperatingSystem::Win32 { BitWidth::Width32 } else { BitWidth::Width64 }
     }
     /// Returns the size of the "wchar_t" type for the provided target triplet
-    pub fn wide_char_size(&self) -> usize {
+    pub fn wide_char_size(&self) -> BitWidth {
         // 2 on Win32, 4 on everything else
-        if self.sys == TargetOperatingSystem::Win32 { 2 } else { 4 }
+        if self.sys == TargetOperatingSystem::Win32 { BitWidth::Width16 } else { BitWidth::Width32 }
     }
     pub fn uses_aligned_base_class_size(&self) -> bool {
         self.env == TargetEnvironment::MSVC // MSVC uses aligned base class size when calculating layout of child class, GNU and Darwin use unaligned size
@@ -247,6 +247,162 @@ impl TypeLayoutCache {
     }
 }
 
+/// Represents possible bit width values for integral types
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display, EnumString)]
+pub enum BitWidth {
+    Width8,
+    Width16,
+    Width32,
+    Width64,
+}
+impl BitWidth {
+    /// Returns bit width value in bytes
+    pub fn value_in_bytes(self) -> usize {
+        match self {
+            BitWidth::Width8 => 1,
+            BitWidth::Width16 => 2,
+            BitWidth::Width32 => 4,
+            BitWidth::Width64 => 8,
+        }
+    }
+}
+
+/// Describes whenever an integral type is signed or unsigned
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumString)]
+pub enum IntegerSignedness {
+    Signed,
+    Unsigned,
+}
+
+/// Describes an integral type of given bit width and signedness
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct IntegralType {
+    pub bit_width: BitWidth,
+    pub signedness: IntegerSignedness,
+}
+impl Default for IntegralType {
+    fn default() -> Self {
+        Self{bit_width: BitWidth::Width32, signedness: IntegerSignedness::Signed}
+    }
+}
+
+macro_rules! implement_integer_cast_block {
+    ($value:expr, $to_type:expr, $source_type:ty) => {
+        match $to_type.bit_width {
+            BitWidth::Width8 =>  $value as $source_type as u8  as u64,
+            BitWidth::Width16 => $value as $source_type as u16 as u64,
+            BitWidth::Width32 => $value as $source_type as u32 as u64,
+            BitWidth::Width64 => $value as $source_type as u64 as u64,
+        }
+    };
+}
+macro_rules! implement_integer_fit_check_block {
+    ($value:expr, $fit_check_type:expr, $source_type:ty) => {
+        match $fit_check_type.signedness {
+            IntegerSignedness::Signed => match $fit_check_type.bit_width {
+                BitWidth::Width8 =>  (($value as $source_type) >= 0 || ($value as $source_type as i64) >= i8::MIN  as i64) && ($value as $source_type as u64) <= i8::MAX  as u64,
+                BitWidth::Width16 => (($value as $source_type) >= 0 || ($value as $source_type as i64) >= i16::MIN as i64) && ($value as $source_type as u64) <= i16::MAX as u64,
+                BitWidth::Width32 => (($value as $source_type) >= 0 || ($value as $source_type as i64) >= i32::MIN as i64) && ($value as $source_type as u64) <= i32::MAX as u64,
+                BitWidth::Width64 => (($value as $source_type) >= 0 || ($value as $source_type as i64) >= i64::MIN as i64) && ($value as $source_type as u64) <= i64::MAX as u64,
+            },
+            IntegerSignedness::Unsigned => match $fit_check_type.bit_width {
+                BitWidth::Width8 =>  ($value as $source_type) >= 0 && ($value as $source_type as u64) <= u8::MAX  as u64,
+                BitWidth::Width16 => ($value as $source_type) >= 0 && ($value as $source_type as u64) <= u16::MAX as u64,
+                BitWidth::Width32 => ($value as $source_type) >= 0 && ($value as $source_type as u64) <= u32::MAX as u64,
+                BitWidth::Width64 => ($value as $source_type) >= 0 && ($value as $source_type as u64) <= u64::MAX as u64,
+            },
+        }
+    };
+}
+#[macro_export]
+macro_rules! map_integral_value {
+    ($value_type:expr, $raw_value:expr, |$converted_value:ident| $expression:expr, signed) => {
+        match $value_type.bit_width {
+            BitWidth::Width8 =>  { let $converted_value = $raw_value as i8 ; let result: i8  = $expression; result as u8  as u64 },
+            BitWidth::Width16 => { let $converted_value = $raw_value as i16; let result: i16 = $expression; result as u16 as u64 },
+            BitWidth::Width32 => { let $converted_value = $raw_value as i32; let result: i32 = $expression; result as u32 as u64 },
+            BitWidth::Width64 => { let $converted_value = $raw_value as i64; let result: i64 = $expression; result as u64 as u64 },
+        }
+    };
+    ($value_type:expr, $raw_value:expr, |$converted_value:ident| $expression:expr, unsigned) => {
+        match $value_type.bit_width {
+            BitWidth::Width8 =>  { let $converted_value = $raw_value as u8 ; let result: u8  = $expression; result as u64 },
+            BitWidth::Width16 => { let $converted_value = $raw_value as u16; let result: u16 = $expression; result as u64 },
+            BitWidth::Width32 => { let $converted_value = $raw_value as u32; let result: u32 = $expression; result as u64 },
+            BitWidth::Width64 => { let $converted_value = $raw_value as u64; let result: u64 = $expression; result as u64 },
+        }
+    };
+    ($value_type:expr, $raw_value:expr, |$converted_value:ident| $expression:expr, mixed) => {
+        match $value_type.signedness {
+            IntegerSignedness::Signed =>   map_integral_value!($value_type, $raw_value, |$converted_value| $expression, signed  ),
+            IntegerSignedness::Unsigned => map_integral_value!($value_type, $raw_value, |$converted_value| $expression, unsigned),
+        }
+    };
+    ($value_type:expr, $raw_value_a:expr, $raw_value_b:expr, |$converted_value_a:ident, $converted_value_b:ident| $expression:expr, signed) => {
+        match $value_type.bit_width {
+            BitWidth::Width8 =>  { let $converted_value_a = $raw_value_a as i8 ; let $converted_value_b = $raw_value_b as i8 ; let result: i8  = $expression; result as u8  as u64 },
+            BitWidth::Width16 => { let $converted_value_a = $raw_value_a as i16; let $converted_value_b = $raw_value_b as i16; let result: i16 = $expression; result as u16 as u64 },
+            BitWidth::Width32 => { let $converted_value_a = $raw_value_a as i32; let $converted_value_b = $raw_value_b as i32; let result: i32 = $expression; result as u32 as u64 },
+            BitWidth::Width64 => { let $converted_value_a = $raw_value_a as i64; let $converted_value_b = $raw_value_b as i64; let result: i64 = $expression; result as u64 as u64 },
+        }
+    };
+    ($value_type:expr, $raw_value_a:expr, $raw_value_b:expr, |$converted_value_a:ident, $converted_value_b:ident| $expression:expr, unsigned) => {
+        match $value_type.bit_width {
+            BitWidth::Width8 =>  { let $converted_value_a = $raw_value_a as u8 ; let $converted_value_b = $raw_value_b as u8 ; let result: u8  = $expression; result as u64 },
+            BitWidth::Width16 => { let $converted_value_a = $raw_value_a as u16; let $converted_value_b = $raw_value_b as u16; let result: u16 = $expression; result as u64 },
+            BitWidth::Width32 => { let $converted_value_a = $raw_value_a as u32; let $converted_value_b = $raw_value_b as u32; let result: u32 = $expression; result as u64 },
+            BitWidth::Width64 => { let $converted_value_a = $raw_value_a as u64; let $converted_value_b = $raw_value_b as u64; let result: u64 = $expression; result as u64 },
+        }
+    };
+    ($value_type:expr, $raw_value_a:expr, $raw_value_b:expr, |$converted_value_a:ident, $converted_value_b:ident| $expression:expr, mixed) => {
+        match $value_type.signedness {
+            IntegerSignedness::Signed =>   map_integral_value!($value_type, $raw_value_a, $raw_value_b, |$converted_value_a, $converted_value_b| $expression, signed  ),
+            IntegerSignedness::Unsigned => map_integral_value!($value_type, $raw_value_a, $raw_value_b, |$converted_value_a, $converted_value_b| $expression, unsigned),
+        }
+    };
+}
+impl IntegralType {
+    /// Casts integer value from one integral type to another integral type
+    /// This follows rust native cast semantics:
+    /// - casting from larger type to a smaller type results in truncation (regardless of signedness of either operand)
+    /// - casting from smaller signed type to larger type results in sign extension
+    /// - casting from smaller unsigned type to larger type results in zero extension
+    pub fn cast_integral_value(value: u64, from_type: &IntegralType, to_type: &IntegralType) -> u64 {
+        match from_type.signedness {
+            IntegerSignedness::Signed => match from_type.bit_width {
+                BitWidth::Width8  => implement_integer_cast_block!(value, to_type, i8 ),
+                BitWidth::Width16 => implement_integer_cast_block!(value, to_type, i16),
+                BitWidth::Width32 => implement_integer_cast_block!(value, to_type, i32),
+                BitWidth::Width64 => implement_integer_cast_block!(value, to_type, i64),
+            },
+            IntegerSignedness::Unsigned => match from_type.bit_width {
+                BitWidth::Width8  => implement_integer_cast_block!(value, to_type, u8 ),
+                BitWidth::Width16 => implement_integer_cast_block!(value, to_type, u16),
+                BitWidth::Width32 => implement_integer_cast_block!(value, to_type, u32),
+                BitWidth::Width64 => implement_integer_cast_block!(value, to_type, u64),
+            }
+        }
+    }
+    /// Returns true if the given integral value fits within the given integral type range
+    #[allow(unused_comparisons)]
+    pub fn can_fit_integral_value(value: u64, value_type: &IntegralType, check_fit_type: &IntegralType) -> bool {
+        match value_type.signedness {
+            IntegerSignedness::Signed => match value_type.bit_width {
+                BitWidth::Width8  => implement_integer_fit_check_block!(value, check_fit_type, i8 ),
+                BitWidth::Width16 => implement_integer_fit_check_block!(value, check_fit_type, i16),
+                BitWidth::Width32 => implement_integer_fit_check_block!(value, check_fit_type, i32),
+                BitWidth::Width64 => implement_integer_fit_check_block!(value, check_fit_type, i64),
+            },
+            IntegerSignedness::Unsigned => match value_type.bit_width {
+                BitWidth::Width8  => implement_integer_fit_check_block!(value, check_fit_type, u8 ),
+                BitWidth::Width16 => implement_integer_fit_check_block!(value, check_fit_type, u16),
+                BitWidth::Width32 => implement_integer_fit_check_block!(value, check_fit_type, u32),
+                BitWidth::Width64 => implement_integer_fit_check_block!(value, check_fit_type, u64),
+            }
+        }
+    }
+}
+
 /// Represents a primitive type with a target-dependent or fixed size
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, EnumString, Display)]
 pub enum PrimitiveType {
@@ -270,44 +426,71 @@ pub enum PrimitiveType {
     Char32,
 }
 impl PrimitiveType {
-    /// Returns true if this primitive type is integral. All primitive types except for float, double and void are integral
-    pub fn is_integral(self) -> bool {
-        self != PrimitiveType::Void && self != PrimitiveType::Float && self != PrimitiveType::Double
+    /// Returns true if this primitive type is sizeless
+    pub fn is_sizeless(self) -> bool {
+        self == PrimitiveType::Void
     }
     /// Returns true if this primitive type is floating point
     pub fn is_floating_point(self) -> bool {
         self == PrimitiveType::Float || self == PrimitiveType::Double
     }
-    /// Returns true if this primitive type is a signed integral type
-    pub fn is_signed(self) -> bool {
-        self == PrimitiveType::Char || self == PrimitiveType::ShortInt || self == PrimitiveType::Int || self == PrimitiveType::LongInt || self == PrimitiveType::LongLongInt
+    /// Returns true if this primitive type is integral. All primitive types except for float, double and void are integral
+    pub fn is_integral(self) -> bool {
+        self.integer_signedness().is_some()
     }
-    /// Returns true if this primitive type is sizeless
-    pub fn is_sizeless(self) -> bool {
-        self == PrimitiveType::Void
+    /// Returns the sign of this type if this type is an integral type. This will return None for floating point and non-integral types
+    pub fn integer_signedness(self) -> Option<IntegerSignedness> {
+        match self {
+            PrimitiveType::Char => Some(IntegerSignedness::Signed),
+            PrimitiveType::UnsignedChar => Some(IntegerSignedness::Unsigned),
+            PrimitiveType::WideChar => Some(IntegerSignedness::Unsigned),
+            PrimitiveType::ShortInt => Some(IntegerSignedness::Signed),
+            PrimitiveType::UnsignedShortInt => Some(IntegerSignedness::Unsigned),
+            PrimitiveType::Int => Some(IntegerSignedness::Signed),
+            PrimitiveType::UnsignedInt => Some(IntegerSignedness::Unsigned),
+            PrimitiveType::Bool => Some(IntegerSignedness::Unsigned),
+            PrimitiveType::LongInt => Some(IntegerSignedness::Signed),
+            PrimitiveType::UnsignedLongInt => Some(IntegerSignedness::Unsigned),
+            PrimitiveType::LongLongInt => Some(IntegerSignedness::Signed),
+            PrimitiveType::UnsignedLongLongInt => Some(IntegerSignedness::Unsigned),
+            PrimitiveType::Char8 => Some(IntegerSignedness::Unsigned),
+            PrimitiveType::Char16 => Some(IntegerSignedness::Unsigned),
+            PrimitiveType::Char32 => Some(IntegerSignedness::Unsigned),
+            _ => None
+        }
+    }
+    /// Returns the bit width of this type. Will return None for sizeless types (e.g. void)
+    pub fn bit_width(self, target_triplet: &TargetTriplet) -> Option<BitWidth> {
+        match self {
+            PrimitiveType::Void => None,
+            PrimitiveType::Char => Some(BitWidth::Width8),
+            PrimitiveType::UnsignedChar => Some(BitWidth::Width8),
+            PrimitiveType::WideChar => Some(target_triplet.wide_char_size()),
+            PrimitiveType::ShortInt => Some(BitWidth::Width16),
+            PrimitiveType::UnsignedShortInt => Some(BitWidth::Width16),
+            PrimitiveType::Int => Some(BitWidth::Width32),
+            PrimitiveType::UnsignedInt => Some(BitWidth::Width32),
+            PrimitiveType::Float => Some(BitWidth::Width32),
+            PrimitiveType::Double => Some(BitWidth::Width64),
+            PrimitiveType::Bool => Some(BitWidth::Width8),
+            PrimitiveType::LongInt => Some(target_triplet.long_size()),
+            PrimitiveType::UnsignedLongInt => Some(target_triplet.long_size()),
+            PrimitiveType::LongLongInt => Some(BitWidth::Width64),
+            PrimitiveType::UnsignedLongLongInt => Some(BitWidth::Width64),
+            PrimitiveType::Char8 => Some(BitWidth::Width8),
+            PrimitiveType::Char16 => Some(BitWidth::Width16),
+            PrimitiveType::Char32 => Some(BitWidth::Width32),
+        }
+    }
+    /// Converts this primitive type to integral type value with resolved bit width and signedness for the given target triplet. Returns None if type is not an integral type
+    pub fn to_integral_type(self, target_triplet: &TargetTriplet) -> Option<IntegralType> {
+        let bit_width = self.bit_width(target_triplet)?;
+        let signedness = self.integer_signedness()?;
+        Some(IntegralType{bit_width, signedness})
     }
     /// Returns the size and the alignment of this type for the given target triplet
     pub fn size_and_alignment(self, target_triplet: &TargetTriplet) -> anyhow::Result<usize> {
-        match self {
-            PrimitiveType::Void => Err(anyhow!("Void type is sizeless")),
-            PrimitiveType::Char => Ok(1),
-            PrimitiveType::UnsignedChar => Ok(1),
-            PrimitiveType::WideChar => Ok(target_triplet.wide_char_size()),
-            PrimitiveType::ShortInt => Ok(2),
-            PrimitiveType::UnsignedShortInt => Ok(2),
-            PrimitiveType::Int => Ok(4),
-            PrimitiveType::UnsignedInt => Ok(4),
-            PrimitiveType::Float => Ok(4),
-            PrimitiveType::Double => Ok(8),
-            PrimitiveType::Bool => Ok(1),
-            PrimitiveType::LongInt => Ok(target_triplet.long_size()),
-            PrimitiveType::UnsignedLongInt => Ok(target_triplet.long_size()),
-            PrimitiveType::LongLongInt => Ok(8),
-            PrimitiveType::UnsignedLongLongInt => Ok(8),
-            PrimitiveType::Char8 => Ok(1),
-            PrimitiveType::Char16 => Ok(2),
-            PrimitiveType::Char32 => Ok(4),
-        }
+        Ok(self.bit_width(target_triplet).ok_or_else(|| anyhow!("Void type is sizeless"))?.value_in_bytes())
     }
 }
 
@@ -774,10 +957,12 @@ pub enum EnumKind {
 pub struct EnumConstant {
     /// Name of the enum constant
     pub name: Option<String>,
-    /// Value of the enum constant
-    pub value: u64,
-    /// True if the value is signed (generally that means that the constant has a negative sign)
-    pub is_signed: bool,
+    /// Raw value of the enum constant. Note that this is zero-extended to 64 bits, even for signed values, never sign-extended
+    /// This value is also not validated against the underlying type and can be different from the actual value in case of implicit narrowing occuring
+    /// For actual value, use EnumType.constant_value
+    pub raw_value: u64,
+    /// Integral type of this enum constant
+    pub integral_type: IntegralType,
 }
 
 /// Represents an enumeration type (enum or enum class)
@@ -787,13 +972,12 @@ pub struct EnumType {
     pub kind: EnumKind,
     /// Name of this enum type
     pub name: Option<String>,
-    /// Primitive type for this enumeration, if specified
+    /// Primitive type for this enumeration, if specified. This must be an integral type
     pub underlying_type: Option<PrimitiveType>,
     /// All constants defined as a part of this enum
     pub constants: Vec<EnumConstant>,
 }
 impl EnumType {
-
     /// Calculates the underlying type for the enum type if it can be known without target triplet and full constant value set
     pub fn underlying_type_no_target_no_constants(&self) -> Option<PrimitiveType> {
         if let Some(explicit_underlying_type) = self.underlying_type {
@@ -804,6 +988,14 @@ impl EnumType {
             Some(PrimitiveType::Int)
         } else { None }
     }
+    /// Returns the default integral type for the constant given the target triplet
+    pub fn default_constant_integral_type(&self, target_triplet: &TargetTriplet) -> anyhow::Result<IntegralType> {
+        // default type for unscoped enumerations is int on MSVC and unsigned int for everything else
+        let underlying_type = self.underlying_type_no_target_no_constants()
+            .unwrap_or(if target_triplet.env == TargetEnvironment::MSVC { PrimitiveType::Int } else { PrimitiveType::UnsignedInt });
+        underlying_type.to_integral_type(target_triplet)
+            .ok_or_else(|| anyhow!("Underlying enum type {} is not an integral type", underlying_type))
+    }
     /// Calculates the underlying type for the enum type. This relies on platform specific logic for unscoped enums
     pub fn underlying_type(&self, target_triplet: &TargetTriplet) -> anyhow::Result<PrimitiveType> {
         if let Some(explicit_underlying_type) = self.underlying_type {
@@ -813,31 +1005,50 @@ impl EnumType {
         if self.kind == EnumKind::Scoped || target_triplet.env == TargetEnvironment::MSVC {
             return Ok(PrimitiveType::Int);
         }
-        // Unscoped enums under gnu convention pick the smallest type possible that can represent all constants, preferring unsigned types
-        let mut has_signed_constants = false;
-        let mut has_any_64bit_constants = false;
-        let mut has_any_32bit_unsigned_constants_that_will_overflow_if_signed = false;
+        // Unscoped enums under gnu convention pick int if all values (ignoring their types) fit within 32 bits, and long int if there are 64-bit values.
+        // Unsigned types are picked if there are no signed constants with values below 0
+        let mut can_fit_within_i32 = false;
+        let mut can_fit_within_u32 = false;
+        let mut can_fit_within_i64 = false;
+        let mut can_fit_within_u64 = false;
+
         for constant in &self.constants {
-            has_signed_constants |= constant.is_signed;
-            if constant.is_signed {
-                let signed_value = constant.value as i64;
-                has_any_64bit_constants |= signed_value < i32::MIN as i64 || signed_value > i32::MAX as i64;
-            } else {
-                has_any_64bit_constants |= constant.value > u32::MAX as u64;
-                has_any_32bit_unsigned_constants_that_will_overflow_if_signed |= constant.value > i32::MAX as u64;
-            }
+            can_fit_within_i32 |= IntegralType::can_fit_integral_value(constant.raw_value, &constant.integral_type, &IntegralType{bit_width: BitWidth::Width32, signedness: IntegerSignedness::Signed});
+            can_fit_within_u32 |= IntegralType::can_fit_integral_value(constant.raw_value, &constant.integral_type, &IntegralType{bit_width: BitWidth::Width32, signedness: IntegerSignedness::Unsigned});
+            can_fit_within_i64 |= IntegralType::can_fit_integral_value(constant.raw_value, &constant.integral_type, &IntegralType{bit_width: BitWidth::Width64, signedness: IntegerSignedness::Signed});
+            can_fit_within_u64 |= IntegralType::can_fit_integral_value(constant.raw_value, &constant.integral_type, &IntegralType{bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned});
         }
-        let result_primitive_type = if has_signed_constants {
-            if has_any_64bit_constants || has_any_32bit_unsigned_constants_that_will_overflow_if_signed { PrimitiveType::LongInt } else { PrimitiveType::Int }
+        if can_fit_within_u32 {
+            Ok(PrimitiveType::UnsignedInt)
+        } else if can_fit_within_i32 {
+            Ok(PrimitiveType::Int)
+        } else if can_fit_within_u64 {
+            Ok(PrimitiveType::UnsignedLongInt)
+        } else if can_fit_within_i64 {
+            Ok(PrimitiveType::LongInt)
         } else {
-            if has_any_64bit_constants { PrimitiveType::UnsignedLongInt } else { PrimitiveType::UnsignedInt }
-        };
-        Ok(result_primitive_type)
+            Err(anyhow!("Cannot find an integral type capable of storing values of all constants"))
+        }
     }
     /// Returns the size and alignment of this enum type
     pub fn size_and_alignment(&self, target_triplet: &TargetTriplet) -> anyhow::Result<(usize, usize)> {
         let size_and_alignment = self.underlying_type(target_triplet)?.size_and_alignment(target_triplet)?;
         Ok((size_and_alignment, size_and_alignment))
+    }
+    /// Calculates the value of the constant using the underlying type of the enum for the given target triplet
+    pub fn constant_value(&self, constant: &EnumConstant, target_triplet: &TargetTriplet) -> anyhow::Result<u64> {
+        let underlying_type = self.underlying_type(target_triplet)?;
+        let underlying_integral_type = underlying_type.to_integral_type(target_triplet)
+            .ok_or_else(|| anyhow!("Underlying enum type {} is not an integral type", underlying_type))?;
+
+        // Non-MSVC targets actually make sure that no data is lost and no signed negative value to unsigned value conversion occurs
+        // MSVC just implicitly performs narrowing conversion and signed-to-unsigned conversion
+        if target_triplet.env != TargetEnvironment::MSVC {
+            if !IntegralType::can_fit_integral_value(constant.raw_value, &constant.integral_type, &underlying_integral_type) {
+                bail!("Constant value of of range of underlying enumeration type");
+            }
+        }
+        Ok(IntegralType::cast_integral_value(constant.raw_value, &constant.integral_type, &underlying_integral_type))
     }
 }
 

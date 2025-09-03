@@ -10,7 +10,7 @@ use gospel_vm::writer::{GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceF
 use std::str::FromStr;
 use itertools::Itertools;
 use gospel_vm::reader::{GospelFunctionData};
-use crate::lex_util::get_line_number_and_offset_from_index;
+use crate::lex_util::{get_line_number_and_offset_from_index, parse_integer_literal, ParsedIntegerLiteral};
 
 #[derive(Debug, Clone, PartialEq, Eq, Display)]
 enum AssemblerIdentifier {
@@ -18,14 +18,6 @@ enum AssemblerIdentifier {
     Local(String),
     #[strum(to_string = "{container_name}::{local_name}")]
     Qualified{container_name: String, local_name: String},
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AssemblerIntegerLiteral {
-    // Note that this value is zero-extended to 64 bits, even if it is signed
-    raw_value: u64,
-    is_signed: bool,
-    bit_width: usize,
 }
 
 #[derive(Logos, Debug, Clone, PartialEq, Display)]
@@ -74,7 +66,7 @@ enum AssemblerToken {
     Identifier(AssemblerIdentifier),
     #[regex("(?:-?(?:0x[A-Za-z0-9]+)|-?(?:(?:[1-9]+[0-9]*)|0))(?:(?:u|i)(?:8|16|32|64))?", parse_decimal_or_hex_integer_literal)]
     #[strum(to_string = "integer literal")]
-    IntegerLiteral(AssemblerIntegerLiteral),
+    IntegerLiteral(ParsedIntegerLiteral),
     #[regex("(?:\"(?:[^\"\\\\]|(?:\\\\\")|(?:\\\\\\\\))*\")", parse_string_literal)]
     #[strum(to_string = "string literal")]
     StringLiteral(String),
@@ -93,105 +85,8 @@ fn parse_string_literal(lex: &mut Lexer<AssemblerToken>) -> Option<String> {
     let raw_literal: &str = lex.slice();
     Some(raw_literal[1..(raw_literal.len() - 1)].replace("\\\\", "\\"))
 }
-fn parse_decimal_or_hex_integer_literal(lex: &mut Lexer<AssemblerToken>) -> Option<AssemblerIntegerLiteral> {
-    let mut string_slice: &str = lex.slice();
-    if string_slice.ends_with("i64") {
-        string_slice = &string_slice[0..string_slice.len() - 3];
-        let mut sign_multiplier = 1;
-        if string_slice.starts_with('-') {
-            string_slice = &string_slice[1..];
-            sign_multiplier = -1;
-        }
-        if string_slice.starts_with("0x") {
-            string_slice = &string_slice[2..];
-            i64::from_str_radix(string_slice, 16).ok()
-        } else {
-            i64::from_str_radix(string_slice, 10).ok()
-        }.map(|x| AssemblerIntegerLiteral{raw_value: (x * sign_multiplier) as u64, is_signed: true, bit_width: 64})
-    } else if string_slice.ends_with("i32") {
-        string_slice = &string_slice[0..string_slice.len() - 3];
-        let mut sign_multiplier = 1;
-        if string_slice.starts_with('-') {
-            string_slice = &string_slice[1..];
-            sign_multiplier = -1;
-        }
-        if string_slice.starts_with("0x") {
-            string_slice = &string_slice[2..];
-            i32::from_str_radix(string_slice, 16).ok()
-        } else {
-            i32::from_str_radix(string_slice, 10).ok()
-        }.map(|x| AssemblerIntegerLiteral{raw_value: (x * sign_multiplier) as u32 as u64, is_signed: true, bit_width: 32})
-    } else if string_slice.ends_with("i16") {
-        string_slice = &string_slice[0..string_slice.len() - 3];
-        let mut sign_multiplier = 1;
-        if string_slice.starts_with('-') {
-            string_slice = &string_slice[1..];
-            sign_multiplier = -1;
-        }
-        if string_slice.starts_with("0x") {
-            string_slice = &string_slice[2..];
-            i16::from_str_radix(string_slice, 16).ok()
-        } else {
-            i16::from_str_radix(string_slice, 10).ok()
-        }.map(|x| AssemblerIntegerLiteral{raw_value: (x * sign_multiplier) as u16 as u64, is_signed: true, bit_width: 16})
-    } else if string_slice.ends_with("i8") {
-        string_slice = &string_slice[0..string_slice.len() - 2];
-        let mut sign_multiplier = 1;
-        if string_slice.starts_with('-') {
-            string_slice = &string_slice[1..];
-            sign_multiplier = -1;
-        }
-        if string_slice.starts_with("0x") {
-            string_slice = &string_slice[2..];
-            i8::from_str_radix(string_slice, 16).ok()
-        } else {
-            i8::from_str_radix(string_slice, 10).ok()
-        }.map(|x| AssemblerIntegerLiteral{raw_value: (x * sign_multiplier) as u8 as u64, is_signed: true, bit_width: 8})
-    } else if string_slice.ends_with("u64") {
-        string_slice = &string_slice[0..string_slice.len() - 3];
-        if string_slice.starts_with("0x") {
-            string_slice = &string_slice[2..];
-            u64::from_str_radix(string_slice, 16).ok()
-        } else {
-            u64::from_str_radix(string_slice, 10).ok()
-        }.map(|x| AssemblerIntegerLiteral{raw_value: x, is_signed: false, bit_width: 64})
-    } else if string_slice.ends_with("u32") {
-        string_slice = &string_slice[0..string_slice.len() - 3];
-        if string_slice.starts_with("0x") {
-            string_slice = &string_slice[2..];
-            u32::from_str_radix(string_slice, 16).ok()
-        } else {
-            u32::from_str_radix(string_slice, 10).ok()
-        }.map(|x| AssemblerIntegerLiteral{raw_value: x as u64, is_signed: false, bit_width: 32})
-    } else if string_slice.ends_with("u16") {
-        string_slice = &string_slice[0..string_slice.len() - 3];
-        if string_slice.starts_with("0x") {
-            string_slice = &string_slice[2..];
-            u16::from_str_radix(string_slice, 16).ok()
-        } else {
-            u16::from_str_radix(string_slice, 10).ok()
-        }.map(|x| AssemblerIntegerLiteral{raw_value: x as u64, is_signed: false, bit_width: 16})
-    } else if string_slice.ends_with("u8") {
-        string_slice = &string_slice[0..string_slice.len() - 2];
-        if string_slice.starts_with("0x") {
-            string_slice = &string_slice[2..];
-            u8::from_str_radix(string_slice, 16).ok()
-        } else {
-            u8::from_str_radix(string_slice, 10).ok()
-        }.map(|x| AssemblerIntegerLiteral{raw_value: x as u64, is_signed: false, bit_width: 8})
-    } else {
-        let mut sign_multiplier = 1;
-        if string_slice.starts_with('-') {
-            string_slice = &string_slice[1..];
-            sign_multiplier = -1;
-        }
-        if string_slice.starts_with("0x") {
-            string_slice = &string_slice[2..];
-            i32::from_str_radix(string_slice, 16).ok()
-        } else {
-            i32::from_str_radix(string_slice, 10).ok()
-        }.map(|x| AssemblerIntegerLiteral{raw_value: (x * sign_multiplier) as u32 as u64, is_signed: true, bit_width: 32})
-    }
+fn parse_decimal_or_hex_integer_literal(lex: &mut Lexer<AssemblerToken>) -> Option<ParsedIntegerLiteral> {
+    parse_integer_literal(lex.slice())
 }
 
 struct GospelLexerContext<'a> {

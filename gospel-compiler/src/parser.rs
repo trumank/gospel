@@ -1,6 +1,6 @@
 ﻿use std::collections::HashMap;
-use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ImportStatement, ModuleImportStatementType, ModuleSourceFile, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, BuiltinIdentifier, BuiltinIdentifierExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression, MemberFunctionDeclaration, FunctionParameterDeclaration, TopLevelDeclaration, EnumStatement, EnumConstantDeclaration};
-use crate::lex_util::get_line_number_and_offset_from_index;
+use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ImportStatement, ModuleImportStatementType, ModuleSourceFile, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, BuiltinIdentifier, BuiltinIdentifierExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression, MemberFunctionDeclaration, FunctionParameterDeclaration, TopLevelDeclaration, EnumStatement, EnumConstantDeclaration, BoolConstantExpression, StaticCastExpression};
+use crate::lex_util::{get_line_number_and_offset_from_index, parse_integer_literal, ParsedIntegerLiteral};
 use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
 use std::fmt::{Display, Formatter};
@@ -8,7 +8,7 @@ use strum::Display;
 use fancy_regex::{Captures, Regex};
 use itertools::Itertools;
 use crate::ast::ExpressionWithCondition;
-use gospel_typelib::type_model::{EnumKind, PrimitiveType, UserDefinedTypeKind};
+use gospel_typelib::type_model::{BitWidth, EnumKind, IntegerSignedness, IntegralType, PrimitiveType, UserDefinedTypeKind};
 
 #[derive(Logos, Debug, Clone, PartialEq, Display)]
 #[logos(skip r"[ \r\t\n\u{feff}]+")]
@@ -163,6 +163,9 @@ enum CompilerToken {
     #[token("short")]
     #[strum(to_string = "short")]
     PrimitiveModifierShort,
+    #[token("static_cast")]
+    #[strum(to_string = "static_cast")]
+    StaticCast,
     #[token("~")]
     #[strum(to_string = "~")]
     BitwiseInverse,
@@ -263,30 +266,22 @@ enum CompilerToken {
     #[regex("[A-Za-z][A-Za-z0-9_$]*", parse_identifier)]
     #[strum(to_string = "identifier")]
     Identifier(String),
-    #[regex("-?(?:0x[A-Fa-f0-9]+)|(?:0b[0-1]+)|(?:(?:[1-9]+[0-9]*)|0)", parse_integer_literal)]
+    #[regex("(?:-?(?:0x[A-Fa-f0-9]+)|(?:0b[0-1]+)|(?:(?:[1-9]+[0-9]*)|0))(?:(?:u|i)(?:8|16|32|64))?", parser_parse_integer_literal)]
     #[strum(to_string = "integer literal")]
-    IntegerLiteral(i32),
+    IntegerLiteral(ParsedIntegerLiteral),
+    #[token("true")]
+    #[strum(to_string = "true")]
+    BoolLiteralTrue,
+    #[token("false")]
+    #[strum(to_string = "false")]
+    BoolLiteralFalse,
 }
 fn parse_identifier(lex: &mut Lexer<CompilerToken>) -> Option<String> {
     let identifier_slice = lex.slice();
     Some(identifier_slice.to_string())
 }
-fn parse_integer_literal(lex: &mut Lexer<CompilerToken>) -> Option<i32> {
-    let mut string_slice: &str = lex.slice();
-    let mut sign_multiplier = 1;
-    if string_slice.starts_with('-') {
-        string_slice = &string_slice[1..];
-        sign_multiplier = -1;
-    }
-    if string_slice.starts_with("0x") {
-        string_slice = &string_slice[2..];
-        i32::from_str_radix(string_slice, 16).ok().map(|x| x * sign_multiplier)
-    } else if string_slice.starts_with("0b") {
-        string_slice = &string_slice[2..];
-        i32::from_str_radix(string_slice, 2).ok().map(|x| x * sign_multiplier)
-    } else {
-        i32::from_str_radix(string_slice, 10).ok().map(|x| x * sign_multiplier)
-    }
+fn parser_parse_integer_literal(lex: &mut Lexer<CompilerToken>) -> Option<ParsedIntegerLiteral> {
+    parse_integer_literal(lex.slice())
 }
 
 #[derive(Debug, Clone)]
@@ -317,7 +312,6 @@ impl<'a> CompilerLexerContext<'a> {
     fn fail<T: AsRef<str>>(&self, error: T) -> anyhow::Error {
         anyhow!("{} {}", error.as_ref(), self.context_str())
     }
-
     fn peek_or_eof_with_context(&mut self) -> anyhow::Result<Option<CompilerTokenWithContext<'a>>> {
         if let Some(next_token) = &self.buffered_next_token {
             Ok(next_token.clone())
@@ -541,11 +535,56 @@ impl<'a> CompilerParserInstance<'a> {
     fn take_parse_case(self) -> ExactParseCase<'a, ()> {
         ExactParseCase{ parser: self, data: () }
     }
-    fn parse_expression_value_type(&mut self, token: CompilerToken) -> anyhow::Result<ExpressionValueType> {
-        match token {
-            CompilerToken::PrimitiveTypeInt => Ok(ExpressionValueType::Int),
-            CompilerToken::Typename => Ok(ExpressionValueType::Typename),
-            _ => Err(self.ctx.fail(format!("Expected int or typename, got {}", token))),
+    fn parse_expression_integral_value_type(&mut self, signedness: IntegerSignedness) -> anyhow::Result<ExpressionValueType> {
+        let first_token = self.ctx.peek_or_eof()?;
+        if first_token == Some(CompilerToken::PrimitiveTypeChar) {
+            self.ctx.discard_next()?;
+            Ok(ExpressionValueType::Integer(IntegralType {bit_width: BitWidth::Width8, signedness}))
+        } else if first_token == Some(CompilerToken::PrimitiveModifierShort) {
+            self.ctx.discard_next()?;
+            if self.ctx.peek_or_eof()? == Some(CompilerToken::PrimitiveTypeInt) {
+                self.ctx.discard_next()?;
+            }
+            Ok(ExpressionValueType::Integer(IntegralType {bit_width: BitWidth::Width16, signedness}))
+        } else if first_token == Some(CompilerToken::PrimitiveModifierLong) {
+            self.ctx.discard_next()?;
+            let second_token = self.ctx.peek_or_eof()?;
+            if second_token == Some(CompilerToken::PrimitiveModifierLong) {
+                self.ctx.discard_next()?;
+                if self.ctx.peek_or_eof()? == Some(CompilerToken::PrimitiveTypeInt) {
+                    self.ctx.discard_next()?;
+                }
+                Ok(ExpressionValueType::Integer(IntegralType {bit_width: BitWidth::Width64, signedness}))
+            } else {
+                if self.ctx.peek_or_eof()? == Some(CompilerToken::PrimitiveTypeInt) {
+                    self.ctx.discard_next()?;
+                }
+                // long int and long long int are both 64-bit for gospel integral types
+                Ok(ExpressionValueType::Integer(IntegralType {bit_width: BitWidth::Width64, signedness}))
+            }
+        } else if self.ctx.peek_or_eof()? == Some(CompilerToken::PrimitiveTypeInt) || signedness == IntegerSignedness::Unsigned {
+            if self.ctx.peek_or_eof()? == Some(CompilerToken::PrimitiveTypeInt) {
+                self.ctx.discard_next()?;
+            }
+            Ok(ExpressionValueType::Integer(IntegralType {bit_width: BitWidth::Width32, signedness}))
+        } else {
+            Err(self.ctx.fail(format!("Expected unsigned, long, short, int, char, bool, typename or class, got {}",
+                first_token.map(|x| x.to_string()).unwrap_or(String::from("<EOF>")))))
+        }
+    }
+    fn parse_expression_value_type(&mut self) -> anyhow::Result<ExpressionValueType> {
+        let first_token = self.ctx.peek()?;
+        if first_token == CompilerToken::Typename || first_token == CompilerToken::Class {
+            self.ctx.discard_next()?;
+            Ok(ExpressionValueType::Typename)
+        } else if first_token == CompilerToken::PrimitiveTypeBool {
+            self.ctx.discard_next()?;
+            Ok(ExpressionValueType::Bool)
+        } else if first_token == CompilerToken::PrimitiveModifierUnsigned {
+            self.ctx.discard_next()?;
+            self.parse_expression_integral_value_type(IntegerSignedness::Unsigned)
+        } else {
+            self.parse_expression_integral_value_type(IntegerSignedness::Signed)
         }
     }
     fn parse_partial_identifier(&mut self) -> anyhow::Result<PartialIdentifier> {
@@ -685,9 +724,24 @@ impl<'a> CompilerParserInstance<'a> {
         let integer_constant_token = self.ctx.next()?;
         let source_context = self.ctx.source_context();
         if let CompilerToken::IntegerLiteral(literal_value) = integer_constant_token {
-            let result_expression = IntegerConstantExpression{ constant_value: literal_value, source_context };
+            let bit_width = match literal_value.bit_width {
+                8 => BitWidth::Width8,
+                16 => BitWidth::Width16,
+                32 => BitWidth::Width32,
+                64 => BitWidth::Width64,
+                _ => { return Err(self.ctx.fail("Invalid integer literal bit width".to_string())); }
+            };
+            let signedness = if literal_value.is_signed { IntegerSignedness::Signed } else { IntegerSignedness::Unsigned };
+            let constant_type = IntegralType {bit_width, signedness};
+            let result_expression = IntegerConstantExpression{ raw_constant_value: literal_value.raw_value, constant_type, source_context };
             Ok(AmbiguousExpression::unambiguous(self, Expression::IntegerConstantExpression(Box::new(result_expression))))
         } else { Err(self.ctx.fail(format!("Expected integer literal, got {}", integer_constant_token))) }
+    }
+    fn parse_bool_constant(mut self, literal_value: bool) -> anyhow::Result<AmbiguousExpression<'a>> {
+        self.ctx.discard_next()?;
+        let source_context = self.ctx.source_context();
+        let result_expression = BoolConstantExpression{bool_value: literal_value, source_context};
+        Ok(AmbiguousExpression::unambiguous(self, Expression::BoolConstantExpression(Box::new(result_expression))))
     }
     fn parse_ambiguous_expression_list<T: Clone, S: Fn(&mut Self) -> anyhow::Result<(T, bool)>>(self, terminator_token: CompilerToken, prefix_parser: S) -> anyhow::Result<AmbiguousParsingResult<'a, Vec<(T, Option<Expression>)>>> {
         self.parse_ambiguous_expression_list_extended(terminator_token, |mut parser| {
@@ -825,6 +879,27 @@ impl<'a> CompilerParserInstance<'a> {
             let sub_expression_exit_token = parser.ctx.next()?;
             parser.ctx.check_token(sub_expression_exit_token, CompilerToken::SubExpressionEnd)?;
             Ok(AmbiguousExpression::unambiguous(parser, expression))
+        })
+    }
+    fn parse_static_cast_expression(mut self) -> anyhow::Result<AmbiguousExpression<'a>> {
+        self.ctx.discard_next()?;
+        let source_context = self.ctx.source_context();
+
+        let cast_target_type_entry_token = self.ctx.next()?;
+        self.ctx.check_token(cast_target_type_entry_token, CompilerToken::LessOrArgumentListStart)?;
+        let cast_target_type = self.parse_expression_value_type()?;
+        let cast_target_type_exit_token = self.ctx.next()?;
+        self.ctx.check_token(cast_target_type_exit_token, CompilerToken::MoreOrArgumentListEnd)?;
+
+        let sub_expression_entry_token = self.ctx.next()?;
+        self.ctx.check_token(sub_expression_entry_token, CompilerToken::SubExpressionStart)?;
+        self.parse_complete_expression()?
+        .flat_map_result(|mut parser, expression| {
+            let sub_expression_exit_token = parser.ctx.next()?;
+            parser.ctx.check_token(sub_expression_exit_token, CompilerToken::SubExpressionEnd)?;
+
+            let result_expression = StaticCastExpression{cast_expression: expression, target_type: cast_target_type.clone(), source_context: source_context.clone()};
+            Ok(AmbiguousExpression::unambiguous(parser, Expression::StaticCastExpression(Box::new(result_expression))))
         })
     }
     fn parse_conditional_expression(mut self) -> anyhow::Result<AmbiguousExpression<'a>> {
@@ -973,9 +1048,7 @@ impl<'a> CompilerParserInstance<'a> {
     }
     fn parse_local_var_statement(mut self) -> anyhow::Result<ExactStatementCase<'a>> {
         self.ctx.discard_next()?;
-
-        let value_type_token = self.ctx.next()?;
-        let value_type = self.parse_expression_value_type(value_type_token)?;
+        let value_type = self.parse_expression_value_type()?;
 
         let source_context = self.ctx.source_context();
         let variable_name_token = self.ctx.next()?;
@@ -988,14 +1061,14 @@ impl<'a> CompilerParserInstance<'a> {
                 let terminator_token = parser.ctx.next()?;
                 parser.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
 
-                let result_statement = DeclarationStatement { source_context: source_context.clone(), value_type, name: name.clone(), initializer: Some(initializer_expression) };
+                let result_statement = DeclarationStatement { source_context: source_context.clone(), value_type: value_type.clone(), name: name.clone(), initializer: Some(initializer_expression) };
                 Ok(AmbiguousParsingResult::unambiguous(parser, Statement::DeclarationStatement(Box::new(result_statement))))
             })?.disambiguate()
         } else {
             let terminator_token = self.ctx.next()?;
             self.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
 
-            let result_statement = DeclarationStatement { source_context: source_context.clone(), value_type, name, initializer: None };
+            let result_statement = DeclarationStatement { source_context: source_context.clone(), value_type: value_type.clone(), name, initializer: None };
             Ok(ExactStatementCase::create(self, Statement::DeclarationStatement(Box::new(result_statement))))
         }
     }
@@ -1195,6 +1268,8 @@ impl<'a> CompilerParserInstance<'a> {
         let first_expression_token = self.ctx.peek()?;
         match first_expression_token {
             CompilerToken::IntegerLiteral(_) => self.parse_integer_constant(),
+            CompilerToken::BoolLiteralTrue => self.parse_bool_constant(true),
+            CompilerToken::BoolLiteralFalse => self.parse_bool_constant(false),
             CompilerToken::Identifier(_) => self.parse_ambiguous_identifier_expression(),
             CompilerToken::Sizeof => self.parse_bracketed_unary_operator_expression(UnaryOperator::StructSizeOf),
             CompilerToken::Alignof => self.parse_bracketed_unary_operator_expression(UnaryOperator::StructAlignOf),
@@ -1219,15 +1294,14 @@ impl<'a> CompilerParserInstance<'a> {
             CompilerToken::PrimitiveModifierUnsigned => self.parse_unsigned_primitive_type_expression(),
             CompilerToken::PrimitiveModifierShort => self.parse_short_primitive_type_expression(),
             CompilerToken::PrimitiveModifierLong => self.parse_long_primitive_type_expression(),
+            CompilerToken::StaticCast => self.parse_static_cast_expression(),
             _ => Err(self.ctx.fail(format!("Expected expression, got {}", first_expression_token))),
         }
     }
     fn parse_single_member_access_expression(mut self, nested_expression: Expression) -> anyhow::Result<AmbiguousExpression<'a>> {
         self.ctx.discard_next()?;
         let source_context = self.ctx.source_context();
-
-        let member_type_token = self.ctx.next()?;
-        let member_type = self.parse_expression_value_type(member_type_token)?;
+        let member_type = self.parse_expression_value_type()?;
 
         let member_name_token = self.ctx.next()?;
         let member_name = self.ctx.check_identifier(member_name_token)?;
@@ -1238,16 +1312,16 @@ impl<'a> CompilerParserInstance<'a> {
             self.take_parse_case().repeat(2).flat_map_result(|parser, (_, case_index)| {
                 if case_index == 0 {
                     Self::parse_ambiguous_template_instantiation_expression(parser, |arguments| {
-                        let result_expression = MemberAccessExpression{ type_expression: nested_expression.clone(), member_type, member_name: member_name.clone(), source_context: source_context.clone(), template_arguments: Some(arguments) };
+                        let result_expression = MemberAccessExpression{ type_expression: nested_expression.clone(), member_type: member_type.clone(), member_name: member_name.clone(), source_context: source_context.clone(), template_arguments: Some(arguments) };
                         Expression::MemberAccessExpression(Box::new(result_expression))
                     })
                 } else {
-                    let result_expression = MemberAccessExpression{ type_expression: nested_expression.clone(), member_type, member_name: member_name.clone(), source_context: source_context.clone(), template_arguments: None };
+                    let result_expression = MemberAccessExpression{ type_expression: nested_expression.clone(), member_type: member_type.clone(), member_name: member_name.clone(), source_context: source_context.clone(), template_arguments: None };
                     Ok(AmbiguousExpression::unambiguous(parser, Expression::MemberAccessExpression(Box::new(result_expression))))
                 }
             })
         } else {
-            let result_expression = MemberAccessExpression{ type_expression: nested_expression, member_type, member_name, source_context, template_arguments: None };
+            let result_expression = MemberAccessExpression{ type_expression: nested_expression, member_type: member_type.clone(), member_name, source_context, template_arguments: None };
             Ok(AmbiguousExpression::unambiguous(self, Expression::MemberAccessExpression(Box::new(result_expression))))
         }
     }
@@ -1423,7 +1497,6 @@ impl<'a> CompilerParserInstance<'a> {
         // Associative expression group is the highest level expression
         self.parse_expression_affinity_lowest()
     }
-
     fn parse_template_declaration(mut self) -> anyhow::Result<AmbiguousParsingResult<'a, (TemplateDeclaration, Option<String>)>> {
         let doc_comment = self.ctx.peek_doc_comment()?.cloned();
         let template_token = self.ctx.next()?;
@@ -1433,8 +1506,7 @@ impl<'a> CompilerParserInstance<'a> {
         self.ctx.check_token(template_argument_start_token, CompilerToken::LessOrArgumentListStart)?;
 
         Ok(self.parse_ambiguous_expression_list(CompilerToken::MoreOrArgumentListEnd, |parser| {
-            let argument_type_token = parser.ctx.next()?;
-            let value_type = parser.parse_expression_value_type(argument_type_token)?;
+            let value_type = parser.parse_expression_value_type()?;
             let source_context = parser.ctx.source_context();
 
             let argument_name_token = parser.ctx.next()?;
@@ -1502,8 +1574,7 @@ impl<'a> CompilerParserInstance<'a> {
         self.ctx.check_token(statement_token, CompilerToken::Input)?;
         let source_context = self.ctx.source_context();
 
-        let value_type_token = self.ctx.next()?;
-        let value_type = self.parse_expression_value_type(value_type_token)?;
+        let value_type = self.parse_expression_value_type()?;
         let global_name_token = self.ctx.next()?;
         let global_name = self.ctx.check_identifier(global_name_token)?;
 
@@ -1515,7 +1586,7 @@ impl<'a> CompilerParserInstance<'a> {
                 parser.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
 
                 // Input variable declaration with default value
-                let result_statement = InputStatement{source_context: source_context.clone(), global_name: global_name.clone(), access_specifier, value_type, default_value: Some(expression), doc_comment: doc_comment.clone()};
+                let result_statement = InputStatement{source_context: source_context.clone(), global_name: global_name.clone(), access_specifier, value_type: value_type.clone(), default_value: Some(expression), doc_comment: doc_comment.clone()};
                 Ok(AmbiguousParsingResult::unambiguous(parser, TopLevelDeclaration::InputStatement(result_statement)))
             })?.disambiguate()?)
         } else {
@@ -1524,16 +1595,14 @@ impl<'a> CompilerParserInstance<'a> {
             self.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
 
             // Input variable declaration with no default value
-            let result_statement = InputStatement{source_context, global_name, access_specifier, value_type, default_value: None, doc_comment: doc_comment.clone()};
+            let result_statement = InputStatement{source_context, global_name, access_specifier, value_type: value_type.clone(), default_value: None, doc_comment: doc_comment.clone()};
             Ok(ExactTopLevelDeclarationCase::create(self, TopLevelDeclaration::InputStatement(result_statement)))
         }
     }
     fn parse_constexpr_statement(mut self, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>, external_doc_comment: Option<Option<String>>) -> anyhow::Result<ExactParseCase<'a, DataStatement>> {
         let doc_comment = external_doc_comment.unwrap_or(self.ctx.peek_doc_comment()?.cloned());
         self.ctx.discard_next()?;
-
-        let value_type_token = self.ctx.next()?;
-        let value_type = self.parse_expression_value_type(value_type_token)?;
+        let value_type = self.parse_expression_value_type()?;
         if value_type == ExpressionValueType::Typename {
             return Err(self.ctx.fail("Typename not allowed as constexpr declaration type. Use type alias instead"));
         }
@@ -2173,8 +2242,24 @@ impl<'a> CompilerParserInstance<'a> {
         result_builder.push_str(identifier.path.join("::").as_str());
         result_builder
     }
-    fn integer_constant_to_source_text(constant: i32) -> String {
-        constant.to_string()
+    fn integer_constant_expression_to_source_text(expression: &IntegerConstantExpression) -> String {
+        match expression.constant_type.signedness {
+            IntegerSignedness::Signed => match expression.constant_type.bit_width {
+                BitWidth::Width8  => format!("{}i8",  expression.raw_constant_value as i8 ),
+                BitWidth::Width16 => format!("{}i16", expression.raw_constant_value as i16),
+                BitWidth::Width32 => format!("{}i32", expression.raw_constant_value as i32),
+                BitWidth::Width64 => format!("{}i64", expression.raw_constant_value as i64),
+            },
+            IntegerSignedness::Unsigned => match expression.constant_type.bit_width {
+                BitWidth::Width8  => format!("{}u8",  expression.raw_constant_value as u8 ),
+                BitWidth::Width16 => format!("{}u16", expression.raw_constant_value as u16),
+                BitWidth::Width32 => format!("{}u32", expression.raw_constant_value as u32),
+                BitWidth::Width64 => format!("{}u64", expression.raw_constant_value),
+            },
+        }
+    }
+    fn bool_constant_expression_to_source_text(expression: &BoolConstantExpression) -> String {
+        String::from(if expression.bool_value { "true" } else { "false" })
     }
     fn conditional_expression_to_source_text(expression: &ConditionalExpression) -> String {
         let mut result_builder = String::with_capacity(20);
@@ -2190,9 +2275,25 @@ impl<'a> CompilerParserInstance<'a> {
         let expressions_source_text: Vec<String> = expressions.iter().map(|x| Self::expression_to_source_text(x)).collect();
         expressions_source_text.join(", ")
     }
-    fn expression_value_type_to_source_text(value_type: ExpressionValueType, alt_form: bool) -> &'static str {
+    fn expression_value_type_to_source_text(value_type: &ExpressionValueType, alt_form: bool) -> &'static str {
         match value_type {
-            ExpressionValueType::Int => "int",
+            ExpressionValueType::Integer(integral_type) => {
+                match integral_type.signedness {
+                    IntegerSignedness::Signed => match integral_type.bit_width {
+                        BitWidth::Width8 => "char",
+                        BitWidth::Width16 => "short int",
+                        BitWidth::Width32 => "int",
+                        BitWidth::Width64 => "long int",
+                    },
+                    IntegerSignedness::Unsigned => match integral_type.bit_width {
+                        BitWidth::Width8 => "unsigned char",
+                        BitWidth::Width16 => "unsigned short int",
+                        BitWidth::Width32 => "unsigned int",
+                        BitWidth::Width64 => "unsigned long int",
+                    },
+                }
+            },
+            ExpressionValueType::Bool => "bool",
             ExpressionValueType::Typename => if alt_form { "type" } else { "typename" },
             ExpressionValueType::Closure => "@closure",
             ExpressionValueType::MetaStruct => "@metastruct",
@@ -2201,7 +2302,7 @@ impl<'a> CompilerParserInstance<'a> {
     fn member_access_expression_to_source_text(expression: &MemberAccessExpression) -> String {
         let mut result_builder = Self::expression_to_source_text(&expression.type_expression);
         result_builder.push_str("::");
-        result_builder.push_str(Self::expression_value_type_to_source_text(expression.member_type, false));
+        result_builder.push_str(Self::expression_value_type_to_source_text(&expression.member_type, false));
         result_builder.push(' ');
         result_builder.push_str(expression.member_name.as_str());
         if let Some(argument_expressions) = &expression.template_arguments {
@@ -2284,7 +2385,7 @@ impl<'a> CompilerParserInstance<'a> {
     }
     fn declaration_statement_to_source_text(statement: &DeclarationStatement) -> String {
         let mut result_builder = String::with_capacity(20);
-        result_builder.push_str(Self::expression_value_type_to_source_text(statement.value_type, false));
+        result_builder.push_str(Self::expression_value_type_to_source_text(&statement.value_type, false));
         result_builder.push(' ');
         result_builder.push_str(statement.name.as_str());
         if statement.initializer.is_some() {
@@ -2382,12 +2483,22 @@ impl<'a> CompilerParserInstance<'a> {
         if expression.volatile { result_builder.push_str(" volatile"); }
         result_builder
     }
+    fn static_cast_expression_to_source_text(expression: &StaticCastExpression) -> String {
+        let mut result_builder = String::with_capacity(50);
+        result_builder.push_str("static_cast<");
+        result_builder.push_str(Self::expression_value_type_to_source_text(&expression.target_type, false));
+        result_builder.push_str(">(");
+        result_builder.push_str(Self::expression_to_source_text(&expression.cast_expression).as_str());
+        result_builder.push_str(")");
+        result_builder
+    }
     fn expression_to_source_text(expression: &Expression) -> String {
         match expression {
             Expression::UnaryExpression(expr) => Self::unary_expression_to_source_text(&**expr),
             Expression::ArrayIndexExpression(expr) => Self::array_index_expression_to_source_text(&**expr),
             Expression::IdentifierExpression(expr) => Self::identifier_expression_to_source_text(&**expr),
-            Expression::IntegerConstantExpression(expr) => Self::integer_constant_to_source_text(expr.constant_value),
+            Expression::IntegerConstantExpression(expr) => Self::integer_constant_expression_to_source_text(&**expr),
+            Expression::BoolConstantExpression(expr) => Self::bool_constant_expression_to_source_text(&**expr),
             Expression::ConditionalExpression(expr) => Self::conditional_expression_to_source_text(&**expr),
             Expression::MemberAccessExpression(expr) => Self::member_access_expression_to_source_text(&**expr),
             Expression::BinaryExpression(expr) => Self::binary_expression_to_source_text(&**expr),
@@ -2396,6 +2507,7 @@ impl<'a> CompilerParserInstance<'a> {
             Expression::BuiltinIdentifierExpression(expr) => Self::builtin_expression_to_source_text(&**expr),
             Expression::PrimitiveTypeExpression(expr) => Self::primitive_type_expression_to_source_text(&**expr),
             Expression::CVQualifiedExpression(expr) => Self::cv_qualified_expression_to_source_text(&**expr),
+            Expression::StaticCastExpression(expr) => Self::static_cast_expression_to_source_text(&**expr),
         }
     }
     fn block_declaration_to_source_text(declaration: &BlockDeclaration) -> String {
@@ -2448,10 +2560,10 @@ impl<'a> CompilerParserInstance<'a> {
         result_builder.push_str("template<");
         let argument_strings: Vec<String> = declaration.arguments.iter().map(|x| {
             if x.default_value.is_some() {
-                format!("{} {} = ({})", Self::expression_value_type_to_source_text(x.value_type, false), x.name.as_str(),
+                format!("{} {} = ({})", Self::expression_value_type_to_source_text(&x.value_type, false), x.name.as_str(),
                     Self::expression_to_source_text(x.default_value.as_ref().unwrap()))
             } else {
-                format!("{} {}", Self::expression_value_type_to_source_text(x.value_type, false), x.name.as_str())
+                format!("{} {}", Self::expression_value_type_to_source_text(&x.value_type, false), x.name.as_str())
             }
         }).collect();
         result_builder.push_str(argument_strings.join(", ").as_str());
@@ -2468,7 +2580,7 @@ impl<'a> CompilerParserInstance<'a> {
             result_builder.push_str(Self::access_specifier_to_source_text(access_specifier));
             result_builder.push(' ');
         }
-        result_builder.push_str(Self::expression_value_type_to_source_text(statement.value_type, true));
+        result_builder.push_str(Self::expression_value_type_to_source_text(&statement.value_type, true));
         result_builder.push(' ');
         result_builder.push_str(statement.name.as_str());
         result_builder.push_str(" = ");
@@ -2584,7 +2696,7 @@ impl<'a> CompilerParserInstance<'a> {
             result_builder.push(' ');
         }
         result_builder.push_str("extern ");
-        result_builder.push_str(Self::expression_value_type_to_source_text(statement.value_type, false));
+        result_builder.push_str(Self::expression_value_type_to_source_text(&statement.value_type, false));
         result_builder.push(' ');
         result_builder.push_str(statement.global_name.as_str());
         result_builder.push(';');
@@ -2742,5 +2854,10 @@ impl Display for TopLevelDeclaration {
 impl Display for ModuleSourceFile {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", CompilerParserInstance::module_source_file_to_source_text(self))
+    }
+}
+impl Display for ExpressionValueType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", CompilerParserInstance::expression_value_type_to_source_text(self, false))
     }
 }

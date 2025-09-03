@@ -156,11 +156,15 @@ impl GospelSourceFunctionDefinition {
         Ok(self.add_instruction_internal(GospelInstruction::create(GospelOpcode::TypeUDTAddBaseClass, &[base_class_flags])?, line_number))
     }
     pub fn add_type_member_instruction(&mut self, opcode: GospelOpcode, name: Option<&String>, flags: u32, line_number: i32) -> anyhow::Result<u32> {
-        if opcode != GospelOpcode::TypeUDTAddField && opcode != GospelOpcode::TypeUDTAddBitfield && opcode != GospelOpcode::TypeEnumAddConstantWithValue && opcode != GospelOpcode::TypeEnumAddConstant {
+        if opcode != GospelOpcode::TypeUDTAddField && opcode != GospelOpcode::TypeUDTAddBitfield && opcode != GospelOpcode::TypeEnumAddConstant {
             bail!("Invalid opcode for udt member instruction (TypeUDTAddField, TypeUDTAddBitfield, TypeEnumAddConstant are allowed)");
         }
         let name_index = if let Some(name_str) = name { self.add_string_reference_internal(name_str) } else { -1i32 as u32 };
         Ok(self.add_instruction_internal(GospelInstruction::create(opcode, &[name_index, flags])?, line_number))
+    }
+    pub fn add_enum_constant_with_value_instruction(&mut self, name: Option<&String>, flags: u32, instruction_encoding: u32, line_number: i32) -> anyhow::Result<u32> {
+        let name_index = if let Some(name_str) = name { self.add_string_reference_internal(name_str) } else { -1i32 as u32 };
+        Ok(self.add_instruction_internal(GospelInstruction::create(GospelOpcode::TypeEnumAddConstant, &[name_index, flags, instruction_encoding])?, line_number))
     }
     pub fn add_udt_virtual_function_instruction(&mut self, name: &str, function_flags: u32, argument_count: u32, line_number: i32) -> anyhow::Result<u32> {
         let name_index = self.add_string_reference_internal(name);
