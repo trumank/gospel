@@ -752,8 +752,8 @@ impl<'a> GospelVMExecutionState<'a> {
                 GospelOpcode::And => { implement_variable_length_integer_op!(state, instruction, |a, b| a & b, unsigned); }
                 GospelOpcode::Or => { implement_variable_length_integer_op!(state, instruction, |a, b| a | b, unsigned); }
                 GospelOpcode::Xor => { implement_variable_length_integer_op!(state, instruction, |a, b| a ^ b, unsigned); }
-                GospelOpcode::Shl => { implement_variable_length_integer_op!(state, instruction, |a, b| a >> b, unsigned); }
-                GospelOpcode::Shr => { implement_variable_length_integer_op!(state, instruction, |a, b| a << b, unsigned); }
+                GospelOpcode::Shl => { implement_variable_length_integer_op!(state, instruction, |a, b| a << b, unsigned); }
+                GospelOpcode::Shr => { implement_variable_length_integer_op!(state, instruction, |a, b| a >> b, unsigned); }
                 GospelOpcode::ReverseBits => { implement_variable_length_integer_op!(state, instruction, |a| a.reverse_bits(), unsigned); }
                 GospelOpcode::CmpEq => { implement_variable_length_integer_op!(state, instruction, |a, b| if a == b { 1 } else { 0 }, unsigned); }
                 GospelOpcode::CmpLess => { implement_variable_length_integer_op!(state, instruction, |a, b| if a < b { 1 } else { 0 }, mixed); }
