@@ -1,5 +1,5 @@
 ﻿use std::collections::HashMap;
-use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ImportStatement, ModuleImportStatementType, ModuleSourceFile, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, BuiltinIdentifier, BuiltinIdentifierExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression, MemberFunctionDeclaration, FunctionParameterDeclaration, TopLevelDeclaration, EnumStatement, EnumConstantDeclaration, BoolConstantExpression, StaticCastExpression};
+use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ImportStatement, ModuleImportStatementType, ModuleSourceFile, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression, MemberFunctionDeclaration, FunctionParameterDeclaration, TopLevelDeclaration, EnumStatement, EnumConstantDeclaration, BoolConstantExpression, StaticCastExpression, CompilerBuiltinExpression};
 use crate::lex_util::{get_line_number_and_offset_from_index, parse_integer_literal, ParsedIntegerLiteral};
 use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
@@ -115,15 +115,9 @@ enum CompilerToken {
     #[token("local")]
     #[strum(to_string = "local")]
     Local,
-    #[token("__address_size")]
-    #[strum(to_string = "__address_size")]
-    BuiltinAddressSize,
-    #[token("__target_platform")]
-    #[strum(to_string = "__target_platform")]
-    BuiltinTargetPlatform,
-    #[token("__target_arch")]
-    #[strum(to_string = "__target_arch")]
-    BuiltinTargetArch,
+    #[token("__compiler_builtin")]
+    #[strum(to_string = "__compiler_builtin")]
+    CompilerBuiltin,
     #[token("void")]
     #[strum(to_string = "void")]
     PrimitiveTypeVoid,
@@ -259,8 +253,8 @@ enum CompilerToken {
     #[token(",")]
     #[strum(to_string = ",")]
     Separator,
-    #[token("_")]
-    #[strum(to_string = "_[A-Za-z0-9_]*")]
+    #[regex("_[A-Za-z0-9_]*")]
+    #[strum(to_string = "unnamed identifier")]
     UnnamedIdentifier,
     // Identifiers and literals
     #[regex("[A-Za-z][A-Za-z0-9_$]*", parse_identifier)]
@@ -1172,11 +1166,21 @@ impl<'a> CompilerParserInstance<'a> {
                 Ok(AmbiguousExpression::unambiguous(parser, Expression::UnaryExpression(Box::new(result_expression))))
             })
     }
-    fn parse_builtin_expression(mut self, identifier: BuiltinIdentifier) -> anyhow::Result<AmbiguousExpression<'a>> {
+    fn parse_compiler_builtin_expression(mut self) -> anyhow::Result<AmbiguousExpression<'a>> {
         self.ctx.discard_next()?;
+
+        let sub_expression_entry_token = self.ctx.next()?;
+        self.ctx.check_token(sub_expression_entry_token, CompilerToken::SubExpressionStart)?;
+
+        let builtin_identifier_token = self.ctx.next()?;
+        let builtin_identifier = self.ctx.check_identifier(builtin_identifier_token)?;
+
+        let sub_expression_exit_token = self.ctx.next()?;
+        self.ctx.check_token(sub_expression_exit_token, CompilerToken::SubExpressionEnd)?;
+
         let source_context = self.ctx.source_context();
-        let result_expression = BuiltinIdentifierExpression{identifier, source_context};
-        Ok(AmbiguousExpression::unambiguous(self, Expression::BuiltinIdentifierExpression(Box::new(result_expression))))
+        let result_expression = CompilerBuiltinExpression{identifier: builtin_identifier, source_context};
+        Ok(AmbiguousExpression::unambiguous(self, Expression::CompilerBuiltinExpression(Box::new(result_expression))))
     }
     fn parse_simple_primitive_type_expression(mut self, primitive_type: PrimitiveType) -> anyhow::Result<AmbiguousExpression<'a>> {
         self.ctx.discard_next()?;
@@ -1278,9 +1282,7 @@ impl<'a> CompilerParserInstance<'a> {
             CompilerToken::Struct => self.parse_struct_declaration_expression(UserDefinedTypeKind::Struct),
             CompilerToken::Class => self.parse_struct_declaration_expression(UserDefinedTypeKind::Class),
             CompilerToken::Union => self.parse_struct_declaration_expression(UserDefinedTypeKind::Union),
-            CompilerToken::BuiltinAddressSize => self.parse_builtin_expression(BuiltinIdentifier::AddressSize),
-            CompilerToken::BuiltinTargetPlatform => self.parse_builtin_expression(BuiltinIdentifier::TargetPlatform),
-            CompilerToken::BuiltinTargetArch => self.parse_builtin_expression(BuiltinIdentifier::TargetArch),
+            CompilerToken::CompilerBuiltin => self.parse_compiler_builtin_expression(),
             CompilerToken::PrimitiveTypeVoid => self.parse_simple_primitive_type_expression(PrimitiveType::Void),
             CompilerToken::PrimitiveTypeChar => self.parse_simple_primitive_type_expression(PrimitiveType::Char),
             CompilerToken::PrimitiveTypeWideChar => self.parse_simple_primitive_type_expression(PrimitiveType::WideChar),
@@ -2447,12 +2449,8 @@ impl<'a> CompilerParserInstance<'a> {
         }
         result_builder
     }
-    fn builtin_expression_to_source_text(expression: &BuiltinIdentifierExpression) -> String {
-        match expression.identifier {
-            BuiltinIdentifier::AddressSize => String::from("__address_size"),
-            BuiltinIdentifier::TargetPlatform => String::from("__target_platform"),
-            BuiltinIdentifier::TargetArch => String::from("__target_arch"),
-        }
+    fn compiler_builtin_expression_to_source_text(_expression: &CompilerBuiltinExpression) -> String {
+        String::from("__compiler_builtin")
     }
     fn primitive_type_expression_to_source_text(expression: &PrimitiveTypeExpression) -> String {
         match expression.primitive_type {
@@ -2504,7 +2502,7 @@ impl<'a> CompilerParserInstance<'a> {
             Expression::BinaryExpression(expr) => Self::binary_expression_to_source_text(&**expr),
             Expression::BlockExpression(expr) => Self::block_expression_to_source_text(&**expr),
             Expression::StructDeclarationExpression(expr) => Self::struct_declaration_expression_to_source_text(&**expr),
-            Expression::BuiltinIdentifierExpression(expr) => Self::builtin_expression_to_source_text(&**expr),
+            Expression::CompilerBuiltinExpression(expr) => Self::compiler_builtin_expression_to_source_text(&**expr),
             Expression::PrimitiveTypeExpression(expr) => Self::primitive_type_expression_to_source_text(&**expr),
             Expression::CVQualifiedExpression(expr) => Self::cv_qualified_expression_to_source_text(&**expr),
             Expression::StaticCastExpression(expr) => Self::static_cast_expression_to_source_text(&**expr),

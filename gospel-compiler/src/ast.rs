@@ -22,8 +22,11 @@ impl Default for ExpressionValueType {
 /// Describes a source level access specifier
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Display)]
 pub enum DeclarationAccessSpecifier {
+    /// Visible to the other declarations within the same source code file
     Local,
+    /// Visible to other declarations within the same module
     Internal,
+    /// Visible to other declarations across all modules
     Public,
 }
 
@@ -224,16 +227,9 @@ pub struct BoolConstantExpression {
     pub source_context: ASTSourceContext,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Display)]
-pub enum BuiltinIdentifier {
-    AddressSize,
-    TargetPlatform,
-    TargetArch,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BuiltinIdentifierExpression {
-    pub identifier: BuiltinIdentifier,
+pub struct CompilerBuiltinExpression {
+    pub identifier: String,
     #[serde(default)]
     pub source_context: ASTSourceContext,
 }
@@ -275,7 +271,7 @@ pub enum Expression {
     ArrayIndexExpression(Box<ArrayTypeExpression>),
     MemberAccessExpression(Box<MemberAccessExpression>),
     BinaryExpression(Box<BinaryExpression>),
-    BuiltinIdentifierExpression(Box<BuiltinIdentifierExpression>),
+    CompilerBuiltinExpression(Box<CompilerBuiltinExpression>),
     PrimitiveTypeExpression(Box<PrimitiveTypeExpression>),
     CVQualifiedExpression(Box<CVQualifiedExpression>),
     StaticCastExpression(Box<StaticCastExpression>),

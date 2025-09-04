@@ -3,16 +3,18 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Debug, Display, Formatter};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
+use std::str::FromStr;
 use anyhow::anyhow;
 use itertools::{Itertools};
 use strum::Display;
-use crate::ast::{BoolConstantExpression, CVQualifiedExpression, EnumConstantDeclaration, EnumStatement, FunctionParameterDeclaration, MemberFunctionDeclaration, StaticCastExpression};
+use crate::ast::{BoolConstantExpression, CVQualifiedExpression, CompilerBuiltinExpression, EnumConstantDeclaration, EnumStatement, FunctionParameterDeclaration, MemberFunctionDeclaration, StaticCastExpression};
 use gospel_typelib::type_model::{BitWidth, EnumKind, IntegerSignedness, IntegralType, PrimitiveType, UserDefinedTypeKind};
 use gospel_vm::bytecode::GospelOpcode;
 use gospel_vm::module::GospelContainer;
 use gospel_vm::gospel::{GospelTargetProperty};
 use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter, GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceFunctionDefinition, GospelSourceObjectReference};
-use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, ImportStatement, ModuleImportStatementType, ModuleSourceFile, TopLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayTypeExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, BuiltinIdentifierExpression, BuiltinIdentifier, DeclarationAccessSpecifier, PrimitiveTypeExpression, ExpressionWithCondition};
+use crate::ast::{ASTSourceContext, AssignmentStatement, BlockStatement, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, ImportStatement, ModuleImportStatementType, ModuleSourceFile, TopLevelDeclaration, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructStatement, TemplateArgument, TemplateDeclaration, WhileLoopStatement, BinaryOperator, SimpleStatement, IdentifierExpression, UnaryExpression, UnaryOperator, BinaryExpression, ConditionalExpression, BlockExpression, IntegerConstantExpression, ArrayTypeExpression, MemberAccessExpression, StructInnerDeclaration, BlockDeclaration, ConditionalDeclaration, MemberDeclaration, DeclarationAccessSpecifier, PrimitiveTypeExpression, ExpressionWithCondition};
+use crate::parser::parse_source_file;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CompilerSourceContext {
@@ -250,22 +252,20 @@ impl CompilerFunctionBuilder {
             Expression::ArrayIndexExpression(array_index_expression) => { self.compile_array_type_expression(scope, &*array_index_expression) }
             Expression::MemberAccessExpression(member_access_expression) => { self.compile_member_access_expression(scope, &*member_access_expression) }
             Expression::StructDeclarationExpression(struct_declaration_expression) => { self.compile_struct_declaration_expression(scope, &*struct_declaration_expression) }
-            Expression::BuiltinIdentifierExpression(builtin_identifier_expression) => { self.compile_builtin_identifier_expression(scope, &*builtin_identifier_expression) }
+            Expression::CompilerBuiltinExpression(compiler_builtin_expression) => { self.compile_compiler_builtin_expression(scope, &*compiler_builtin_expression) }
             Expression::PrimitiveTypeExpression(primitive_type_expression) => { self.compile_primitive_type_expression(scope, &*primitive_type_expression) }
             Expression::CVQualifiedExpression(cv_qualified_expression) => { self.compile_cv_qualified_expression(scope, &*cv_qualified_expression) }
             Expression::StaticCastExpression(static_cast_expression) => { self.compile_static_cast_expression(scope, &*static_cast_expression) }
         }
     }
-    fn compile_builtin_identifier_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &BuiltinIdentifierExpression) -> CompilerResult<ExpressionValueType> {
+    fn compile_compiler_builtin_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &CompilerBuiltinExpression) -> CompilerResult<ExpressionValueType> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
-        let target_property = match expression.identifier {
-            BuiltinIdentifier::AddressSize => GospelTargetProperty::AddressSize,
-            BuiltinIdentifier::TargetPlatform => GospelTargetProperty::TargetOS,
-            BuiltinIdentifier::TargetArch => GospelTargetProperty::TargetArch,
-        };
-        // All target properties are currently u64 values
-        self.function_definition.add_string_instruction(GospelOpcode::LoadTargetProperty, target_property.to_string().as_str(), Self::get_line_number(&source_context)).with_source_context(&source_context)?;
-        Ok(ExpressionValueType::Integer(IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}))
+        if let Ok(target_property) = GospelTargetProperty::from_str(&expression.identifier) {
+            self.function_definition.add_string_instruction(GospelOpcode::LoadTargetProperty, &target_property.to_string(), Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+            Ok(ExpressionValueType::Integer(IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}))
+        } else {
+            Err(compiler_error!(&source_context, "Unknown compiler builtin: {}", &expression.identifier))
+        }
     }
     fn compile_primitive_type_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &PrimitiveTypeExpression) -> CompilerResult<ExpressionValueType> {
         let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
@@ -1297,11 +1297,20 @@ pub struct CompilerModuleDefinitionBuilder {
     compiler: Rc<CompilerInstance>,
 }
 impl CompilerModuleDefinitionBuilder {
+    fn add_compiler_builtin_source_code(&self) -> CompilerResult<()> {
+        // Parse internal compiler code automatically inlined into every module
+        let sys_source_code = parse_source_file("compiler_rt/sys.gs", include_str!("../res/compiler_rt/sys.gs"))
+            .map_err(|x| compiler_error!(&self.module_scope.source_context, "Internal compiler error: {}", x))?;
+        self.add_source_file(sys_source_code)?;
+        Ok({})
+    }
     pub fn compile(&self) -> CompilerResult<GospelContainer> {
         if let CompilerLexicalScopeClass::Module(module_data) = &self.module_scope.class &&
             let Some(module_codegen_data) = { module_data.codegen_data.borrow().clone() } &&
             let Some(module_container_builder) = { self.container_builder.borrow().clone() } {
 
+            // Add compiler generated code to the module
+            self.add_compiler_builtin_source_code()?;
             // Compile imports before we start compiling function definitions
             module_codegen_data.compile_import_statements(&self.module_scope.source_context)?;
             // Compile function definitions now that we have resolved all imports
