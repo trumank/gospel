@@ -53,10 +53,10 @@ impl GospelSourceFunctionDefinition {
     pub fn create(exported: bool, source_file_name: String) -> Self {
         Self{exported, source_file_name, ..GospelSourceFunctionDefinition::default()}
     }
-    pub fn add_slot(&mut self) -> anyhow::Result<u32> {
+    pub fn add_slot(&mut self) -> u32 {
         let new_slot_index = self.num_slots;
         self.num_slots += 1;
-        Ok(new_slot_index)
+        new_slot_index
     }
     /// Note that this function should generally not be used directly, but is public to make extensions easier
     pub fn add_string_reference_internal(&mut self, string: &str) -> u32 {

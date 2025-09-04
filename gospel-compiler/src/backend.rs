@@ -7,7 +7,7 @@ use std::str::FromStr;
 use anyhow::anyhow;
 use itertools::{Itertools};
 use strum::Display;
-use crate::ast::{BoolConstantExpression, CVQualifiedExpression, CompilerBuiltinExpression, EnumConstantDeclaration, EnumStatement, FunctionParameterDeclaration, MemberFunctionDeclaration, StaticCastExpression};
+use crate::ast::{BoolConstantExpression, CVQualifiedExpression, CompilerBuiltinExpression, EnumConstantDeclaration, EnumStatement, FunctionParameterDeclaration, MemberFunctionDeclaration, StaticCastExpression, SwitchExpression};
 use gospel_typelib::type_model::{BitWidth, EnumKind, IntegerSignedness, IntegralType, PrimitiveType, UserDefinedTypeKind};
 use gospel_vm::bytecode::GospelOpcode;
 use gospel_vm::module::GospelContainer;
@@ -256,10 +256,11 @@ impl CompilerFunctionBuilder {
             Expression::PrimitiveTypeExpression(primitive_type_expression) => { self.compile_primitive_type_expression(scope, &*primitive_type_expression) }
             Expression::CVQualifiedExpression(cv_qualified_expression) => { self.compile_cv_qualified_expression(scope, &*cv_qualified_expression) }
             Expression::StaticCastExpression(static_cast_expression) => { self.compile_static_cast_expression(scope, &*static_cast_expression) }
+            Expression::SwitchExpression(switch_expression) => { self.compile_switch_expression(scope, &*switch_expression) }
         }
     }
     fn compile_compiler_builtin_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &CompilerBuiltinExpression) -> CompilerResult<ExpressionValueType> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: expression.source_context.clone()};
         if let Ok(target_property) = GospelTargetProperty::from_str(&expression.identifier) {
             self.function_definition.add_string_instruction(GospelOpcode::LoadTargetProperty, &target_property.to_string(), Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             Ok(ExpressionValueType::Integer(IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}))
@@ -268,12 +269,12 @@ impl CompilerFunctionBuilder {
         }
     }
     fn compile_primitive_type_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &PrimitiveTypeExpression) -> CompilerResult<ExpressionValueType> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: expression.source_context.clone()};
         self.function_definition.add_string_instruction(GospelOpcode::TypePrimitiveCreate, &expression.primitive_type.to_string(), Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         Ok(ExpressionValueType::Typename)
     }
     fn compile_cv_qualified_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &CVQualifiedExpression) -> CompilerResult<ExpressionValueType> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: expression.source_context.clone()};
         let base_expression_type = self.compile_expression(scope, &expression.base_expression)?;
         self.coerce_to_expression_type(&base_expression_type, &ExpressionValueType::Typename, &source_context)?;
         if expression.constant {
@@ -285,7 +286,7 @@ impl CompilerFunctionBuilder {
         Ok(ExpressionValueType::Typename)
     }
     fn compile_static_cast_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &StaticCastExpression) -> CompilerResult<ExpressionValueType> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: expression.source_context.clone()};
         let cast_expression_type = self.compile_expression(scope, &expression.cast_expression)?;
         if let ExpressionValueType::Integer(target_integral_value_type) = &expression.target_type {
             // Casting to an integral type can be done from a bool or another integral type
@@ -298,15 +299,77 @@ impl CompilerFunctionBuilder {
             Err(compiler_error!(&source_context, "Cannot static cast to {}. Static cast can only be used to cast to integral types and bool", &expression.target_type))
         }
     }
+    fn compile_switch_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &SwitchExpression) -> CompilerResult<ExpressionValueType> {
+        let main_source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: expression.source_context.clone()};
+
+        let start_instruction_index = self.function_definition.current_instruction_count();
+        let switch_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{block_range: CompilerInstructionRange::default(), loop_codegen_data: None}));
+        let switch_block_scope = scope.declare_scope_generated_name("switch", CompilerLexicalScopeClass::Block(CompilerResource{resource_handle: switch_block_declaration.clone()}), &main_source_context.line_context)?;
+
+        // Compile target expression and put value into a slot
+        let target_expression_type = self.compile_expression(&switch_block_scope, &expression.target_expression)?;
+        let target_expression_slot = self.function_definition.add_slot();
+        self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, target_expression_slot, Self::get_line_number(&main_source_context)).with_source_context(&main_source_context)?;
+
+        let mut jump_to_end_fixups: Vec<GospelJumpLabelFixup> = Vec::new();
+        let mut maybe_result_expression_type: Option<ExpressionValueType> = None;
+
+        // Compile individual cases now and compare their values against the target
+        for switch_case in &expression.switch_cases {
+            let case_source_context = CompilerSourceContext{file_name: switch_block_scope.file_or_module_name(), line_context: switch_case.source_context.clone()};
+
+            self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, target_expression_slot, Self::get_line_number(&case_source_context)).with_source_context(&case_source_context)?;
+            let match_expression_type = self.compile_expression(&switch_block_scope, &switch_case.match_expression)?;
+            self.coerce_to_expression_type(&match_expression_type, &target_expression_type, &case_source_context)?;
+            let compare_result_type = self.compile_binary_operator(&target_expression_type, &target_expression_type, &case_source_context, BinaryOperator::Equals)?;
+
+            let instruction_encoding = Self::check_integral_or_bool_type_instruction_encoding(&compare_result_type, &case_source_context)?;
+            let jump_to_next_case_fixup = self.function_definition.add_conditional_branch_instruction(instruction_encoding, Self::get_line_number(&case_source_context)).with_source_context(&case_source_context)?.1;
+
+            let expression_case_type = self.compile_expression(&switch_block_scope, &switch_case.result_expression)?;
+            if let Some(result_expression_type) = &maybe_result_expression_type {
+                self.coerce_to_expression_type(&expression_case_type, &result_expression_type, &case_source_context)?;
+            } else {
+                maybe_result_expression_type = Some(expression_case_type);
+            }
+            let jump_to_end_fixup = self.function_definition.add_control_flow_instruction(GospelOpcode::Branch, Self::get_line_number(&case_source_context)).with_source_context(&case_source_context)?.1;
+            jump_to_end_fixups.push(jump_to_end_fixup);
+
+            let case_end_instruction_index = self.function_definition.current_instruction_count();
+            self.function_definition.fixup_control_flow_instruction(jump_to_next_case_fixup, case_end_instruction_index).with_source_context(&case_source_context)?;
+        }
+
+        // We should have at least one case in the switch statement for it to be considered valid
+        let result_expression_type = maybe_result_expression_type.ok_or_else(|| compiler_error!(&main_source_context, "Expected at least one case in switch statement"))?;
+
+        // Compile default case now. If we end up here, no other cases have been taken
+        if let Some(default_case) = &expression.default_case {
+            let case_source_context = CompilerSourceContext{file_name: switch_block_scope.file_or_module_name(), line_context: default_case.source_context.clone()};
+            let expression_case_type = self.compile_expression(&switch_block_scope, &default_case.result_expression)?;
+            self.coerce_to_expression_type(&expression_case_type, &result_expression_type, &case_source_context)?;
+        } else {
+            // If no default case has been provided, we assume switch is exhaustive, and emit exception if no cases matched
+            let error_message = "Switch case with no default case did not match any case expression";
+            self.function_definition.add_string_instruction(GospelOpcode::RaiseException, error_message, Self::get_line_number(&main_source_context)).with_source_context(&main_source_context)?;
+        }
+
+        // Fixup jumps to the end now
+        let end_instruction_index = self.function_definition.current_instruction_count();
+        for jump_to_end_fixup in jump_to_end_fixups {
+            self.function_definition.fixup_control_flow_instruction(jump_to_end_fixup, end_instruction_index).with_source_context(&main_source_context)?;
+        }
+        switch_block_declaration.borrow_mut().block_range = CompilerInstructionRange{ start_instruction_index, end_instruction_index };
+        Ok(result_expression_type)
+    }
     fn compile_struct_declaration_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &StructStatement) -> CompilerResult<ExpressionValueType> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: expression.source_context.clone()};
         let struct_function_name = format!("@inline_struct@{}", self.inline_struct_counter);
         self.inline_struct_counter += 1;
         let struct_reference = CompilerInstance::compile_struct_statement(scope, expression, Some(struct_function_name.as_str()), DeclarationVisibility::Private)?;
         self.compile_static_function_call(scope, &struct_reference, &source_context, None, true)
     }
     fn compile_member_access_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &MemberAccessExpression) -> CompilerResult<ExpressionValueType> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: expression.source_context.clone()};
 
         let target_expression_type = self.compile_expression(scope, &expression.type_expression)?;
         self.coerce_to_expression_type(&target_expression_type, &ExpressionValueType::Typename, &source_context)?;
@@ -393,13 +456,16 @@ impl CompilerFunctionBuilder {
         } else if let ExpressionValueType::Bool = desired_type {
             // Attempt to convert expression value to bool
             self.coerce_to_bool_type(actual_type, source_context)
+        } else if let ExpressionValueType::Any = desired_type {
+            // Anything matches the "any" type, no coercion is necessary
+            Ok(actual_type.clone())
         } else {
             // Do not know how to convert to another types implicitly
             compiler_bail!(source_context, "Expression type mismatch: expected {}, got {}", desired_type, actual_type);
         }
     }
     fn compile_array_type_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &ArrayTypeExpression) -> CompilerResult<ExpressionValueType> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: expression.source_context.clone()};
 
         let element_expression_type = self.compile_expression(scope, &expression.element_type_expression)?;
         self.coerce_to_expression_type(&element_expression_type, &ExpressionValueType::Typename, &source_context)?;
@@ -411,7 +477,7 @@ impl CompilerFunctionBuilder {
         Ok(ExpressionValueType::Typename)
     }
     fn compile_integer_constant_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &IntegerConstantExpression) -> CompilerResult<ExpressionValueType> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: expression.source_context.clone()};
         match expression.constant_type.bit_width {
             BitWidth::Width8 => {
                 self.function_definition.add_int_instruction(GospelOpcode::Int8Constant, expression.raw_constant_value as u8 as u32, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
@@ -429,7 +495,7 @@ impl CompilerFunctionBuilder {
         Ok(ExpressionValueType::Integer(expression.constant_type.clone()))
     }
     fn compile_bool_constant_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &BoolConstantExpression) -> CompilerResult<ExpressionValueType> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: expression.source_context.clone()};
         let literal_value: u32 = if expression.bool_value { 1 } else { 0 };
         self.function_definition.add_int_instruction(GospelOpcode::Int8Constant, literal_value, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         Ok(ExpressionValueType::Bool)
@@ -444,7 +510,7 @@ impl CompilerFunctionBuilder {
         }
     }
     fn compile_block_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &BlockExpression) -> CompilerResult<ExpressionValueType> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: expression.source_context.clone()};
 
         // Compile all statements in the block and then push the return value expression on the stack
         let block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{block_range: CompilerInstructionRange::default(), loop_codegen_data: None}));
@@ -461,7 +527,7 @@ impl CompilerFunctionBuilder {
         Ok(return_value_expression_type)
     }
     fn compile_conditional_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &ConditionalExpression) -> CompilerResult<ExpressionValueType> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: expression.source_context.clone()};
 
         // Evaluate the condition, and jump to the else block if it is zero
         let condition_expression_type = self.compile_expression(scope, &expression.condition_expression)?;
@@ -533,8 +599,8 @@ impl CompilerFunctionBuilder {
             compiler_bail!(source_context, "Expression type mismatch: got expression of type {} on the left side of binary operator, and expression of type {} on the right side", left_side_type, right_side_type);
         }
     }
-    fn compile_binary_operator(&mut self, left_side_type_aaa: &ExpressionValueType, right_side_type: &ExpressionValueType, source_context: &CompilerSourceContext, operator: BinaryOperator) -> CompilerResult<ExpressionValueType> {
-        let common_expression_type: ExpressionValueType = self.coerce_binary_operator_to_common_type(left_side_type_aaa, right_side_type, source_context)?;
+    fn compile_binary_operator(&mut self, left_side_type: &ExpressionValueType, right_side_type: &ExpressionValueType, source_context: &CompilerSourceContext, operator: BinaryOperator) -> CompilerResult<ExpressionValueType> {
+        let common_expression_type: ExpressionValueType = self.coerce_binary_operator_to_common_type(left_side_type, right_side_type, source_context)?;
         match operator {
             // Bitwise operators
             BinaryOperator::BitwiseOr => {
@@ -695,7 +761,7 @@ impl CompilerFunctionBuilder {
         Ok(ExpressionValueType::Bool)
     }
     fn compile_binary_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &BinaryExpression) -> CompilerResult<ExpressionValueType> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: expression.source_context.clone()};
 
         // Use shared routine for handling operators that do not short circuit and can have both expressions evaluated immediately
         if expression.operator != BinaryOperator::ShortCircuitAnd && expression.operator != BinaryOperator::ShortCircuitOr {
@@ -709,7 +775,7 @@ impl CompilerFunctionBuilder {
         }
     }
     fn compile_unary_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &UnaryExpression) -> CompilerResult<ExpressionValueType> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: expression.source_context.clone()};
         let inner_expression_type = self.compile_expression(scope, &expression.expression)?;
 
         match expression.operator {
@@ -866,7 +932,7 @@ impl CompilerFunctionBuilder {
         }
     }
     fn compile_identifier_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &IdentifierExpression) -> CompilerResult<ExpressionValueType> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: expression.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: expression.source_context.clone()};
         let resolved_reference = scope.compiler().and_then(|compiler| compiler.resolve_partial_identifier(&expression.identifier, Some(scope.clone())))
             .ok_or_else(|| compiler_error!(source_context, "Failed to resolve identifier {} in scope {}", expression.identifier, scope.full_scope_display_name()))?;
 
@@ -900,7 +966,7 @@ impl CompilerFunctionBuilder {
         }
     }
     fn compile_return_value_expression(&mut self, scope: &Rc<CompilerLexicalScope>, source_context: &ASTSourceContext, expression: &Expression) -> CompilerResult<()> {
-        let actual_source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: source_context.clone()};
+        let actual_source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: source_context.clone()};
         let return_value_type = self.compile_expression(scope, expression)?;
         let expected_return_value_type = self.function_signature.return_value_type.clone();
         self.coerce_to_expression_type(&return_value_type, &expected_return_value_type, &actual_source_context)?;
@@ -909,7 +975,7 @@ impl CompilerFunctionBuilder {
         Ok({})
     }
     fn compile_assignment_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &AssignmentStatement) -> CompilerResult<()> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: statement.source_context.clone()};
         let assignment_identifier = if let Expression::IdentifierExpression(identifier) = &statement.left_hand_expression {
             identifier.identifier.clone()
         } else {
@@ -941,9 +1007,9 @@ impl CompilerFunctionBuilder {
         }
     }
     fn compile_declaration_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &DeclarationStatement) -> CompilerResult<()> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: statement.source_context.clone()};
 
-        let slot_index = self.function_definition.add_slot().with_source_context(&source_context)?;
+        let slot_index = self.function_definition.add_slot();
         let local_variable = CompilerLocalVariableDeclaration {value_slot: slot_index, variable_type: statement.value_type.clone()};
         scope.declare(statement.name.as_str(), CompilerLexicalDeclarationClass::LocalVariable(local_variable), DeclarationVisibility::Private, &statement.source_context)?;
 
@@ -955,7 +1021,7 @@ impl CompilerFunctionBuilder {
         Ok({})
     }
     fn compile_conditional_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &ConditionalStatement) -> CompilerResult<()> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: statement.source_context.clone()};
         let condition_value_type = self.compile_expression(scope, &statement.condition_expression)?;
         self.coerce_to_bool_type(&condition_value_type, &source_context)?;
         let instruction_encoding = Self::bool_type_instruction_encoding();
@@ -1011,7 +1077,7 @@ impl CompilerFunctionBuilder {
         Ok({})
     }
     fn compile_while_loop_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &WhileLoopStatement) -> CompilerResult<()> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: statement.source_context.clone()};
         let loop_start_instruction_index = self.function_definition.current_instruction_count();
 
         let loop_condition_value_type = self.compile_expression(scope, &statement.condition_expression)?;
@@ -1037,7 +1103,7 @@ impl CompilerFunctionBuilder {
         Ok({})
     }
     fn compile_break_loop_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &SimpleStatement) -> CompilerResult<()> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: statement.source_context.clone()};
         let innermost_loop_statement = scope.iterate_scope_chain_inner_first()
             .filter_map(|x| if let CompilerLexicalScopeClass::Block(y) = &x.class { Some(y.clone()) } else { None })
             .find(|x| x.borrow().loop_codegen_data.is_some())
@@ -1048,7 +1114,7 @@ impl CompilerFunctionBuilder {
         Ok({})
     }
     fn compile_continue_loop_statement(&mut self, scope: &Rc<CompilerLexicalScope>, statement: &SimpleStatement) -> CompilerResult<()> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: statement.source_context.clone()};
         let innermost_loop_statement = scope.iterate_scope_chain_inner_first()
             .filter_map(|x| if let CompilerLexicalScopeClass::Block(y) = &x.class { Some(y.clone()) } else { None })
             .find(|x| x.borrow().loop_codegen_data.is_some())
@@ -1060,7 +1126,7 @@ impl CompilerFunctionBuilder {
     }
     fn compile_generic_type_initialization(&mut self, opcode: GospelOpcode, kind_str: &str) -> CompilerResult<u32> {
         let source_context = self.function_scope.source_context.clone();
-        let slot_index = self.function_definition.add_slot().with_source_context(&source_context)?;
+        let slot_index = self.function_definition.add_slot();
         let type_name = self.return_value_struct_name.as_ref().ok_or_else(|| compiler_error!(&source_context, "Return value struct name not set on function attempting to allocate UDT layout"))?;
 
         self.function_definition.add_type_allocate_instruction(opcode, type_name, kind_str, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
@@ -1078,7 +1144,7 @@ impl CompilerFunctionBuilder {
     }
     fn compile_udt_type_metadata_struct_initialization(&mut self) -> CompilerResult<u32> {
         let source_context = self.function_scope.source_context.clone();
-        let slot_index = self.function_definition.add_slot().with_source_context(&source_context)?;
+        let slot_index = self.function_definition.add_slot();
 
         self.function_definition.add_simple_instruction(GospelOpcode::StructAllocate, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         self.function_definition.add_slot_instruction(GospelOpcode::StoreSlot, slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
@@ -1098,7 +1164,7 @@ impl CompilerFunctionBuilder {
         }
     }
     fn compile_condition_wrapped_expression<S: FnOnce(&mut Self, &Expression, &CompilerSourceContext) -> CompilerResult<()>>(&mut self, scope: &Rc<CompilerLexicalScope>, conditional_declaration: &ExpressionWithCondition, code_generator: S) -> CompilerResult<()> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: conditional_declaration.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: conditional_declaration.source_context.clone()};
         let possibly_jump_to_end_fixup = if let Some(condition_expression) = &conditional_declaration.condition_expression {
             let condition_expression_type = self.compile_expression(scope, condition_expression)?;
             self.coerce_to_bool_type(&condition_expression_type, &source_context)?;
@@ -1161,7 +1227,7 @@ impl CompilerFunctionBuilder {
     }
     fn compile_udt_type_base_class_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, base_class_expression: &ExpressionWithCondition, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
         if is_prototype_pass || allow_partial_types {
-            let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: base_class_expression.source_context.clone()};
+            let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: base_class_expression.source_context.clone()};
             self.compile_try_catch_wrapped_statement(&source_context, |inner_builder, _| {
                 inner_builder.compile_udt_type_base_class_statement_inner(scope, type_layout_slot_index, base_class_expression, is_prototype_pass)
             }, |inner_builder, source_context| {
@@ -1184,7 +1250,7 @@ impl CompilerFunctionBuilder {
         })
     }
     fn compile_enum_constant_declaration(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, constant_declaration: &EnumConstantDeclaration) -> CompilerResult<()> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: constant_declaration.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: constant_declaration.source_context.clone()};
         let possibly_jump_to_end_fixup = if let Some(condition_expression) = &constant_declaration.condition_expression {
             let condition_expression_type = self.compile_expression(scope, condition_expression)?;
             self.coerce_to_bool_type(&condition_expression_type, &source_context)?;
@@ -1209,7 +1275,7 @@ impl CompilerFunctionBuilder {
         Ok({})
     }
     fn compile_enum_constant_prototype_declaration(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, constant_declaration: &EnumConstantDeclaration) -> CompilerResult<()> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: constant_declaration.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: constant_declaration.source_context.clone()};
         self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         let constant_flags: u32 = 1 << 2;
         self.function_definition.add_type_member_instruction(GospelOpcode::TypeEnumAddConstant, constant_declaration.name.as_ref(), constant_flags, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
@@ -1260,13 +1326,13 @@ pub trait CompilerModuleBuilder : CompilerModuleBuilderInternal {
         }).chain_compiler_result(|| compiler_error!(&file_scope.source_context, "Failed to compile source file"))
     }
     fn add_simple_function(&self, function_name: &str, return_value_type: ExpressionValueType, expression: &Expression) -> CompilerResult<GospelSourceObjectReference> {
-        let source_context = CompilerSourceContext::default();
+        let source_context = ASTSourceContext::default();
         let (function_scope, function_closure) = CompilerInstance::declare_function(
-            &self.module_scope(), function_name, DeclarationVisibility::Public, return_value_type, None, false, &source_context.line_context)?;
+            &self.module_scope(), function_name, DeclarationVisibility::Public, return_value_type, None, false, &source_context)?;
 
         if let Some(module_codegen_data) = self.module_scope().module_codegen() {
             module_codegen_data.push_delayed_function_definition(&function_scope, Box::new(CompilerSimpleExpressionFunctionGenerator{
-                source_context: source_context.line_context.clone(),
+                source_context: source_context.clone(),
                 return_value_expression: expression.clone(),
             }))?;
         }
@@ -1832,7 +1898,7 @@ impl CompilerInstance {
         } else { Ok({}) }
     }
     fn compile_import_statement(scope: &Rc<CompilerLexicalScope>, statement: &ImportStatement) -> CompilerResult<()> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: statement.source_context.clone()};
 
         // Imports are resolved against a scope with only module name, so they cannot access file local or scope local declarations from any files, including the one we are currently compiling
         // They are still resolved against the module name to allow using module relative identifier syntax and accessing individual module-local files for the current module
@@ -1882,7 +1948,7 @@ impl CompilerInstance {
         }
     }
     fn compile_namespace_statement(scope: &Rc<CompilerLexicalScope>, statement: &NamespaceStatement, default_visibility: DeclarationVisibility) -> CompilerResult<()> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: statement.source_context.clone()};
         let mut current_scope: Rc<CompilerLexicalScope> = scope.clone();
 
         // Allocate a new scope for the namespace and declare it
@@ -1903,7 +1969,7 @@ impl CompilerInstance {
         }).chain_compiler_result(|| compiler_error!(source_context, "Failed to compile namespace declaration"))
     }
     fn compile_input_statement(scope: &Rc<CompilerLexicalScope>, statement: &InputStatement) -> CompilerResult<()> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: statement.source_context.clone()};
         let name = statement.global_name.clone();
         CompilerFunctionBuilder::check_integral_or_bool_type_instruction_encoding(&statement.value_type, &source_context)?;
 
@@ -1921,7 +1987,7 @@ impl CompilerInstance {
         Ok({})
     }
     fn pre_compile_function_argument(source_function_scope: &Rc<CompilerLexicalScope>, source_function_closure: &RefCell<CompilerFunctionDeclaration>, template_argument: &TemplateArgument) -> CompilerResult<Rc<CompilerLexicalDeclaration>> {
-        let source_context = CompilerSourceContext{file_name: source_function_scope.file_name(), line_context: template_argument.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: source_function_scope.file_or_module_name(), line_context: template_argument.source_context.clone()};
 
         let default_value_reference = if let Some(argument_default_value_expression) = &template_argument.default_value {
             let argument_index = source_function_closure.borrow().reference.signature.explicit_parameters.as_ref().unwrap().len();
@@ -1963,7 +2029,7 @@ impl CompilerInstance {
         Ok(new_parameter_declaration)
     }
     fn declare_function(scope: &Rc<CompilerLexicalScope>, function_name: &str, visibility: DeclarationVisibility, return_value_type: ExpressionValueType, template_declaration: Option<&TemplateDeclaration>, is_type_definition: bool, source_context: &ASTSourceContext) -> CompilerResult<(Rc<CompilerLexicalScope>, Rc<RefCell<CompilerFunctionDeclaration>>)> {
-        let actual_source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: source_context.clone()};
+        let actual_source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: source_context.clone()};
 
         let implicit_parameters = scope.collect_implicit_scope_parameters();
         let function_closure = Rc::new(RefCell::new(CompilerFunctionDeclaration {
@@ -2005,7 +2071,7 @@ impl CompilerInstance {
         Ok(function_closure.borrow().reference.clone())
     }
     fn pre_compile_enum_statement(scope: &Rc<CompilerLexicalScope>, statement: &EnumStatement, fallback_name: Option<&str>, default_visibility: DeclarationVisibility) -> CompilerResult<CompilerFunctionReference> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: statement.source_context.clone()};
         let function_name = statement.name.as_ref().map(|x| x.as_str()).or(fallback_name)
             .ok_or_else(|| compiler_error!(&source_context, "Unnamed enum declaration in top level scope. All top level enumerations must have a name"))?;
 
@@ -2040,7 +2106,7 @@ impl CompilerInstance {
         Ok(function_closure.borrow().reference.clone())
     }
     fn pre_compile_type_layout_block_declaration(scope: &Rc<CompilerLexicalScope>, declaration: &BlockDeclaration) -> CompilerResult<Box<dyn CompilerStructFragmentGenerator>> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: declaration.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: declaration.source_context.clone()};
         let block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{block_range: CompilerInstructionRange::default(), loop_codegen_data: None}));
         let block_scope = scope.declare_scope_generated_name("block", CompilerLexicalScopeClass::Block(CompilerResource{resource_handle: block_declaration.clone()}), &source_context.line_context)?;
 
@@ -2051,7 +2117,7 @@ impl CompilerInstance {
         Ok(Box::new(CompilerStructBlockFragment{block_declaration, fragments}))
     }
     fn pre_compile_type_layout_conditional_declaration(scope: &Rc<CompilerLexicalScope>, declaration: &ConditionalDeclaration) -> CompilerResult<Box<dyn CompilerStructFragmentGenerator>> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: declaration.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: declaration.source_context.clone()};
 
         let then_block_declaration = Rc::new(RefCell::new(CompilerBlockDeclaration{block_range: CompilerInstructionRange::default(), loop_codegen_data: None}));
         let then_scope = scope.declare_scope_generated_name("then", CompilerLexicalScopeClass::Block(CompilerResource{resource_handle: then_block_declaration.clone()}), &declaration.source_context)?;
@@ -2071,7 +2137,7 @@ impl CompilerInstance {
         }))
     }
     fn pre_compile_type_layout_struct_declaration(scope: &Rc<CompilerLexicalScope>, declaration: &StructStatement, visibility_override: Option<DeclarationVisibility>) -> CompilerResult<Box<dyn CompilerStructFragmentGenerator>> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: declaration.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: declaration.source_context.clone()};
         let visibility = visibility_override.unwrap_or(scope.visibility);
         let struct_reference = CompilerInstance::compile_struct_statement(scope, &declaration, None, visibility)?;
 
@@ -2084,7 +2150,7 @@ impl CompilerInstance {
         }))
     }
     fn pre_compile_type_layout_data_declaration(scope: &Rc<CompilerLexicalScope>, declaration: &DataStatement, visibility_override: Option<DeclarationVisibility>) -> CompilerResult<Box<dyn CompilerStructFragmentGenerator>> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: declaration.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: declaration.source_context.clone()};
         let visibility = visibility_override.unwrap_or(scope.visibility);
         let data_reference = CompilerInstance::pre_compile_data_statement(scope, &declaration, visibility)?;
 
@@ -2097,7 +2163,7 @@ impl CompilerInstance {
         }))
     }
     fn pre_compile_type_layout_member_declaration(scope: &Rc<CompilerLexicalScope>, declaration: &MemberDeclaration) -> CompilerResult<Box<dyn CompilerStructFragmentGenerator>> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: declaration.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: declaration.source_context.clone()};
         Ok(Box::new(CompilerStructMemberFragment{
             source_context,
             scope: scope.clone(),
@@ -2109,7 +2175,7 @@ impl CompilerInstance {
         }))
     }
     fn pre_compile_type_layout_function_declaration(scope: &Rc<CompilerLexicalScope>, declaration: &MemberFunctionDeclaration) -> CompilerResult<Box<dyn CompilerStructFragmentGenerator>> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: declaration.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: declaration.source_context.clone()};
         Ok(Box::new(CompilerStructVirtualFunctionFragment{
             source_context,
             scope: scope.clone(),
@@ -2146,7 +2212,7 @@ impl CompilerInstance {
         }
     }
     fn compile_struct_statement(scope: &Rc<CompilerLexicalScope>, statement: &StructStatement, fallback_name: Option<&str>, default_visibility: DeclarationVisibility) -> CompilerResult<CompilerFunctionReference> {
-        let source_context = CompilerSourceContext{file_name: scope.file_name(), line_context: statement.source_context.clone()};
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: statement.source_context.clone()};
         let function_name = statement.name.as_ref().map(|x| x.as_str()).or(fallback_name)
             .ok_or_else(|| compiler_error!(&source_context, "Unnamed struct declaration in top level scope. All top level structs must have a name"))?;
 
@@ -2534,14 +2600,14 @@ impl CompilerLexicalScope {
     }
     fn declare_scope(self: &Rc<Self>, name: &str, class: CompilerLexicalScopeClass, visibility: DeclarationVisibility, source_context: &ASTSourceContext) -> CompilerResult<Rc<CompilerLexicalScope>> {
         if let Some(existing_node) = self.child_lookup.borrow().get(name) {
-            let actual_source_context = CompilerSourceContext{file_name: self.file_name(), line_context: source_context.clone()};
+            let actual_source_context = CompilerSourceContext{file_name: self.file_or_module_name(), line_context: source_context.clone()};
             compiler_bail!(&actual_source_context, "{} has already been declared as {} in scope {}", name, existing_node, self.full_scope_display_name());
         }
         self.declare_scope_internal(name, class, visibility, source_context)
     }
     fn declare(self: &Rc<Self>, name: &str, class: CompilerLexicalDeclarationClass, visibility: DeclarationVisibility, source_context: &ASTSourceContext) -> CompilerResult<Rc<CompilerLexicalDeclaration>> {
         if let Some(existing_node) = self.child_lookup.borrow().get(name) {
-            let actual_source_context = CompilerSourceContext{file_name: self.file_name(), line_context: source_context.clone()};
+            let actual_source_context = CompilerSourceContext{file_name: self.file_or_module_name(), line_context: source_context.clone()};
             compiler_bail!(&actual_source_context, "{} has already been declared as {} in scope {}", name, existing_node, self.full_scope_display_name());
         }
         let new_declaration = Rc::new(CompilerLexicalDeclaration{
@@ -2549,7 +2615,7 @@ impl CompilerLexicalScope {
             class,
             name: name.to_string(),
             visibility: self.visibility.intersect(visibility),
-            source_context: CompilerSourceContext{file_name: self.file_name(), line_context: source_context.clone()},
+            source_context: CompilerSourceContext{file_name: self.file_or_module_name(), line_context: source_context.clone()},
         });
         self.children.borrow_mut().push(CompilerLexicalNode::Declaration(new_declaration.clone()));
         self.child_lookup.borrow_mut().insert(name.to_string(), CompilerLexicalNode::Declaration(new_declaration.clone()));
@@ -2596,9 +2662,13 @@ impl CompilerLexicalScope {
         self.iterate_scope_chain_outer_first()
             .find_map(|x| if let CompilerLexicalScopeClass::Module(module) = &x.class { module.compiler.upgrade() } else { None })
     }
-    /// Returns name of the source code file this scope has been created from (if available)
+    /// Returns name of the source code file this scope has been created from
     pub fn file_name(self: &Rc<Self>) -> Option<String> {
         self.source_context.file_name.clone()
+    }
+    /// Returns name of the source code file or module (if file name is not available) this scope has been created from
+    pub fn file_or_module_name(self: &Rc<Self>) -> Option<String> {
+        self.source_context.file_name.clone().or(Some(self.module_name()))
     }
     /// Returns true if this scope is a sub-scope of the given parent scope
     pub fn is_child_of(self: &Rc<Self>, parent: &Rc<Self>) -> bool {

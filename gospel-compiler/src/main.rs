@@ -242,9 +242,6 @@ struct ActionEvalExpression {
     /// Expression to eval against the input
     #[arg(long, short)]
     expression: String,
-    /// Type of the value yielded by the expression. If not specified, default expression type is Typename
-    #[arg(long, short = 'x')]
-    expression_type: Option<String>,
     /// Output format for the type tree (if result is a type tree)
     #[arg(long, short = 'f')]
     output_format: Option<TypeTreeOutputFormat>,
@@ -528,14 +525,11 @@ fn do_action_eval(action: ActionEvalExpression) -> anyhow::Result<()> {
     }
 
     // Compile the provided expression in a separate module
-    let expression_value_type = if let Some(value_type_string) = &action.expression_type {
-        ExpressionValueType::from_str(value_type_string).map_err(|x| anyhow!("Unknown expression value type: {}. Allowed expression value types are typename and int", x))?
-    } else { ExpressionValueType::Typename };
     let parsed_expression = parse_expression("<stdin>", action.expression.as_str())
         .map_err(|x| anyhow!("Failed to parse expression: {}", x))?;
 
     let module_writer = compiler_instance.define_module("@stdin_repl").to_simple_result()?;
-    let function_reference = module_writer.add_simple_function("@stdin_repl", expression_value_type, &parsed_expression).to_simple_result()
+    let function_reference = module_writer.add_simple_function("@stdin_repl", ExpressionValueType::Any, &parsed_expression).to_simple_result()
         .map_err(|x| anyhow!("Failed to compile expression: {}", x))?;
     let result_module = module_writer.compile().map_err(|x| anyhow!("Failed to compile module: {}", x))?;
     let mounted_container = vm_state.mount_container(result_module).map_err(|x| anyhow!("Failed to mount module container: {}", x))?;

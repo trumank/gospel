@@ -7,6 +7,7 @@ use gospel_typelib::type_model::{EnumKind, PrimitiveType, UserDefinedTypeKind, I
 /// Describes value type of the expression in the source grammar
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, EnumString)]
 pub enum ExpressionValueType {
+    Any,
     Integer(IntegralType),
     Typename,
     Bool,
@@ -258,6 +259,30 @@ pub struct StaticCastExpression {
     pub source_context: ASTSourceContext,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwitchExpressionCase {
+    pub match_expression: Expression,
+    pub result_expression: Expression,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwitchExpressionDefaultCase {
+    pub result_expression: Expression,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwitchExpression {
+    pub target_expression: Expression,
+    pub switch_cases: Vec<SwitchExpressionCase>,
+    pub default_case: Option<SwitchExpressionDefaultCase>,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
+}
+
 /// Represents a generic expression
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Expression {
@@ -275,6 +300,7 @@ pub enum Expression {
     PrimitiveTypeExpression(Box<PrimitiveTypeExpression>),
     CVQualifiedExpression(Box<CVQualifiedExpression>),
     StaticCastExpression(Box<StaticCastExpression>),
+    SwitchExpression(Box<SwitchExpression>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

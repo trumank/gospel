@@ -1,5 +1,5 @@
 ﻿use std::collections::HashMap;
-use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ImportStatement, ModuleImportStatementType, ModuleSourceFile, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression, MemberFunctionDeclaration, FunctionParameterDeclaration, TopLevelDeclaration, EnumStatement, EnumConstantDeclaration, BoolConstantExpression, StaticCastExpression, CompilerBuiltinExpression};
+use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ImportStatement, ModuleImportStatementType, ModuleSourceFile, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression, MemberFunctionDeclaration, FunctionParameterDeclaration, TopLevelDeclaration, EnumStatement, EnumConstantDeclaration, BoolConstantExpression, StaticCastExpression, CompilerBuiltinExpression, SwitchExpressionCase, SwitchExpressionDefaultCase, SwitchExpression};
 use crate::lex_util::{get_line_number_and_offset_from_index, parse_integer_literal, ParsedIntegerLiteral};
 use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
@@ -67,6 +67,9 @@ enum CompilerToken {
     #[token("else")]
     #[strum(to_string = "else")]
     Else,
+    #[token("switch")]
+    #[strum(to_string = "switch")]
+    Switch,
     #[token("while")]
     #[strum(to_string = "while")]
     While,
@@ -253,6 +256,9 @@ enum CompilerToken {
     #[token(",")]
     #[strum(to_string = ",")]
     Separator,
+    #[token("=>")]
+    #[strum(to_string = "=>")]
+    CaseSeparator,
     #[regex("_[A-Za-z0-9_]*")]
     #[strum(to_string = "unnamed identifier")]
     UnnamedIdentifier,
@@ -920,6 +926,81 @@ impl<'a> CompilerParserInstance<'a> {
             Expression::ConditionalExpression(Box::new(result_expression))
         }))
     }
+    fn parse_switch_expression(mut self) -> anyhow::Result<AmbiguousExpression<'a>> {
+        let switch_expression_token = self.ctx.next()?;
+        self.ctx.check_token(switch_expression_token, CompilerToken::Switch)?;
+
+        let source_context = self.ctx.source_context();
+        let target_enter_bracket_token = self.ctx.next()?;
+        self.ctx.check_token(target_enter_bracket_token, CompilerToken::SubExpressionStart)?;
+
+        self.parse_complete_expression()
+        ?.flat_map_result(|mut parser, target_expression| {
+            let target_exit_bracket_token = parser.ctx.next()?;
+            parser.ctx.check_token(target_exit_bracket_token, CompilerToken::SubExpressionEnd)?;
+
+            let scope_enter_bracket_token = parser.ctx.next()?;
+            parser.ctx.check_token(scope_enter_bracket_token, CompilerToken::ScopeStart)?;
+
+            // Parse case arms until we encounter the scope exit token
+            let mut switch_cases: Vec<SwitchExpressionCase> = Vec::new();
+            let mut default_case: Option<SwitchExpressionDefaultCase> = None;
+            let mut current_parser = parser;
+
+            while current_parser.ctx.peek()? != CompilerToken::ScopeEnd {
+                // Parse a single switch case
+                let case_source_context = current_parser.ctx.source_context();
+                let result_switch_case = current_parser.parse_complete_expression()?.flat_map_result(|mut parser, match_expression| {
+                    let expression_separator_token = parser.ctx.next()?;
+                    parser.ctx.check_token(expression_separator_token, CompilerToken::CaseSeparator)?;
+                    Ok(parser.parse_complete_expression()?.map_data(|result_expression| {
+                        SwitchExpressionCase{match_expression: match_expression.clone(), result_expression, source_context: case_source_context.clone()}
+                    }))
+                })?.flat_map_result(|mut inner_parser, constant| {
+                    let next_token = inner_parser.ctx.peek()?;
+                    if next_token == CompilerToken::ScopeEnd || next_token == CompilerToken::Separator {
+                        Ok(AmbiguousParsingResult::unambiguous(inner_parser, constant))
+                    } else { Err(inner_parser.ctx.fail(format!("Expected }} or , got {}", next_token))) }
+                })?.disambiguate()?;
+
+                switch_cases.push(result_switch_case.data);
+                current_parser = result_switch_case.parser;
+
+                // At this point we can have only separator or scope end as a next token, and if it is a separator we should digest it. Scope end will be digested later
+                if current_parser.ctx.peek()? == CompilerToken::Separator {
+                    current_parser.ctx.discard_next()?;
+                }
+
+                // Default switch case can be provided, which should always be the last case in the switch statement and end with scope end (no trailing comma is allowed)
+                if current_parser.ctx.peek()? == CompilerToken::UnnamedIdentifier {
+                    current_parser.ctx.discard_next()?;
+
+                    let default_case_source_context = current_parser.ctx.source_context();
+                    let expression_separator_token = current_parser.ctx.next()?;
+                    current_parser.ctx.check_token(expression_separator_token, CompilerToken::CaseSeparator)?;
+
+                    let default_case_result = current_parser.parse_complete_expression()?.flat_map_result(|mut inner_parser, default_case_result| {
+                        let next_token = inner_parser.ctx.peek()?;
+                        if next_token == CompilerToken::Separator {
+                            inner_parser.ctx.discard_next()?;
+                            let terminator_token = inner_parser.ctx.peek()?;
+                            inner_parser.ctx.check_token(terminator_token, CompilerToken::ScopeEnd)?;
+                        } else {
+                            inner_parser.ctx.check_token(next_token, CompilerToken::ScopeEnd)?;
+                        }
+                        Ok(AmbiguousParsingResult::unambiguous(inner_parser, default_case_result))
+                    })?.disambiguate()?;
+
+                    default_case = Some(SwitchExpressionDefaultCase{result_expression: default_case_result.data, source_context: default_case_source_context});
+                    current_parser = default_case_result.parser;
+                }
+            }
+            current_parser.ctx.discard_next()?;
+
+            let switch_expression = SwitchExpression{target_expression, switch_cases, default_case, source_context: source_context.clone()};
+            Ok(AmbiguousParsingResult::unambiguous(current_parser, Expression::SwitchExpression(Box::new(switch_expression))))
+        })
+    }
     fn parse_struct_declaration_expression(mut self, struct_kind: UserDefinedTypeKind) -> anyhow::Result<AmbiguousExpression<'a>> {
         self.ctx.discard_next()?;
         let source_context = self.ctx.source_context();
@@ -1297,6 +1378,7 @@ impl<'a> CompilerParserInstance<'a> {
             CompilerToken::PrimitiveModifierShort => self.parse_short_primitive_type_expression(),
             CompilerToken::PrimitiveModifierLong => self.parse_long_primitive_type_expression(),
             CompilerToken::StaticCast => self.parse_static_cast_expression(),
+            CompilerToken::Switch => self.parse_switch_expression(),
             _ => Err(self.ctx.fail(format!("Expected expression, got {}", first_expression_token))),
         }
     }
@@ -2299,6 +2381,7 @@ impl<'a> CompilerParserInstance<'a> {
             ExpressionValueType::Typename => if alt_form { "type" } else { "typename" },
             ExpressionValueType::Closure => "@closure",
             ExpressionValueType::MetaStruct => "@metastruct",
+            ExpressionValueType::Any => "@any",
         }
     }
     fn member_access_expression_to_source_text(expression: &MemberAccessExpression) -> String {
@@ -2490,6 +2573,28 @@ impl<'a> CompilerParserInstance<'a> {
         result_builder.push_str(")");
         result_builder
     }
+    fn switch_expression_case_to_source_text(case: &SwitchExpressionCase) -> String {
+        let match_expression = Self::expression_to_source_text(&case.match_expression);
+        let result_expression = Self::expression_to_source_text(&case.result_expression);
+        format!("{} => {}", match_expression, result_expression)
+    }
+    fn switch_expression_to_source_text(expression: &SwitchExpression) -> String {
+        let mut result_builder = String::with_capacity(50);
+        result_builder.push_str("switch (");
+        result_builder.push_str(Self::expression_to_source_text(&expression.target_expression).as_str());
+        result_builder.push_str(") {");
+
+        let switch_case_strings: Vec<String> = expression.switch_cases.iter().map(|x| Self::switch_expression_case_to_source_text(x)).collect();
+        result_builder.push_str(switch_case_strings.join(", ").as_str());
+
+        if let Some(default_switch_case) = &expression.default_case {
+            result_builder.push_str(", ");
+            result_builder.push_str("_ => ");
+            result_builder.push_str(Self::expression_to_source_text(&default_switch_case.result_expression).as_str());
+        }
+        result_builder.push_str("}");
+        result_builder
+    }
     fn expression_to_source_text(expression: &Expression) -> String {
         match expression {
             Expression::UnaryExpression(expr) => Self::unary_expression_to_source_text(&**expr),
@@ -2506,6 +2611,7 @@ impl<'a> CompilerParserInstance<'a> {
             Expression::PrimitiveTypeExpression(expr) => Self::primitive_type_expression_to_source_text(&**expr),
             Expression::CVQualifiedExpression(expr) => Self::cv_qualified_expression_to_source_text(&**expr),
             Expression::StaticCastExpression(expr) => Self::static_cast_expression_to_source_text(&**expr),
+            Expression::SwitchExpression(expr) => Self::switch_expression_to_source_text(&**expr),
         }
     }
     fn block_declaration_to_source_text(declaration: &BlockDeclaration) -> String {
@@ -2857,5 +2963,10 @@ impl Display for ModuleSourceFile {
 impl Display for ExpressionValueType {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", CompilerParserInstance::expression_value_type_to_source_text(self, false))
+    }
+}
+impl Display for SwitchExpressionCase {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", CompilerParserInstance::switch_expression_case_to_source_text(self))
     }
 }

@@ -20,3 +20,8 @@ enum class SuperLargeEnum : unsigned long long int {
 enum class TestScopedEnum : uint64_t {
     InitialValue
 };
+
+constexpr int SwitchStatementTest = switch(sys::os) {
+    sys::OS_LINUX => 500,
+    _ => 3333,
+};
