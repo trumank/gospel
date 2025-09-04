@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 version.workspace = true
 edition.workspace = true
+default-run = "gospel-compiler"
 
 [dependencies]
 gospel-vm = { version = "0.1.0", path = "../gospel-vm" }
