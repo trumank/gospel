@@ -25,3 +25,10 @@ constexpr int SwitchStatementTest = switch(sys::os) {
     sys::OS_LINUX => 500,
     _ => 3333,
 };
+
+class FuncPtrTest {
+    void(*)(int, char*, FuncPtrTest*) GlobalFunctionPtr;
+    void(*const)(int, char*, FuncPtrTest*) GlobalConstFunctionPtr;
+    char*(FuncPtrTest::*)() MemberFunctionPtr;
+    char*(FuncPtrTest::*const)() MemberConstFunctionPtr;
+};

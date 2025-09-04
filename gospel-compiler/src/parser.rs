@@ -1,5 +1,5 @@
 ﻿use std::collections::HashMap;
-use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ImportStatement, ModuleImportStatementType, ModuleSourceFile, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression, MemberFunctionDeclaration, FunctionParameterDeclaration, TopLevelDeclaration, EnumStatement, EnumConstantDeclaration, BoolConstantExpression, StaticCastExpression, CompilerBuiltinExpression, SwitchExpressionCase, SwitchExpressionDefaultCase, SwitchExpression};
+use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ImportStatement, ModuleImportStatementType, ModuleSourceFile, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression, MemberFunctionDeclaration, FunctionParameterDeclaration, TopLevelDeclaration, EnumStatement, EnumConstantDeclaration, BoolConstantExpression, StaticCastExpression, CompilerBuiltinExpression, SwitchExpressionCase, SwitchExpressionDefaultCase, SwitchExpression, FunctionPointerExpression};
 use crate::lex_util::{get_line_number_and_offset_from_index, parse_integer_literal, ParsedIntegerLiteral};
 use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
@@ -1412,7 +1412,6 @@ impl<'a> CompilerParserInstance<'a> {
     fn parse_expression_affinity_higher(self) -> anyhow::Result<AmbiguousExpression<'a>> {
         let mut unexplored_cases: Vec<ExactExpressionCase<'a>> = Vec::new();
         let mut result_cases: Vec<ExactExpressionCase<'a>> = Vec::new();
-        let mut failed_cases: Vec<anyhow::Error> = Vec::new();
 
         unexplored_cases.append(&mut self.parse_expression_affinity_highest()?.cases);
         while !unexplored_cases.is_empty() {
@@ -1420,21 +1419,22 @@ impl<'a> CompilerParserInstance<'a> {
 
             // If this case is a member access expression, parse it
             if let Ok(result) = current_case.parser.ctx.peek_or_eof() && result == Some(CompilerToken::ScopeDelimiter) {
-                match current_case.parser.parse_single_member_access_expression(current_case.data) {
-                    Ok(mut parsed_expression) => {
-                        // If we successfully parsed member access expression, add it to the unexplored list, since it could be a chain
-                        unexplored_cases.append(&mut parsed_expression.cases);
-                    }
-                    Err(expression_parse_error) => {
-                        failed_cases.push(expression_parse_error);
-                    }
+                let stashed_current_case = current_case.clone();
+                if let Ok(mut parsed_expression) = current_case.parser.parse_single_member_access_expression(current_case.data) {
+                    // If we successfully parsed member access expression, add it to the unexplored list, since it could be a chain
+                    unexplored_cases.append(&mut parsed_expression.cases);
+                } else {
+                    // If we did not parse member access expression after scope delimiter, this could be a part of the function pointer receiver type,
+                    // so we still need to add this case to the results and ignore the trailing scope delimiter
+                    result_cases.push(stashed_current_case);
                 }
             } else {
                 // This case does not have member access expressions left on the tail, so add it to the results directly
                 result_cases.push(current_case)
             }
         }
-        AmbiguousExpression::checked_from_cases(result_cases, failed_cases)
+        // We will never have an empty list of cases here single in case of parse error we will add the default case to the list
+        Ok(AmbiguousExpression::from_cases(result_cases))
     }
     fn wrap_expression_with_possible_cv_qualifiers(ambiguous_expression: AmbiguousExpression<'a>) -> anyhow::Result<AmbiguousExpression<'a>> {
         ambiguous_expression.flat_map_result(|mut parser, expression| {
@@ -1517,13 +1517,61 @@ impl<'a> CompilerParserInstance<'a> {
         }
     }
     fn parse_expression_affinity_low(self) -> anyhow::Result<AmbiguousExpression<'a>> {
+        self.parse_expression_affinity_medium()?.flat_map_result(|mut parser, return_value_type| {
+            // We will end up here with a sub-expression start only if previous token was parsed as a pointer and not multiplication,
+            // as such, the perceived ambiguity of function call expression here (A*(B) vs (A) * (B)) is not a problem, and sub-expression start here
+            // always indicates a function pointer expression, and as such, we do not need to fork the parser to account for the possibility that it could be an associative group,
+            // since in that case medium affinity expression would have not digested the multiplication operator
+            if parser.ctx.peek_or_eof()? == Some(CompilerToken::SubExpressionStart) {
+                parser.ctx.discard_next()?;
+                let source_context = parser.ctx.source_context();
+                if parser.ctx.peek()? != CompilerToken::PointerOrMultiply {
+                    // Next token is not a pointer type, which means that this is a member function pointer
+                    // Parse the next expression as receiver type, and make sure it is terminated with ::*). We use parse_complete_expression here because it is bracket delimited
+                    parser.parse_complete_expression()?.flat_map_result(|mut inner_parser, receiver_expression| {
+                        let scope_delimiter_token = inner_parser.ctx.next()?;
+                        inner_parser.ctx.check_token(scope_delimiter_token, CompilerToken::ScopeDelimiter)?;
+                        Ok(AmbiguousParsingResult::unambiguous(inner_parser, Some(receiver_expression)))
+                    })
+                } else {
+                    // Next token is a pointer type, in which case this is not a member function pointer
+                    Ok(AmbiguousParsingResult::unambiguous(parser, None))
+                }?.flat_map_result(|mut inner_parser, receiver_type| {
+                    let pointer_token = inner_parser.ctx.next()?;
+                    inner_parser.ctx.check_token(pointer_token, CompilerToken::PointerOrMultiply)?;
+
+                    // We could potentially parse optional constant qualifier here for function pointer type
+                    let constant = if inner_parser.ctx.peek()? == CompilerToken::Const {
+                        inner_parser.ctx.discard_next()?; true
+                    } else { false };
+
+                    let sub_expression_end_token = inner_parser.ctx.next()?;
+                    inner_parser.ctx.check_token(sub_expression_end_token, CompilerToken::SubExpressionEnd)?;
+
+                    let argument_list_start_token = inner_parser.ctx.next()?;
+                    inner_parser.ctx.check_token(argument_list_start_token, CompilerToken::SubExpressionStart)?;
+
+                    Ok(inner_parser.parse_ambiguous_expression_list(CompilerToken::SubExpressionEnd, |_| Ok(((), true)))?
+                    .map_data(|results| results.into_iter().map(|(_, expression)| expression.unwrap()).collect::<Vec<Expression>>()).map_data(|argument_types| {
+                        let result_expression = FunctionPointerExpression{return_value_type: return_value_type.clone(),
+                            receiver_type: receiver_type.clone(), argument_types, constant, source_context: source_context.clone()};
+                        Expression::FunctionPointerExpression(Box::new(result_expression))
+                    }))
+                })
+            } else {
+                // This is not a function pointer expression
+                Ok(AmbiguousExpression::unambiguous(parser, return_value_type))
+            }
+        })
+    }
+    fn parse_expression_affinity_lower(self) -> anyhow::Result<AmbiguousExpression<'a>> {
         let mut result_cases: Vec<ExactExpressionCase> = Vec::new();
         let mut stashed_elements: Vec<AssociativeExpressionGroupOperand> = Vec::new();
         let mut current_parser: CompilerParserInstance = self;
         loop {
             // If we cannot parse the current element expression successfully, but we have some tentative forms that we parsed in the past,
             // just assume that the current form is not valid and the previous ones are the ones that are ambiguous
-            let ambiguous_element_expression = current_parser.parse_expression_affinity_medium();
+            let ambiguous_element_expression = current_parser.parse_expression_affinity_low();
             if ambiguous_element_expression.is_err() && !result_cases.is_empty() {
                 break;
             }
@@ -1574,7 +1622,7 @@ impl<'a> CompilerParserInstance<'a> {
         let first_expression_token = self.ctx.peek()?;
         match first_expression_token {
             CompilerToken::If => self.parse_conditional_expression(),
-            _ => self.parse_expression_affinity_low(),
+            _ => self.parse_expression_affinity_lower(),
         }
     }
     fn parse_complete_expression(self) -> anyhow::Result<AmbiguousExpression<'a>> {
@@ -2595,6 +2643,25 @@ impl<'a> CompilerParserInstance<'a> {
         result_builder.push_str("}");
         result_builder
     }
+    fn function_pointer_expression_to_source_text(expression: &FunctionPointerExpression) -> String {
+        let mut result_builder = String::with_capacity(50);
+        result_builder.push_str("(");
+        result_builder.push_str(Self::expression_to_source_text(&expression.return_value_type).as_str());
+        result_builder.push_str("(");
+        if let Some(receiver_type) = &expression.receiver_type {
+            result_builder.push_str(Self::expression_to_source_text(receiver_type).as_str());
+            result_builder.push_str("::");
+        }
+        result_builder.push_str("*");
+        if expression.constant {
+            result_builder.push_str("const");
+        }
+        result_builder.push_str(")(");
+        let function_arguments: Vec<String> = expression.argument_types.iter().map(|x| Self::expression_to_source_text(x)).collect();
+        result_builder.push_str(function_arguments.join(", ").as_str());
+        result_builder.push_str("))");
+        result_builder
+    }
     fn expression_to_source_text(expression: &Expression) -> String {
         match expression {
             Expression::UnaryExpression(expr) => Self::unary_expression_to_source_text(&**expr),
@@ -2612,6 +2679,7 @@ impl<'a> CompilerParserInstance<'a> {
             Expression::CVQualifiedExpression(expr) => Self::cv_qualified_expression_to_source_text(&**expr),
             Expression::StaticCastExpression(expr) => Self::static_cast_expression_to_source_text(&**expr),
             Expression::SwitchExpression(expr) => Self::switch_expression_to_source_text(&**expr),
+            Expression::FunctionPointerExpression(expr) => Self::function_pointer_expression_to_source_text(&**expr),
         }
     }
     fn block_declaration_to_source_text(declaration: &BlockDeclaration) -> String {

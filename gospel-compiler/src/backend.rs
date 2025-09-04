@@ -7,7 +7,7 @@ use std::str::FromStr;
 use anyhow::anyhow;
 use itertools::{Itertools};
 use strum::Display;
-use crate::ast::{BoolConstantExpression, CVQualifiedExpression, CompilerBuiltinExpression, EnumConstantDeclaration, EnumStatement, FunctionParameterDeclaration, MemberFunctionDeclaration, StaticCastExpression, SwitchExpression};
+use crate::ast::{BoolConstantExpression, CVQualifiedExpression, CompilerBuiltinExpression, EnumConstantDeclaration, EnumStatement, FunctionParameterDeclaration, FunctionPointerExpression, MemberFunctionDeclaration, StaticCastExpression, SwitchExpression};
 use gospel_typelib::type_model::{BitWidth, EnumKind, IntegerSignedness, IntegralType, PrimitiveType, UserDefinedTypeKind};
 use gospel_vm::bytecode::GospelOpcode;
 use gospel_vm::module::GospelContainer;
@@ -257,6 +257,7 @@ impl CompilerFunctionBuilder {
             Expression::CVQualifiedExpression(cv_qualified_expression) => { self.compile_cv_qualified_expression(scope, &*cv_qualified_expression) }
             Expression::StaticCastExpression(static_cast_expression) => { self.compile_static_cast_expression(scope, &*static_cast_expression) }
             Expression::SwitchExpression(switch_expression) => { self.compile_switch_expression(scope, &*switch_expression) }
+            Expression::FunctionPointerExpression(function_pointer_expression) => { self.compile_function_pointer_expression(scope, &*function_pointer_expression) }
         }
     }
     fn compile_compiler_builtin_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &CompilerBuiltinExpression) -> CompilerResult<ExpressionValueType> {
@@ -360,6 +361,32 @@ impl CompilerFunctionBuilder {
         }
         switch_block_declaration.borrow_mut().block_range = CompilerInstructionRange{ start_instruction_index, end_instruction_index };
         Ok(result_expression_type)
+    }
+    fn compile_function_pointer_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &FunctionPointerExpression) -> CompilerResult<ExpressionValueType> {
+        let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: expression.source_context.clone()};
+
+        // Push receiver type (if this is a member function), return value type, and function arguments, and then create the function type
+        if let Some(receiver_type_expression) = &expression.receiver_type {
+            let receiver_expression_type = self.compile_expression(scope, &receiver_type_expression)?;
+            self.coerce_to_expression_type(&receiver_expression_type, &ExpressionValueType::Typename, &source_context)?;
+        }
+        let return_value_expression_type = self.compile_expression(scope, &expression.return_value_type)?;
+        self.coerce_to_expression_type(&return_value_expression_type, &ExpressionValueType::Typename, &source_context)?;
+
+        for function_argument_expression in &expression.argument_types {
+            let function_argument_expression_type = self.compile_expression(scope, function_argument_expression)?;
+            self.coerce_to_expression_type(&function_argument_expression_type, &ExpressionValueType::Typename, &source_context)?;
+        }
+        let function_opcode = if expression.receiver_type.is_some() { GospelOpcode::TypeFunctionCreateMember } else { GospelOpcode::TypeFunctionCreateGlobal };
+        self.function_definition.add_variadic_instruction(function_opcode, expression.argument_types.len() as u32, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+
+        // Wrap function type in a pointer now
+        self.function_definition.add_simple_instruction(GospelOpcode::TypePointerCreate, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        // Optionally mark the pointer as constant
+        if expression.constant {
+            self.function_definition.add_simple_instruction(GospelOpcode::TypeAddConstantQualifier, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        }
+        Ok(ExpressionValueType::Typename)
     }
     fn compile_struct_declaration_expression(&mut self, scope: &Rc<CompilerLexicalScope>, expression: &StructStatement) -> CompilerResult<ExpressionValueType> {
         let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: expression.source_context.clone()};

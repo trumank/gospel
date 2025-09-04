@@ -283,6 +283,16 @@ pub struct SwitchExpression {
     pub source_context: ASTSourceContext,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionPointerExpression {
+    pub return_value_type: Expression,
+    pub receiver_type: Option<Expression>,
+    pub argument_types: Vec<Expression>,
+    pub constant: bool,
+    #[serde(default)]
+    pub source_context: ASTSourceContext,
+}
+
 /// Represents a generic expression
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Expression {
@@ -301,6 +311,7 @@ pub enum Expression {
     CVQualifiedExpression(Box<CVQualifiedExpression>),
     StaticCastExpression(Box<StaticCastExpression>),
     SwitchExpression(Box<SwitchExpression>),
+    FunctionPointerExpression(Box<FunctionPointerExpression>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
