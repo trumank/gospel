@@ -1,7 +1,6 @@
 use anyhow::{anyhow, bail};
 use minidump::{Endian, MinidumpSystemInfo, UnifiedMemory, UnifiedMemoryList};
-use minidump::system_info::{Cpu, Os, PointerWidth};
-use gospel_typelib::type_model::{TargetArchitecture, TargetOperatingSystem};
+use minidump::system_info::{PointerWidth};
 use crate::memory_access::{DataEndianness, Memory};
 
 pub trait MinidumpAccess {
@@ -15,40 +14,23 @@ pub struct MinidumpMemory<T : MinidumpAccess> {
     minidump: T,
 }
 impl<T : MinidumpAccess> Memory for MinidumpMemory<T> {
-    fn target_arch(&self) -> anyhow::Result<Option<TargetArchitecture>> {
-        match self.minidump.minidump_system_info().cpu {
-            Cpu::Arm64 => Ok(Some(TargetArchitecture::ARM64)),
-            Cpu::X86_64 => Ok(Some(TargetArchitecture::X86_64)),
-            _ => Ok(None),
-        }
-    }
-    fn target_os(&self) -> anyhow::Result<Option<TargetOperatingSystem>> {
-        match self.minidump.minidump_system_info().os {
-            Os::Windows => Ok(Some(TargetOperatingSystem::Win32)),
-            Os::Linux => Ok(Some(TargetOperatingSystem::Linux)),
-            Os::Android => Ok(Some(TargetOperatingSystem::Linux)),
-            Os::MacOs => Ok(Some(TargetOperatingSystem::Darwin)),
-            Os::Ios => Ok(Some(TargetOperatingSystem::Darwin)),
-            _ => Ok(None),
-        }
-    }
-    fn address_width(&self) -> anyhow::Result<usize> {
+    fn address_width(&self) -> usize {
         match self.minidump.minidump_system_info().cpu.pointer_width() {
-            PointerWidth::Bits64 => Ok(8),
-            PointerWidth::Bits32 => Ok(4),
-            _ => Err(anyhow!("Unknown pointer width for minidump")),
+            PointerWidth::Bits64 => 8,
+            PointerWidth::Bits32 => 4,
+            _ => panic!("Unknown pointer width for minidump"),
         }
     }
-    fn data_endianness(&self) -> anyhow::Result<DataEndianness> {
+    fn data_endianness(&self) -> DataEndianness {
         self.minidump.use_minidump_memory_list(|x| {
-            let first_memory = x.iter().next().ok_or_else(|| anyhow!("Minidump does not contain any memory slices"))?;
+            let first_memory = x.iter().next().unwrap();
             let minidump_endian = match first_memory {
                 UnifiedMemory::Memory(x) => x.endian,
                 UnifiedMemory::Memory64(x) => x.endian,
             };
             match minidump_endian {
-                Endian::Big => Ok(DataEndianness::BigEndian),
-                Endian::Little => Ok(DataEndianness::LittleEndian),
+                Endian::Big => DataEndianness::BigEndian,
+                Endian::Little => DataEndianness::LittleEndian,
             }
         })
     }

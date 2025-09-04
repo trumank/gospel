@@ -1,29 +1,19 @@
-use anyhow::anyhow;
 use process_memory::{Architecture, CopyAddress, ProcessHandle, PutAddress};
-use gospel_typelib::type_model::{TargetArchitecture, TargetOperatingSystem};
 use crate::memory_access::{DataEndianness, Memory};
 
 pub struct LocalProcessMemory {
     process_handle: ProcessHandle,
 }
 impl Memory for LocalProcessMemory {
-    fn target_arch(&self) -> anyhow::Result<Option<TargetArchitecture>> {
-        // This is not accurate in case the process is emulated (like with Windows or Mac on ARM64 being able to emulate X64), but this is the best guess
-        Ok(TargetArchitecture::current_arch())
-    }
-    fn target_os(&self) -> anyhow::Result<Option<TargetOperatingSystem>> {
-        // This is not accurate in case the process is emulated (e.g. running under Wine on Linux), but this is the best guess
-        Ok(TargetOperatingSystem::current_os())
-    }
-    fn address_width(&self) -> anyhow::Result<usize> {
+    fn address_width(&self) -> usize {
         match self.process_handle.get_pointer_width() {
-            Architecture::Arch64Bit => Ok(8),
-            Architecture::Arch32Bit => Ok(4),
-            _ => Err(anyhow!("Unsupported process pointer width")),
+            Architecture::Arch64Bit => 8,
+            Architecture::Arch32Bit => 4,
+            _ => panic!("Unsupported process pointer width"),
         }
     }
-    fn data_endianness(&self) -> anyhow::Result<DataEndianness> {
-        Ok(DataEndianness::host_endianness())
+    fn data_endianness(&self) -> DataEndianness {
+        DataEndianness::host_endianness()
     }
     fn read_chunk(&self, address: u64, buffer: &mut [u8]) -> anyhow::Result<()> {
         Ok(self.process_handle.copy_address(address as usize, buffer)?)

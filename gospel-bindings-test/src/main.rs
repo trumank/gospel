@@ -38,9 +38,9 @@ fn main() -> anyhow::Result<()> {
     let test_field_address = (&test_field as *const TestUFieldLayout) as u64;
     let opaque_field_ptr = OpaquePtr{memory: current_process_memory, address: test_field_address};
 
-    let field_ptr = UField::from_raw_ptr(opaque_field_ptr, &type_namespace)?;
-    let object_ptr = field_ptr.cast_checked::<UObject<CurrentProcessMemory>>()?;
-    let object_internal_index = object_ptr.internal_index()?.read()?;
+    let field_ptr = UField::from_raw_ptr(opaque_field_ptr, &type_namespace);
+    let object_ptr = field_ptr.cast_checked::<UObject<CurrentProcessMemory>>();
+    let object_internal_index = object_ptr.internal_index().read()?;
     assert_eq!(test_field.baseclass_0.internal_index, object_internal_index);
     Ok({})
 }
