@@ -258,6 +258,12 @@ impl<M: Memory> Sub<u64> for OpaquePtr<M> {
         Self{memory: self.memory, address: self.address.checked_sub(rhs).unwrap()}
     }
 }
+impl<M: Memory> Sub<i64> for OpaquePtr<M> {
+    type Output = Self;
+    fn sub(self, rhs: i64) -> Self::Output {
+        Self{memory: self.memory, address: self.address.checked_sub_signed(rhs).unwrap()}
+    }
+}
 impl<M: Memory> Sub<usize> for OpaquePtr<M> {
     type Output = Self;
     fn sub(self, rhs: usize) -> Self::Output {

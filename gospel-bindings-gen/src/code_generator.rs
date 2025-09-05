@@ -1,11 +1,12 @@
 use crate::module_processor::{BindingsTypeDefinition, ResolvedBindingsModuleContext};
 use anyhow::{anyhow, bail};
-use gospel_typelib::type_model::{PrimitiveType, Type, TypeGraphLike, UserDefinedTypeMember};
+use gospel_typelib::type_model::{PrimitiveType, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeMember};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 use std::collections::{HashMap, HashSet};
 use convert_case::{Case, Casing};
 use syn::{parse2, parse_str, File};
+use gospel_vm::vm::GospelVMTypeContainer;
 
 #[derive(Debug)]
 pub(crate) struct CodeGenerationContext {
@@ -13,29 +14,29 @@ pub(crate) struct CodeGenerationContext {
     pub(crate) bindings_mod_name: String,
 }
 impl CodeGenerationContext {
-    fn generate_primitive_type(primitive_type: &PrimitiveType) -> Option<TokenStream> {
+    fn generate_primitive_type(primitive_type: &PrimitiveType) -> TokenStream {
         match primitive_type {
-            PrimitiveType::Void => None,
-            PrimitiveType::Char => Some(quote!{ i8 }),
-            PrimitiveType::UnsignedChar => Some(quote!{ u8 }),
-            PrimitiveType::WideChar => Some(quote! { gospel_runtime::static_type_wrappers::WideChar }),
-            PrimitiveType::ShortInt => Some(quote!{ i16 }),
-            PrimitiveType::UnsignedShortInt => Some(quote!{ u16 }),
-            PrimitiveType::Int => Some(quote!{ i32 }),
-            PrimitiveType::UnsignedInt => Some(quote!{ u32 }),
-            PrimitiveType::Float => Some(quote!{ f32 }),
-            PrimitiveType::Double => Some(quote!{ f64 }),
-            PrimitiveType::Bool => Some(quote!{ bool }),
-            PrimitiveType::LongInt => Some(quote! { gospel_runtime::static_type_wrappers::LongInt }),
-            PrimitiveType::UnsignedLongInt => Some(quote! { gospel_runtime::static_type_wrappers::UnsignedLongInt }),
-            PrimitiveType::LongLongInt => Some(quote!{ i64 }),
-            PrimitiveType::UnsignedLongLongInt => Some(quote!{ u64 }),
-            PrimitiveType::Char8 => Some(quote!{ u8 }),
-            PrimitiveType::Char16 => Some(quote!{ u16 }),
-            PrimitiveType::Char32 => Some(quote!{ u32 }),
+            PrimitiveType::Void => quote!{ () },
+            PrimitiveType::Char => quote!{ i8 },
+            PrimitiveType::UnsignedChar => quote!{ u8 },
+            PrimitiveType::WideChar => quote! { gospel_runtime::static_type_wrappers::WideChar },
+            PrimitiveType::ShortInt => quote!{ i16 },
+            PrimitiveType::UnsignedShortInt => quote!{ u16 },
+            PrimitiveType::Int => quote!{ i32 },
+            PrimitiveType::UnsignedInt => quote!{ u32 },
+            PrimitiveType::Float => quote!{ f32 },
+            PrimitiveType::Double => quote!{ f64 },
+            PrimitiveType::Bool => quote!{ bool },
+            PrimitiveType::LongInt => quote! { gospel_runtime::static_type_wrappers::LongInt },
+            PrimitiveType::UnsignedLongInt => quote! { gospel_runtime::static_type_wrappers::UnsignedLongInt },
+            PrimitiveType::LongLongInt => quote!{ i64 },
+            PrimitiveType::UnsignedLongLongInt => quote!{ u64 },
+            PrimitiveType::Char8 => quote!{ u8 },
+            PrimitiveType::Char16 => quote!{ u16 },
+            PrimitiveType::Char32 => quote!{ u32 },
         }
     }
-    fn generate_short_udt_name(type_name: &str) -> String {
+    fn generate_short_type_name(type_name: &str) -> String {
         if let Some(last_separator_index) = type_name.rfind('$') {
             type_name[(last_separator_index + 1)..].to_string()
         } else { type_name.to_string() }
@@ -46,7 +47,7 @@ impl CodeGenerationContext {
     }
     fn generate_type_qualified_name(&self, source_crate_name: &Option<String>, type_name: &str) -> TokenStream {
         let crate_name = Ident::new(source_crate_name.as_ref().map(|x| x.as_str()).unwrap_or("crate"), Span::call_site());
-        let short_type_name = Ident::new(&Self::generate_short_udt_name(type_name), Span::call_site());
+        let short_type_name = Ident::new(&Self::generate_short_type_name(type_name), Span::call_site());
         let mod_name = Ident::new(&self.bindings_mod_name, Span::call_site());
         quote! { #crate_name::#mod_name::#short_type_name }
     }
@@ -58,55 +59,51 @@ impl CodeGenerationContext {
             .collect();
         if documentation_attributes.is_empty() { None } else { Some(quote!{ #(#documentation_attributes)* }) }
     }
-    fn generate_type_reference(&self, type_index: usize) -> anyhow::Result<TokenStream> {
+    fn generate_type_reference(&self, type_index: usize) -> TokenStream {
         let base_type_index = self.module_context.run_context.base_type_index(type_index);
         let type_definition = self.module_context.run_context.type_by_index(base_type_index);
 
         match type_definition {
             Type::Array(array_type) => {
-                let pointee_type = self.generate_type_reference(array_type.element_type_index)?;
-                Ok(quote! {gospel_runtime::static_type_wrappers::StaticArrayPtr::<M, #pointee_type>})
+                let pointee_type = self.generate_type_reference(array_type.element_type_index);
+                quote! {gospel_runtime::static_type_wrappers::StaticArray::<#pointee_type>}
             },
             Type::Pointer(pointer_type) => {
-                let pointee_type = self.generate_type_reference(pointer_type.pointee_type_index)?;
+                let pointee_type = self.generate_type_reference(pointer_type.pointee_type_index);
                 if pointer_type.is_reference {
-                    Ok(quote! {gospel_runtime::static_type_wrappers::IndirectRef::<M, #pointee_type>})
+                    quote! {gospel_runtime::static_type_wrappers::Ref::<M, #pointee_type>}
                 } else {
-                    Ok(quote! {gospel_runtime::static_type_wrappers::IndirectPtr::<M, #pointee_type>})
+                    quote! {gospel_runtime::static_type_wrappers::Ptr::<M, #pointee_type>}
                 }
             }
             Type::CVQualified(cv_qualified_type) => {
                 self.generate_type_reference(cv_qualified_type.base_type_index)
             }
             Type::Primitive(primitive_type) => {
-                if let Some(primitive_inner_type) = Self::generate_primitive_type(primitive_type) {
-                    Ok(quote! {gospel_runtime::static_type_wrappers::TrivialPtr::<M, #primitive_inner_type>})
-                } else {
-                    Ok(quote! { gospel_runtime::static_type_wrappers::VoidPtr::<M> })
-                }
+                Self::generate_primitive_type(primitive_type)
             }
             Type::Function(_) => {
-                // TODO: Implement function pointer static type wrapper and related code generation (will likely need unique type per function signature)
-                Ok(quote! { gospel_runtime::static_type_wrappers::VoidPtr::<M> })
+                // Generate functions as void types due to the fact that their precise type is not useful in the context of external process bindings
+                quote! { () }
             }
             Type::UDT(user_defined_type) => {
                 // TODO: We could generate more accurate bindings based not just on the name of the type but also on the template parameters
                 if let Some(udt_name) = &user_defined_type.name && let Some(source_crate_name) = self.module_context.type_source_crate_lookup.get(udt_name) {
                     let full_type_name = self.generate_type_qualified_name(source_crate_name, udt_name);
-                    Ok(quote! { #full_type_name::<M> })
+                    quote! { #full_type_name }
                 } else {
-                    Ok(quote! { gospel_runtime::static_type_wrappers::VoidPtr::<M> })
+                    quote! { () }
                 }
             }
             Type::Enum(enum_type) => {
                 // Check if this enum type has a statically known underlying type that does not depend on the target or the full list of constants
                 // If it does, we can generate the pointer to the value of this enum as a trivial pointer with the known primitive type
-                if let Some(underlying_type) = enum_type.underlying_type_no_target_no_constants() &&
-                    let Some(underlying_inner_type) = Self::generate_primitive_type(&underlying_type) {
-                    Ok(quote! {gospel_runtime::static_type_wrappers::TrivialPtr::<M, #underlying_inner_type>})
+                if let Some(underlying_type) = enum_type.underlying_type_no_target_no_constants() {
+                    let underlying_type_tokens = Self::generate_primitive_type(&underlying_type);
+                    quote! {gospel_runtime::static_type_wrappers::TrivialPtr::<M, #underlying_type_tokens>}
                 } else {
                     // Otherwise, we have to generate it as a void ptr
-                    Ok(quote! { gospel_runtime::static_type_wrappers::VoidPtr::<M> })
+                    quote! { () }
                 }
             }
         }
@@ -120,12 +117,12 @@ impl CodeGenerationContext {
     }
     fn generate_type_field_definition(&self, type_name: &Ident, source_file_name: &str, field_name: &Ident, maybe_field_type_index: Option<usize>, is_prototype_field: bool, type_definition: &BindingsTypeDefinition) -> TokenStream {
         let field_doc_comment = Self::generate_doc_comment(type_definition, &format!("doc_{}", source_file_name));
-        if let Some(field_type_index) = maybe_field_type_index && !self.is_opaque_type_index(field_type_index) &&
-            let Ok(generated_field_type) = self.generate_type_reference(field_type_index) {
+        if let Some(field_type_index) = maybe_field_type_index && !self.is_opaque_type_index(field_type_index) {
+            let field_type = self.generate_type_reference(field_type_index);
             if is_prototype_field {
-                quote! { gsb_codegen_implement_field!(#type_name, #field_name, #source_file_name, optional, { #field_doc_comment }, #generated_field_type); }
+                quote! { gsb_codegen_implement_field!(#type_name, #field_name, #source_file_name, optional, { #field_doc_comment }, #field_type); }
             } else {
-                quote! { gsb_codegen_implement_field!(#type_name, #field_name, #source_file_name, required, { #field_doc_comment }, #generated_field_type); }
+                quote! { gsb_codegen_implement_field!(#type_name, #field_name, #source_file_name, required, { #field_doc_comment }, #field_type); }
             }
         } else {
             // We cannot generate an accurate field type, so just return DynamicPtr as-is
@@ -136,16 +133,9 @@ impl CodeGenerationContext {
             }
         }
     }
-    fn generate_type_definition(&self, type_index: usize, type_definition: &BindingsTypeDefinition) -> anyhow::Result<TokenStream> {
-        let base_type_index = self.module_context.run_context.base_type_index(type_index);
-        let type_container = self.module_context.run_context.type_container_by_index(base_type_index);
-
-        let user_defined_type = if let Type::UDT(wrapped_user_defined_type) = &type_container.wrapped_type {
-            wrapped_user_defined_type
-        } else { bail!("Type #{} is not a user defined type", base_type_index) };
-
+    fn generate_udt_definition(&self, user_defined_type: &UserDefinedType, type_container: &GospelVMTypeContainer, type_definition: &BindingsTypeDefinition) -> anyhow::Result<TokenStream> {
         let full_type_name = user_defined_type.name.clone().ok_or_else(|| anyhow!("Cannot generate bindings for unnamed UDTs"))?;
-        let type_name = Ident::new(&Self::generate_short_udt_name(&full_type_name), Span::call_site());
+        let type_name = Ident::new(&Self::generate_short_type_name(&full_type_name), Span::call_site());
         let type_doc_comment = Self::generate_doc_comment(type_definition, "doc");
         let mut generated_field_names: HashSet<String> = HashSet::new();
         let mut generated_fields: Vec<TokenStream> = Vec::new();
@@ -195,26 +185,37 @@ impl CodeGenerationContext {
         } else { quote!{ dynamic_type } };
         Ok(quote! {
             #type_doc_comment
-            #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-            pub struct #type_name<M: gospel_runtime::memory_access::Memory> {
-                inner_ptr: gospel_runtime::runtime_type_model::DynamicPtr<M>,
+            pub struct #type_name {
+                _dynamic_size_marker: [u8],
             }
             gsb_codegen_implement_type!(#type_name, #full_type_name, #type_impl_arguments);
-            impl<M: gospel_runtime::memory_access::Memory> #type_name<M> {
+            impl #type_name {
                 #(#generated_fields)*
             }
         })
     }
     fn generate_fallback_type_definition(&self, raw_type_name: &str) -> TokenStream {
-        let type_name = Ident::new(&Self::generate_short_udt_name(&raw_type_name), Span::call_site());
-        quote! { type #type_name<M: gospel_runtime::memory_access::Memory> = gospel_runtime::static_type_wrappers::VoidPtr<M>; }
+        let type_name = Ident::new(&Self::generate_short_type_name(&raw_type_name), Span::call_site());
+        quote! { type #type_name<M: gospel_runtime::memory_access::Memory> = (); }
     }
     pub(crate) fn generate_bindings_file(self) -> anyhow::Result<String> {
         let mut type_definitions: Vec<TokenStream> = Vec::new();
         for type_definition in &self.module_context.types_to_generate {
-            if let Some(type_index) = type_definition.type_index && let Ok(result_type_definition) = self.generate_type_definition(type_index, type_definition) {
-                type_definitions.push(result_type_definition.clone());
+            if let Some(type_index) = type_definition.type_index {
+                let base_type_index = self.module_context.run_context.base_type_index(type_index);
+                let type_container = self.module_context.run_context.type_container_by_index(base_type_index);
+
+                if let Type::UDT(user_defined_type) = &type_container.wrapped_type {
+                    // Generate user defined type definition
+                    let result_type_definition = self.generate_udt_definition(user_defined_type, type_container, type_definition)?;
+                    type_definitions.push(result_type_definition.clone());
+                } else if let Type::Enum(_) = &type_container.wrapped_type {
+                    // TODO: Generate enum type definitions here
+                } else {
+                    bail!("Expected UDT or enum type in types to generate list, found type definition not marked as either");
+                }
             } else {
+                // Generate fallback type definition if we failed to eval this type function (which should generally never happen for well-formed UDTs with partial types compiler switch)
                 let fallback_type_definition = self.generate_fallback_type_definition(&type_definition.type_full_name);
                 type_definitions.push(fallback_type_definition);
             }

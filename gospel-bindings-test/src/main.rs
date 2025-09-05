@@ -1,10 +1,12 @@
+#![feature(arbitrary_self_types)]
+
 use std::path::PathBuf;
 use std::ptr::null;
 use std::str::FromStr;
 use std::sync::Arc;
 use gospel_runtime::current_process::CurrentProcessMemory;
 use gospel_runtime::memory_access::OpaquePtr;
-use gospel_runtime::static_type_wrappers::{StaticallyTypedPtr, TypedDynamicPtrWrapper};
+use gospel_runtime::static_type_wrappers::Ptr;
 use gospel_runtime::vm_integration::GospelVMTypeGraphBackend;
 use gospel_typelib::type_model::TargetTriplet;
 use gospel_vm::vm::GospelVMOptions;
@@ -38,8 +40,8 @@ fn main() -> anyhow::Result<()> {
     let test_field_address = (&test_field as *const TestUFieldLayout) as u64;
     let opaque_field_ptr = OpaquePtr{memory: current_process_memory, address: test_field_address};
 
-    let field_ptr = UField::from_raw_ptr(opaque_field_ptr, &type_namespace);
-    let object_ptr = field_ptr.cast_checked::<UObject<CurrentProcessMemory>>();
+    let field_ptr = Ptr::<CurrentProcessMemory, UField>::from_raw_ptr(opaque_field_ptr, &type_namespace).to_ref_checked();
+    let object_ptr = field_ptr.cast_checked::<UObject>();
     let object_internal_index = object_ptr.internal_index().read()?;
     assert_eq!(test_field.baseclass_0.internal_index, object_internal_index);
     Ok({})

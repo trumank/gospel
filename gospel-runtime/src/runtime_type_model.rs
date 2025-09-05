@@ -5,7 +5,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, RwLock};
 use anyhow::anyhow;
 use paste::paste;
-use gospel_typelib::type_model::{CVQualifiedType, MutableTypeGraph, PrimitiveType, ResolvedUDTMemberLayout, Type, TypeLayoutCache, UserDefinedTypeMember};
+use gospel_typelib::type_model::{CVQualifiedType, MutableTypeGraph, PrimitiveType, ResolvedUDTMemberLayout, TargetTriplet, Type, TypeLayoutCache, UserDefinedTypeMember};
 use crate::memory_access::{Memory, OpaquePtr};
 
 /// Type ptr namespace represents a type hierarchy used by a hierarchy of related type pointers
@@ -15,10 +15,79 @@ pub struct TypePtrNamespace {
     pub layout_cache: Arc<RwLock<TypeLayoutCache>>,
 }
 impl TypePtrNamespace {
-    pub fn can_assign_ptr_value(&self, to_pointee_type_index: usize, from_pointee_type_index: usize) -> bool {
+    /// This function answers the question "by how much do I need to offset pointer to type from_index to get a pointer to type to_index?"
+    /// Returns None if two types are not related and their values are not convertible, or pointer adjustment necessary for conversion (in case of upcasting and downcasting)
+    /// Note that for indirect pointers to be considered convertible the wrapped pointer types must be convertible with no offset
+    /// This has the same rules as static_cast in C++, it will not attempt to reinterpret bits of unrelated types. However, note that unlike static_cast in C++,
+    /// this cast will only succeed if no coercion is necessary (e.g. while static_cast from float to int will succeed in C++, it will fail here).
+    /// Additionally, it will not convert between pointers and integers
+    pub fn get_static_cast_pointer_adjust(&self, from_type_index: usize, to_type_index: usize) -> Option<i64> {
         let type_graph = self.type_graph.read().unwrap();
-        // TODO: This should be relaxed to allow integral conversions between integers of the same width, as well as enums
-        type_graph.base_type_index(to_pointee_type_index) == type_graph.base_type_index(from_pointee_type_index)
+        let target_triplet = self.layout_cache.read().unwrap().target_triplet.clone();
+
+        let from_base_type_index = type_graph.base_type_index(from_type_index);
+        let to_base_type_index = type_graph.base_type_index(to_type_index);
+
+        let from_base_type = type_graph.type_by_index(from_base_type_index);
+        let to_base_type = type_graph.type_by_index(to_base_type_index);
+
+        if from_base_type_index == to_base_type_index {
+            // Shortcut for when from and to is the same base type
+            Some(0)
+        } else if let Type::Primitive(from_primitive_type) = from_base_type && let Type::Primitive(to_primitive_type) = to_base_type {
+            // Primitive types can only be converted in-place, so their offset is always 0
+            if Self::are_primitive_types_convertible(*from_primitive_type, *to_primitive_type, &target_triplet) { Some(0) } else { None }
+        } else if let Type::Enum(from_enum_type) = from_base_type && let Type::Primitive(to_primitive_type) = to_base_type {
+            // Enum type can be converted to primitive type if its underlying type can be converted to it
+            let from_underlying_type = from_enum_type.underlying_type(&target_triplet).unwrap();
+            if Self::are_primitive_types_convertible(from_underlying_type, *to_primitive_type, &target_triplet) { Some(0) } else { None }
+        } else if let Type::Primitive(from_primitive_type) = from_base_type && let Type::Enum(to_enum_type) = to_base_type {
+            // Primitive type can be converted to enum type if it can be converted to its underlying type
+            let to_underlying_type = to_enum_type.underlying_type(&target_triplet).unwrap();
+            if Self::are_primitive_types_convertible(*from_primitive_type, to_underlying_type, &target_triplet) { Some(0) } else { None }
+        } else if let Type::Pointer(from_pointer_type) = from_base_type && let Type::Pointer(to_pointer_type) = to_base_type {
+            // Pointer types are only convertible if pointee type can be converted without applying any adjustment
+            // Re-entry to get_static_cast_pointer_adjust is okay in this context because read lock that we are holding can be shared
+            if self.get_static_cast_pointer_adjust(from_pointer_type.pointee_type_index, to_pointer_type.pointee_type_index) == Some(0) { Some(0) } else { None }
+        } else if let Type::Array(from_array_type) = from_base_type && let Type::Array(to_array_type) = to_base_type {
+            // Similar logic applies to arrays as it does to pointers, two array types are convertible if their element types are convertible without any adjustment
+            // Arrays also have an additional requirement of their length being equal
+            if from_array_type.array_length == to_array_type.array_length &&
+                self.get_static_cast_pointer_adjust(from_array_type.element_type_index, to_array_type.element_type_index) == Some(0) { Some(0) } else { None }
+        } else if let Type::UDT(from_user_defined_type) = from_base_type && let Type::UDT(to_user_defined_type) = to_base_type {
+            // Struct types can be upcasted or downcasted. Try upcasting (casting from derived class to base class first) first, and then downcasting (casting from base class to derived class) as a fallback
+            let mut layout_cache = self.layout_cache.write().unwrap();
+            let base_class_offsets= from_user_defined_type.find_all_base_class_offsets(to_base_type_index, type_graph.deref(), layout_cache.deref_mut()).unwrap();
+            if  !base_class_offsets.is_empty() {
+                // When upcasting, base class is located at positive offset from this pointer. In this case, it is also safe to pick any instance of base class within the derived class, preferring for the outermost first instance
+                Some(base_class_offsets[0] as i64)
+            } else if let derived_class_offsets = to_user_defined_type.find_all_base_class_offsets(from_base_type_index, type_graph.deref(), layout_cache.deref_mut()).unwrap() && derived_class_offsets.len() == 1 {
+                // Downcasting can only be performed where there is only once instance of base class in the hierarchy chain. When there are multiple instances, it is not possible to know pointer to which instance we have
+                // Downcasting also goes from base to derived class, which is at lower addresses, so the offset here is negative
+                Some(-(derived_class_offsets[0] as i64))
+            } else {
+                // Given UDTs are not related otherwise, and the cast is not possible
+                None
+            }
+        } else {
+            // Types are not related otherwise and there is no implicit conversion available
+            None
+        }
+    }
+
+    fn are_primitive_types_convertible(from_primitive_type: PrimitiveType, to_primitive_type: PrimitiveType, target_triplet: &TargetTriplet) -> bool {
+        // Primitive types are convertible if they are of the same bit width and integral status. Signedness changing conversions are allowed
+        if let Some(from_bit_width) = from_primitive_type.bit_width(&target_triplet) &&
+            let Some(to_bit_width) = to_primitive_type.bit_width(&target_triplet) &&
+            from_bit_width == to_bit_width && from_primitive_type.is_integral() == to_primitive_type.is_integral() {
+            return true;
+        }
+        // Otherwise, primitive types are convertible if they are the exact same type, or to type is void
+        if from_primitive_type == to_primitive_type || to_primitive_type == PrimitiveType::Void {
+            return true;
+        }
+        false
+
     }
 }
 
@@ -109,14 +178,6 @@ impl TypePtrMetadata {
             Some(matching_base_classes)
         } else { None }
     }
-    pub fn struct_all_base_class_offsets(&self, base_class_type_index: usize) -> Option<Vec<usize>> {
-        let type_graph = self.namespace.type_graph.read().unwrap();
-        let mut layout_cache = self.namespace.layout_cache.write().unwrap();
-        let type_data = type_graph.base_type_by_index(self.type_index);
-        if let Type::UDT(user_defined_type) = type_data {
-            Some(user_defined_type.find_all_base_class_offsets(type_graph.base_type_index(base_class_type_index), type_graph.deref(), layout_cache.deref_mut()).unwrap())
-        } else { None }
-    }
     pub fn struct_field_type_index_and_offset(&self, field_name: &str) -> Option<(usize, usize)> {
         let type_graph = self.namespace.type_graph.read().unwrap();
         let mut layout_cache = self.namespace.layout_cache.write().unwrap();
@@ -129,31 +190,6 @@ impl TypePtrMetadata {
                 } else { None }
             }, type_graph.deref(), layout_cache.deref_mut()).unwrap()
         } else { None }
-    }
-    pub fn struct_get_upcast_this_add_adjust(&self, base_class_type_index: usize) -> Option<usize> {
-        // Check if this is the same type we are attempting to cast to, and return 0 offset in that case
-        let type_graph = self.namespace.type_graph.read().unwrap();
-        let base_base_class_type_index = type_graph.base_type_index(base_class_type_index);
-        if type_graph.base_type_index(self.type_index) == base_base_class_type_index {
-            return Some(0);
-        }
-        // We could have multiple instances of the same base class in the type hierarchy at different levels. In that case, we return the first base class that is valid, even if we have multiple,
-        // since in such cases usually the user does not care which instance we get (e.g. if this is an interface-like class with no data)
-        if let Some(base_class_offsets) = self.struct_all_base_class_offsets(base_base_class_type_index) && !base_class_offsets.is_empty() {
-            Some(base_class_offsets[0])
-        } else { None }
-    }
-    pub fn struct_get_unchecked_downcast_this_sub_adjust(&self, derived_class_type_index: usize) -> Option<usize> {
-        // Check if this is the same type we are attempting to cast to, and return 0 offset in that case
-        let type_graph = self.namespace.type_graph.read().unwrap();
-        let base_derived_class_type_index = type_graph.base_type_index(derived_class_type_index);
-        if type_graph.base_type_index(self.type_index) == base_derived_class_type_index {
-            return Some(0);
-        }
-        let derived_class_metadata = self.with_type_index(base_derived_class_type_index);
-        let base_class_offsets = derived_class_metadata.struct_all_base_class_offsets(self.type_index).unwrap();
-        // We cannot upcast from base class to derived class directly if it appears multiple times in the hierarchy, because we do not know which particular base class this pointer refers to
-        if base_class_offsets.len() == 1 { Some(base_class_offsets[0]) } else { None }
     }
 }
 
@@ -223,6 +259,10 @@ impl<M: Memory> DynamicPtr<M> {
     pub fn is_nullptr(&self) -> bool {
         self.opaque_ptr.is_nullptr()
     }
+    /// Creates a nullptr from this pointer, copying its type information and memory backend, but setting the address to 0
+    pub fn to_nullptr(&self) -> Self {
+        DynamicPtr{opaque_ptr: OpaquePtr{memory: self.opaque_ptr.memory.clone(), address: 0}, metadata: self.metadata.clone()}
+    }
     /// Offsets this pointer towards higher addresses by the given number of elements
     pub fn add_unchecked(&self, count: usize) -> Self {
         Self{opaque_ptr: self.opaque_ptr.clone() + (count * self.metadata.size_and_alignment().0), metadata: self.metadata.clone() }
@@ -244,16 +284,10 @@ impl<M: Memory> DynamicPtr<M> {
         } else { None }
     }
     /// Attempts to read this dynamic pointer as a pointer
-    pub fn read_ptr(&self) -> anyhow::Result<Option<Option<Self>>> {
-        if let Some((pointee_type_index, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference() {
+    pub fn read_ptr(&self) -> anyhow::Result<Option<Self>> {
+        if let Some((pointee_type_index, _)) = self.metadata.pointer_pointee_type_index_and_is_reference() {
             let pointee_opaque_ptr = self.opaque_ptr.read_ptr()?;
-            if pointee_opaque_ptr.is_nullptr() {
-                if is_reference_type {
-                    Err(anyhow!("Reference type has illegal value of nullptr"))
-                } else { Ok(Some(None)) }
-            } else {
-                Ok(Some(Some(Self{opaque_ptr: pointee_opaque_ptr, metadata: self.metadata.with_type_index(pointee_type_index)})))
-            }
+            Ok(Some(Self{opaque_ptr: pointee_opaque_ptr, metadata: self.metadata.with_type_index(pointee_type_index)}))
         } else { Ok(None) }
     }
     pub fn read_ptr_slice_unchecked(&self, len: usize) -> anyhow::Result<Option<Vec<Option<Self>>>> {
@@ -272,12 +306,13 @@ impl<M: Memory> DynamicPtr<M> {
     }
     /// Attempts to write this dynamic pointer as a pointer value. Writes address of given ptr as a value
     pub fn write_ptr(&self, value: &Self) -> anyhow::Result<()> {
-        if let Some((pointee_type_index, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference() &&
-            self.metadata.namespace.can_assign_ptr_value(pointee_type_index, value.metadata.type_index) {
+        if let Some((pointee_type_index, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference() {
             if value.is_nullptr() && is_reference_type {
                 Err(anyhow!("Cannot write value of nullptr to reference type"))
-            } else { self.opaque_ptr.write_ptr(&value.opaque_ptr) }
-        } else { Err(anyhow!("Not a pointer of a compatible type")) }
+            } else if let Some(other_pointer_adjust) = self.metadata.namespace.get_static_cast_pointer_adjust(value.metadata.type_index, pointee_type_index) {
+                self.opaque_ptr.write_ptr(&(value.opaque_ptr.clone() + other_pointer_adjust))
+            } else { Err(anyhow!("Pointee type is not compatible")) }
+        } else { Err(anyhow!("Not a pointer type")) }
     }
     /// Attempts to write this dynamic pointer as a pointer value. Writes 0 address (nullptr) as a value
     pub fn write_nullptr(&self) -> anyhow::Result<()> {
@@ -288,15 +323,16 @@ impl<M: Memory> DynamicPtr<M> {
         } else { Err(anyhow!("Not a pointer type")) }
     }
     pub fn write_ptr_slice_unchecked(&self, buffer: &[Self]) -> anyhow::Result<()> {
-        if let Some((pointee_type_index, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference() && !buffer.is_empty() &&
-            self.metadata.namespace.can_assign_ptr_value(pointee_type_index, buffer[0].metadata.type_index) {
-            let raw_ptr_array: Vec<OpaquePtr<M>> = buffer.iter().map(|x| {
-                if x.is_nullptr() && is_reference_type {
+        if let Some((pointee_type_index, is_reference_type)) = self.metadata.pointer_pointee_type_index_and_is_reference() {
+            let raw_ptr_array: Vec<OpaquePtr<M>> = buffer.iter().map(|element_ptr| {
+                if element_ptr.is_nullptr() && is_reference_type {
                     Err(anyhow!("Cannot write value of nullptr to reference type"))
-                } else { Ok(x.opaque_ptr.clone()) }
+                } else if let Some(other_pointer_adjust) = self.metadata.namespace.get_static_cast_pointer_adjust(element_ptr.metadata.type_index, pointee_type_index) {
+                    Ok(element_ptr.opaque_ptr.clone() + other_pointer_adjust)
+                } else { Err(anyhow!("Pointee type is not compatible")) }
             }).collect::<anyhow::Result<Vec<OpaquePtr<M>>>>()?;
             self.opaque_ptr.write_ptr_array(raw_ptr_array.as_slice())
-        } else { Err(anyhow!("Not a pointer of a compatible type")) }
+        } else { Err(anyhow!("Not a pointer type")) }
     }
 
     implement_dynamic_ptr_numeric_access!(u8, true, false);
