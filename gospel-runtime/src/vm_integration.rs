@@ -51,7 +51,7 @@ impl MutableTypeGraph for GospelVMTypeGraphBackend {
     fn store_type(&mut self, type_data: Type) -> usize {
         self.vm_run_context.store_type(type_data)
     }
-    fn find_create_named_udt_type(&mut self, full_type_name: &str) -> anyhow::Result<Option<usize>> {
+    fn find_create_named_type(&mut self, full_type_name: &str) -> anyhow::Result<Option<usize>> {
         let object_reference = GospelSourceObjectReference::from_str(full_type_name)
             .map_err(|x| anyhow!("Malformed typename {} format: {}", full_type_name, x))?;
         if let Some(found_function_instance) = self.vm_instance.find_function_by_reference(&object_reference) {

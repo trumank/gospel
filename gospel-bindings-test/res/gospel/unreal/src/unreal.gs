@@ -611,7 +611,6 @@ struct FUObjectArray {
 
 type EObjectFlags = int32_t;
 type EClassFlags = int32_t;
-type EClassCastFlags = uint64_t;
 
 /// Core class in the Unreal Engine object system. All reflection-enabled types are derived from this class
 class UObject {
@@ -951,4 +950,69 @@ struct FStaticConstructObjectParameters {
         if (UE_VERSION >= 506) int32_t SerialNumber;
         FObjectInitializerOverrides* SubobjectOverrides;
     }
+};
+
+enum EClassCastFlags : unsigned long long int {
+	None = 0x0000000000000000u64,
+	UField = 0x0000000000000001u64,
+	FInt8Property	= 0x0000000000000002u64,
+	UEnum	= 0x0000000000000004u64,
+	UStruct = 0x0000000000000008u64,
+	UScriptStruct = 0x0000000000000010u64,
+	UClass = 0x0000000000000020u64,
+	FByteProperty	= 0x0000000000000040u64,
+	FIntProperty = 0x0000000000000080u64,
+	FFloatProperty = 0x0000000000000100u64,
+	FUInt64Property = 0x0000000000000200u64,
+	FClassProperty = 0x0000000000000400u64,
+	FUInt32Property = 0x0000000000000800u64,
+	FInterfaceProperty = 0x0000000000001000u64,
+	FNameProperty = 0x0000000000002000u64,
+	FStrProperty = 0x0000000000004000u64,
+	FProperty = 0x0000000000008000u64,
+	FObjectProperty = 0x0000000000010000u64,
+	FBoolProperty = 0x0000000000020000u64,
+	FUInt16Property = 0x0000000000040000u64,
+	UFunction = 0x0000000000080000u64,
+	FStructProperty = 0x0000000000100000u64,
+	FArrayProperty = 0x0000000000200000u64,
+	FInt64Property = 0x0000000000400000u64,
+	FDelegateProperty = 0x0000000000800000u64,
+	FNumericProperty = 0x0000000001000000u64,
+	FMulticastDelegateProperty = 0x0000000002000000u64,
+	FObjectPropertyBase = 0x0000000004000000u64,
+	FWeakObjectProperty = 0x0000000008000000u64,
+	FLazyObjectProperty = 0x0000000010000000u64,
+	FSoftObjectProperty = 0x0000000020000000u64,
+	FTextProperty	= 0x0000000040000000u64,
+	FInt16Property = 0x0000000080000000u64,
+	FDoubleProperty = 0x0000000100000000u64,
+	FSoftClassProperty = 0x0000000200000000u64,
+	UPackage = 0x0000000400000000u64,
+	ULevel = 0x0000000800000000u64,
+	AActor = 0x0000001000000000u64,
+	APlayerController = 0x0000002000000000u64,
+	APawn	= 0x0000004000000000u64,
+	USceneComponent = 0x0000008000000000u64,
+	UPrimitiveComponent = 0x0000010000000000u64,
+	USkinnedMeshComponent	= 0x0000020000000000u64,
+	USkeletalMeshComponent = 0x0000040000000000u64,
+	UBlueprint = 0x0000080000000000u64,
+	UDelegateFunction	= 0x0000100000000000u64,
+	UStaticMeshComponent = 0x0000200000000000u64,
+	FMapProperty = 0x0000400000000000u64,
+	FSetProperty = 0x0000800000000000u64,
+	FEnumProperty	= 0x0001000000000000u64,
+	USparseDelegateFunction = 0x0002000000000000u64,
+	FMulticastInlineDelegateProperty = 0x0004000000000000u64,
+	FMulticastSparseDelegateProperty = 0x0008000000000000u64,
+	FFieldPathProperty = 0x0010000000000000u64,
+	FLargeWorldCoordinatesRealProperty = 0x0080000000000000u64,
+	FOptionalProperty	= 0x0100000000000000u64,
+	FVValueProperty = 0x0200000000000000u64,
+	FVRestValueProperty = 0x0400000000000000u64,
+	FVerseStringProperty = 0x0800000000000000u64,
+	FUtf8StrProperty = 0x1000000000000000u64,
+	FAnsiStrProperty = 0x2000000000000000u64,
+	FVCellProperty = 0x4000000000000000u64,
 };

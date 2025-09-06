@@ -10,7 +10,7 @@ use gospel_runtime::static_type_wrappers::Ptr;
 use gospel_runtime::vm_integration::GospelVMTypeGraphBackend;
 use gospel_typelib::type_model::TargetTriplet;
 use gospel_vm::vm::GospelVMOptions;
-use crate::gospel_bindings::{UField, UObject};
+use crate::gospel_bindings::{EClassCastFlags, UField, UObject};
 
 include!(concat!(env!("OUT_DIR"), "/", "gospel_bindings.rs"));
 
@@ -44,5 +44,9 @@ fn main() -> anyhow::Result<()> {
     let object_ptr = field_ptr.cast_checked::<UObject>();
     let object_internal_index = object_ptr.internal_index().read()?;
     assert_eq!(test_field.baseclass_0.internal_index, object_internal_index);
+
+    let class_cast_flags = EClassCastFlags::a_player_controller(&type_namespace);
+    assert_eq!(class_cast_flags, EClassCastFlags(0x0000002000000000u64));
+
     Ok({})
 }

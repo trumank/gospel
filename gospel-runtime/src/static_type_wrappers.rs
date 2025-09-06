@@ -32,7 +32,6 @@ pub trait StaticTypeTag : DynamicTypeTag {
     fn store_type_descriptor(namespace: &TypePtrNamespace) -> usize;
 }
 
-
 /// Implemented by POD types that can be trivially copied from/to the process memory as a sequence of bytes
 pub trait TrivialValue : StaticTypeTag + Default + Clone {
     fn static_read<M: Memory>(ptr: &DynamicPtr<M>) -> anyhow::Result<Self>;
@@ -176,6 +175,44 @@ macro_rules! implement_variable_size_trivial_value {
 implement_variable_size_trivial_value!(LongInt, i64, i32, PrimitiveType::LongInt);
 implement_variable_size_trivial_value!(UnsignedLongInt, u64, u32, PrimitiveType::UnsignedLongInt);
 implement_variable_size_trivial_value!(WideChar, u32, u16, PrimitiveType::WideChar);
+
+/// Trait implemented by the types that are allowed to appear as underlying types for enums
+pub trait EnumUnderlyingType where Self : Sized {
+    /// Converts value of this type to the raw 64-bit discriminant
+    fn to_raw_discriminant(self) -> u64;
+    /// Constructs value of this type from the raw 64-bit discriminant
+    fn from_raw_discriminant(raw_discriminant: u64) -> Self;
+}
+
+macro_rules! implement_integral_enum_underlying_type {
+    ($value_type:ty) => {
+        impl EnumUnderlyingType for $value_type {
+            fn to_raw_discriminant(self) -> u64 { self as u64 }
+            fn from_raw_discriminant(raw_discriminant: u64) -> Self { raw_discriminant as $value_type }
+        }
+    };
+}
+implement_integral_enum_underlying_type!(u8 );
+implement_integral_enum_underlying_type!(u16);
+implement_integral_enum_underlying_type!(u32);
+implement_integral_enum_underlying_type!(u64);
+implement_integral_enum_underlying_type!(i8 );
+implement_integral_enum_underlying_type!(i16);
+implement_integral_enum_underlying_type!(i32);
+implement_integral_enum_underlying_type!(i64);
+
+impl EnumUnderlyingType for UnsignedLongInt {
+    fn to_raw_discriminant(self) -> u64 { self.0 }
+    fn from_raw_discriminant(raw_discriminant: u64) -> Self { Self(raw_discriminant) }
+}
+impl EnumUnderlyingType for LongInt {
+    fn to_raw_discriminant(self) -> u64 { self.0 as u64 }
+    fn from_raw_discriminant(raw_discriminant: u64) -> Self { Self(raw_discriminant as i64) }
+}
+impl EnumUnderlyingType for WideChar {
+    fn to_raw_discriminant(self) -> u64 { self.0 as u64 }
+    fn from_raw_discriminant(raw_discriminant: u64) -> Self { Self(raw_discriminant as u32) }
+}
 
 impl StaticTypeTag for bool {
     fn store_type_descriptor(namespace: &TypePtrNamespace) -> usize {

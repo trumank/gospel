@@ -74,7 +74,6 @@ impl TypePtrNamespace {
             None
         }
     }
-
     fn are_primitive_types_convertible(from_primitive_type: PrimitiveType, to_primitive_type: PrimitiveType, target_triplet: &TargetTriplet) -> bool {
         // Primitive types are convertible if they are of the same bit width and integral status. Signedness changing conversions are allowed
         if let Some(from_bit_width) = from_primitive_type.bit_width(&target_triplet) &&
@@ -87,7 +86,16 @@ impl TypePtrNamespace {
             return true;
         }
         false
-
+    }
+    /// Reads the value of the enum constant with the given name at specified enum type index, and returns it
+    pub fn get_enum_type_constant_value(&self, enum_type_index: usize, constant_name: &str) -> Option<u64> {
+        let type_graph = self.type_graph.read().unwrap();
+        let layout_cache = self.layout_cache.read().unwrap();
+        if let Type::Enum(enum_type) = type_graph.base_type_by_index(enum_type_index) {
+            if let Some(constant) = enum_type.constants.iter().find(|x| x.name.as_ref().map(|y| y.as_ref()) == Some(constant_name)) {
+                Some(enum_type.constant_value(constant, &layout_cache.target_triplet).unwrap())
+            } else { None }
+        } else { None }
     }
 }
 
@@ -333,6 +341,87 @@ impl<M: Memory> DynamicPtr<M> {
             }).collect::<anyhow::Result<Vec<OpaquePtr<M>>>>()?;
             self.opaque_ptr.write_ptr_array(raw_ptr_array.as_slice())
         } else { Err(anyhow!("Not a pointer type")) }
+    }
+
+    pub fn read_integral_type(&self) -> anyhow::Result<Option<u64>> {
+        if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size() && primitive_type.is_integral() {
+            match primitive_size {
+                1 => Ok(Some(self.opaque_ptr.read_u8()? as u64)),
+                2 => Ok(Some(self.opaque_ptr.read_u16()? as u64)),
+                4 => Ok(Some(self.opaque_ptr.read_u32()? as u64)),
+                8 => Ok(Some(self.opaque_ptr.read_u64()?)),
+                _ => Err(anyhow!("unknown integral primitive size"))
+            }
+        } else { Ok(None) }
+    }
+    pub fn read_integral_type_slice_unchecked(&self, buffer: &mut [u64]) -> anyhow::Result<bool> {
+        if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size() && primitive_type.is_integral() {
+            match primitive_size {
+                1 => {
+                    let mut underlying_buffer: Box<[u8]> = vec![0u8; buffer.len()].into_boxed_slice();
+                    self.opaque_ptr.read_u8_array(underlying_buffer.deref_mut())?;
+                    for element_index in 0..buffer.len() { buffer[element_index] = underlying_buffer[element_index] as u64; }
+                    Ok(true)
+                },
+                2 => {
+                    let mut underlying_buffer: Box<[u16]> = vec![0u16; buffer.len()].into_boxed_slice();
+                    self.opaque_ptr.read_u16_array(underlying_buffer.deref_mut())?;
+                    for element_index in 0..buffer.len() { buffer[element_index] = underlying_buffer[element_index] as u64; }
+                    Ok(true)
+                },
+                4 => {
+                    let mut underlying_buffer: Box<[u32]> = vec![0u32; buffer.len()].into_boxed_slice();
+                    self.opaque_ptr.read_u32_array(underlying_buffer.deref_mut())?;
+                    for element_index in 0..buffer.len() { buffer[element_index] = underlying_buffer[element_index] as u64; }
+                    Ok(true)
+                },
+                8 => {
+                    self.opaque_ptr.read_u64_array(buffer)?;
+                    Ok(true)
+                },
+                _ => Err(anyhow!("unknown integral primitive size"))
+            }
+        } else { Ok(false) }
+    }
+    pub fn write_integral_type(&self, value: u64) -> anyhow::Result<()> {
+        if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size() && primitive_type.is_integral() {
+            match primitive_size {
+                1 => self.opaque_ptr.write_u8(value as u8),
+                2 => self.opaque_ptr.write_u16(value as u16),
+                4 => self.opaque_ptr.write_u32(value as u32),
+                8 => self.opaque_ptr.write_u64(value),
+                _ => Err(anyhow!("unknown integral primitive size"))
+            }
+        } else { Err(anyhow!("Not an integral type")) }
+    }
+    pub fn write_integral_type_slice_unchecked(&self, buffer: &[u64]) -> anyhow::Result<()> {
+        if let Some((primitive_type, primitive_size)) = self.metadata.primitive_type_and_size() && primitive_type.is_integral() {
+            match primitive_size {
+                1 => {
+                    let mut underlying_buffer: Box<[u8]> = vec![0u8; buffer.len()].into_boxed_slice();
+                    for element_index in 0..buffer.len() { underlying_buffer[element_index] = buffer[element_index] as u8; }
+                    self.opaque_ptr.write_u8_array(underlying_buffer.deref())?;
+                    Ok({})
+                },
+                2 => {
+                    let mut underlying_buffer: Box<[u16]> = vec![0u16; buffer.len()].into_boxed_slice();
+                    for element_index in 0..buffer.len() { underlying_buffer[element_index] = buffer[element_index] as u16; }
+                    self.opaque_ptr.write_u16_array(underlying_buffer.deref())?;
+                    Ok({})
+                },
+                4 => {
+                    let mut underlying_buffer: Box<[u32]> = vec![0u32; buffer.len()].into_boxed_slice();
+                    for element_index in 0..buffer.len() { underlying_buffer[element_index] = buffer[element_index] as u32; }
+                    self.opaque_ptr.write_u32_array(underlying_buffer.deref())?;
+                    Ok({})
+                },
+                8 => {
+                    self.opaque_ptr.write_u64_array(buffer)?;
+                    Ok({})
+                },
+                _ => Err(anyhow!("unknown integral primitive size"))
+            }
+        } else { Err(anyhow!("Not an integral type")) }
     }
 
     implement_dynamic_ptr_numeric_access!(u8, true, false);

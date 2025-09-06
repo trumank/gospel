@@ -234,7 +234,7 @@ pub trait MutableTypeGraph : TypeGraphLike {
     /// Adds type to the type graph and returns its index. If this type is already part of the type graph, returns index of an existing type
     fn store_type(&mut self, type_data: Type) -> usize;
     /// Attempts to find or create UDT type by its qualified name (with $ as a separator and : used to separate module name from local type name. Resulting format is module:namespace$typename)
-    fn find_create_named_udt_type(&mut self, full_type_name: &str) -> anyhow::Result<Option<usize>>;
+    fn find_create_named_type(&mut self, full_type_name: &str) -> anyhow::Result<Option<usize>>;
 }
 
 /// Type layout cache caches type layout calculations for arbitrary types
@@ -322,10 +322,10 @@ macro_rules! implement_integer_fit_check_block {
 macro_rules! map_integral_value {
     ($value_type:expr, $raw_value:expr, |$converted_value:ident| $expression:expr, signed) => {
         match $value_type.bit_width {
-            BitWidth::Width8 =>  { let $converted_value = $raw_value as i8 ; let result: i8  = $expression; result as u8  as u64 },
-            BitWidth::Width16 => { let $converted_value = $raw_value as i16; let result: i16 = $expression; result as u16 as u64 },
-            BitWidth::Width32 => { let $converted_value = $raw_value as i32; let result: i32 = $expression; result as u32 as u64 },
-            BitWidth::Width64 => { let $converted_value = $raw_value as i64; let result: i64 = $expression; result as u64 as u64 },
+            BitWidth::Width8 =>  { let $converted_value = $raw_value as i8 ; let result: i8  = $expression; result as u64 },
+            BitWidth::Width16 => { let $converted_value = $raw_value as i16; let result: i16 = $expression; result as u64 },
+            BitWidth::Width32 => { let $converted_value = $raw_value as i32; let result: i32 = $expression; result as u64 },
+            BitWidth::Width64 => { let $converted_value = $raw_value as i64; let result: i64 = $expression; result as u64 },
         }
     };
     ($value_type:expr, $raw_value:expr, |$converted_value:ident| $expression:expr, unsigned) => {
@@ -344,10 +344,10 @@ macro_rules! map_integral_value {
     };
     ($value_type:expr, $raw_value_a:expr, $raw_value_b:expr, |$converted_value_a:ident, $converted_value_b:ident| $expression:expr, signed) => {
         match $value_type.bit_width {
-            BitWidth::Width8 =>  { let $converted_value_a = $raw_value_a as i8 ; let $converted_value_b = $raw_value_b as i8 ; let result: i8  = $expression; result as u8  as u64 },
-            BitWidth::Width16 => { let $converted_value_a = $raw_value_a as i16; let $converted_value_b = $raw_value_b as i16; let result: i16 = $expression; result as u16 as u64 },
-            BitWidth::Width32 => { let $converted_value_a = $raw_value_a as i32; let $converted_value_b = $raw_value_b as i32; let result: i32 = $expression; result as u32 as u64 },
-            BitWidth::Width64 => { let $converted_value_a = $raw_value_a as i64; let $converted_value_b = $raw_value_b as i64; let result: i64 = $expression; result as u64 as u64 },
+            BitWidth::Width8 =>  { let $converted_value_a = $raw_value_a as i8 ; let $converted_value_b = $raw_value_b as i8 ; let result: i8  = $expression; result as u64 },
+            BitWidth::Width16 => { let $converted_value_a = $raw_value_a as i16; let $converted_value_b = $raw_value_b as i16; let result: i16 = $expression; result as u64 },
+            BitWidth::Width32 => { let $converted_value_a = $raw_value_a as i32; let $converted_value_b = $raw_value_b as i32; let result: i32 = $expression; result as u64 },
+            BitWidth::Width64 => { let $converted_value_a = $raw_value_a as i64; let $converted_value_b = $raw_value_b as i64; let result: i64 = $expression; result as u64 },
         }
     };
     ($value_type:expr, $raw_value_a:expr, $raw_value_b:expr, |$converted_value_a:ident, $converted_value_b:ident| $expression:expr, unsigned) => {

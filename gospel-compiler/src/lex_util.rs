@@ -48,7 +48,7 @@ pub(crate) fn parse_integer_literal(raw_literal_string: &str) -> Option<ParsedIn
             i32::from_str_radix(string_slice, 16).ok()
         } else {
             i32::from_str_radix(string_slice, 10).ok()
-        }.map(|x| ParsedIntegerLiteral {raw_value: (x * sign_multiplier) as u32 as u64, is_signed: true, bit_width: 32})
+        }.map(|x| ParsedIntegerLiteral {raw_value: (x * sign_multiplier) as u64, is_signed: true, bit_width: 32})
     } else if string_slice.ends_with("i16") {
         string_slice = &string_slice[0..string_slice.len() - 3];
         let mut sign_multiplier = 1;
@@ -61,7 +61,7 @@ pub(crate) fn parse_integer_literal(raw_literal_string: &str) -> Option<ParsedIn
             i16::from_str_radix(string_slice, 16).ok()
         } else {
             i16::from_str_radix(string_slice, 10).ok()
-        }.map(|x| ParsedIntegerLiteral {raw_value: (x * sign_multiplier) as u16 as u64, is_signed: true, bit_width: 16})
+        }.map(|x| ParsedIntegerLiteral {raw_value: (x * sign_multiplier) as u64, is_signed: true, bit_width: 16})
     } else if string_slice.ends_with("i8") {
         string_slice = &string_slice[0..string_slice.len() - 2];
         let mut sign_multiplier = 1;
@@ -74,7 +74,7 @@ pub(crate) fn parse_integer_literal(raw_literal_string: &str) -> Option<ParsedIn
             i8::from_str_radix(string_slice, 16).ok()
         } else {
             i8::from_str_radix(string_slice, 10).ok()
-        }.map(|x| ParsedIntegerLiteral {raw_value: (x * sign_multiplier) as u8 as u64, is_signed: true, bit_width: 8})
+        }.map(|x| ParsedIntegerLiteral {raw_value: (x * sign_multiplier) as u64, is_signed: true, bit_width: 8})
     } else if string_slice.ends_with("u64") {
         string_slice = &string_slice[0..string_slice.len() - 3];
         if string_slice.starts_with("0x") {
@@ -118,6 +118,6 @@ pub(crate) fn parse_integer_literal(raw_literal_string: &str) -> Option<ParsedIn
             i32::from_str_radix(string_slice, 16).ok()
         } else {
             i32::from_str_radix(string_slice, 10).ok()
-        }.map(|x| ParsedIntegerLiteral {raw_value: (x * sign_multiplier) as u32 as u64, is_signed: true, bit_width: 32})
+        }.map(|x| ParsedIntegerLiteral {raw_value: (x * sign_multiplier) as u64, is_signed: true, bit_width: 32})
     }
 }
