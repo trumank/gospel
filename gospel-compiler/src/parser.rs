@@ -517,7 +517,16 @@ impl<'a> CompilerParserInstance<'a> {
             }
 
             // We cannot simply replace comments with empty string because that would shift the line numbers and offsets, so we preserve the character subset ignored by the parser and replace everything else with whitespaces
-            captures.get(0).unwrap().as_str().chars().map(|char| if Self::is_lexer_ignored_character(char) { char } else { ' ' }).collect()
+            let source_str = captures.get(0).unwrap().as_str();
+            let mut result_str = String::with_capacity(source_str.len());
+            for character in source_str.chars() {
+                if Self::is_lexer_ignored_character(character) {
+                    result_str.push(character);
+                } else {
+                    result_str.extend(std::iter::repeat(' ').take(character.len_utf8()));
+                }
+            }
+            result_str
         }).to_string();
 
         // Now we have processed source code, map each comment to the start of the token it belongs to. Comments that do not belong to a token are discarded
