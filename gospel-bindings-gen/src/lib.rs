@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::write;
@@ -24,7 +25,7 @@ impl Default for ModuleBindingsOptions {
 
 pub fn generate_module_bindings(main_module_path: &PathBuf, output_file_path: &PathBuf, options: ModuleBindingsOptions) -> anyhow::Result<()> {
     let module_context = process_module_context(main_module_path, &options.additional_dependencies, &options.additional_included_module_names, &options.module_to_bindings_crate_lookup)?;
-    let codegen_context = CodeGenerationContext{module_context, bindings_mod_name: String::from("gospel_bindings")};
+    let codegen_context = CodeGenerationContext{module_context, bindings_mod_name: String::from("gospel_bindings"), extra_definitions: RefCell::default(), generated_extra_types: RefCell::default()};
     let generated_file_contents = codegen_context.generate_bindings_file()?;
     write(output_file_path, generated_file_contents).map_err(|x| anyhow!("Failed to write output file {}: {}", output_file_path.display(), x))
 }

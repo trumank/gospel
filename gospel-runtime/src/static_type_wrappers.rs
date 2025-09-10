@@ -19,6 +19,21 @@ pub struct UnsignedLongInt(u64);
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WideChar(u32);
 
+/// Used as a trait bound to allow passing non-type bool parameters as template instantiation arguments to bindings-generated types
+pub trait BoolValueTypeTag : IntegralValueTypeTag {}
+
+/// Used as a trait bound to allow passing non-type integral type parameters as template instantiation arguments to bindings-generated types
+pub trait IntegralValueTypeTag { fn get_raw_integral_value() -> u64; }
+
+/// Type used to represent "true" value on generic wrapped types
+pub enum TrueType {}
+/// Type used to represent "false" value on generic wrapped types
+pub enum FalseType {}
+impl IntegralValueTypeTag for TrueType { fn get_raw_integral_value() -> u64 { 0 } }
+impl BoolValueTypeTag for TrueType {}
+impl IntegralValueTypeTag for FalseType { fn get_raw_integral_value() -> u64 { 1 } }
+impl BoolValueTypeTag for FalseType {}
+
 /// Implemented on the types that do not have enough information in compile time to create a static type, but can still be used with typed pointers
 pub trait DynamicTypeTag {
     /// Given the pointer to the cast source, attempts to determine the index of the type that the cast should be performed to

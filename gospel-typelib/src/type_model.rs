@@ -229,12 +229,19 @@ pub trait TypeGraphLike {
     }
 }
 
+/// Represents an argument provided to the template to be constructed into a named type
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TypeTemplateArgument {
+    Type(usize),
+    Integer(u64),
+}
+
 /// Trait for type graph structures that can be mutated
 pub trait MutableTypeGraph : TypeGraphLike {
     /// Adds type to the type graph and returns its index. If this type is already part of the type graph, returns index of an existing type
     fn store_type(&mut self, type_data: Type) -> usize;
     /// Attempts to find or create UDT type by its qualified name (with $ as a separator and : used to separate module name from local type name. Resulting format is module:namespace$typename)
-    fn find_create_named_type(&mut self, full_type_name: &str) -> anyhow::Result<Option<usize>>;
+    fn create_named_type(&mut self, full_type_name: &str, arguments: Vec<TypeTemplateArgument>) -> anyhow::Result<Option<usize>>;
 }
 
 /// Type layout cache caches type layout calculations for arbitrary types

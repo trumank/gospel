@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use anyhow::anyhow;
-use gospel_typelib::type_model::{MutableTypeGraph, Type, TypeGraphLike, TypeLayoutCache};
+use gospel_typelib::type_model::{MutableTypeGraph, Type, TypeGraphLike, TypeLayoutCache, TypeTemplateArgument};
 use gospel_vm::vm::{GospelVMOptions, GospelVMRunContext, GospelVMState, GospelVMValue};
 use gospel_vm::writer::GospelSourceObjectReference;
 #[cfg(feature = "compiler")]
@@ -51,11 +51,15 @@ impl MutableTypeGraph for GospelVMTypeGraphBackend {
     fn store_type(&mut self, type_data: Type) -> usize {
         self.vm_run_context.store_type(type_data)
     }
-    fn find_create_named_type(&mut self, full_type_name: &str) -> anyhow::Result<Option<usize>> {
+    fn create_named_type(&mut self, full_type_name: &str, arguments: Vec<TypeTemplateArgument>) -> anyhow::Result<Option<usize>> {
         let object_reference = GospelSourceObjectReference::from_str(full_type_name)
             .map_err(|x| anyhow!("Malformed typename {} format: {}", full_type_name, x))?;
         if let Some(found_function_instance) = self.vm_instance.find_function_by_reference(&object_reference) {
-            let function_result = found_function_instance.execute(Vec::new(), &mut self.vm_run_context)
+            let mapped_arguments: Vec<GospelVMValue> = arguments.into_iter().map(|x| match x {
+                TypeTemplateArgument::Integer(integral_value) => GospelVMValue::Primitive(integral_value),
+                TypeTemplateArgument::Type(type_index) => GospelVMValue::TypeReference(type_index),
+            }).collect();
+            let function_result = found_function_instance.execute(mapped_arguments, &mut self.vm_run_context)
                 .map_err(|x| anyhow!("Failed to calculate layout for type {}: {}", full_type_name, x))?;
             if let GospelVMValue::TypeReference(type_index) = function_result {
                 Ok(Some(type_index))

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use anyhow::{anyhow, bail};
@@ -12,14 +12,23 @@ use gospel_vm::vm::{GospelVMOptions, GospelVMRunContext, GospelVMState, GospelVM
 pub(crate) struct BindingsTypeDefinition {
     pub(crate) type_full_name: String,
     pub(crate) type_index: Option<usize>,
-    pub(crate) is_static_type: bool,
-    pub(crate) type_metadata: BTreeMap<String, String>,
+    pub(crate) function_declaration: Option<CompilerFunctionDeclaration>,
+}
+impl BindingsTypeDefinition {
+    pub(crate) fn is_parameterless_type(&self) -> bool {
+        if let Some(declaration) = &self.function_declaration {
+            declaration.reference.signature.explicit_parameters.is_none() && declaration.reference.signature.implicit_parameters.is_empty()
+        } else { false }
+    }
 }
 
 #[derive(Debug)]
 pub(crate) struct ResolvedBindingsModuleContext {
     pub(crate) run_context: GospelVMRunContext,
     pub(crate) type_source_crate_lookup: HashMap<String, Option<String>>,
+    // Not actually dead, needed to keep weak pointers alive
+    #[allow(dead_code)]
+    pub(crate) compiler_instance: Rc<CompilerInstance>,
     pub(crate) types_to_generate: Vec<BindingsTypeDefinition>,
 }
 
@@ -86,24 +95,21 @@ pub(crate) fn process_module_context(main_module_path: &PathBuf, additional_depe
         if let Some(type_function) = vm_state.find_function_by_reference(&function_declaration.reference.function) &&
             let execution_result = type_function.execute(Vec::new(), &mut run_context).map_err(|x| anyhow!("Failed to evaluate type {}: {}", &type_name, x))? &&
             let GospelVMValue::TypeReference(type_index) = execution_result {
-            let is_parameterless_type = function_declaration.reference.signature.explicit_parameters.is_none() && function_declaration.reference.signature.implicit_parameters.is_empty();
             types_to_generate.push(BindingsTypeDefinition{
                 type_full_name: type_name,
                 type_index: Some(type_index),
-                is_static_type: is_parameterless_type,
-                type_metadata: function_declaration.metadata.clone(),
+                function_declaration: Some(function_declaration.clone()),
             });
         } else {
             types_to_generate.push(BindingsTypeDefinition{
                 type_full_name: type_name,
                 type_index: None,
-                is_static_type: false,
-                type_metadata: BTreeMap::new(),
+                function_declaration: None,
             })
         }
     }
 
-    Ok(ResolvedBindingsModuleContext{ run_context, type_source_crate_lookup, types_to_generate })
+    Ok(ResolvedBindingsModuleContext{ run_context, type_source_crate_lookup, compiler_instance, types_to_generate })
 }
 
 fn discover_module_type_definitions(current_scope: &Rc<CompilerLexicalScope>, crate_name: Option<&str>, type_name_to_crate_name: &mut HashMap<String, Option<String>>, type_definition_functions: &mut Vec<CompilerFunctionDeclaration>) {

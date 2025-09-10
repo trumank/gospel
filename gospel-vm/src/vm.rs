@@ -118,6 +118,7 @@ pub struct GospelVMTypeContainer {
     pub enum_constant_prototypes: Option<HashSet<String>>,
     pub vm_metadata: Option<GospelVMStruct>,
     pub partial_type: bool,
+    pub source_function_args: Option<Vec<GospelVMValue>>,
     owner_stack_frame_token: usize,
     size_has_been_validated: bool,
 }
@@ -152,7 +153,7 @@ impl GospelVMRunContext {
             let new_type_index = self.types.len();
             // Simple types cannot have VM metadata assigned to them
             self.types.push(GospelVMTypeContainer {wrapped_type: type_data.clone(), base_class_prototypes: None, member_prototypes: None, enum_constant_prototypes: None,
-                vm_metadata: None, owner_stack_frame_token: 0, size_has_been_validated: false, partial_type: false});
+                vm_metadata: None, owner_stack_frame_token: 0, size_has_been_validated: false, partial_type: false, source_function_args: None});
             self.simple_type_lookup.insert(type_data, new_type_index);
             new_type_index
         }
@@ -172,7 +173,7 @@ impl GospelVMRunContext {
     fn store_unique_named_type(&mut self, type_data: Type, stack_frame_token: usize) -> usize {
         let new_type_index = self.types.len();
         self.types.push(GospelVMTypeContainer{wrapped_type: type_data, base_class_prototypes: Some(HashSet::new()), member_prototypes: Some(HashSet::new()), enum_constant_prototypes: Some(HashSet::new()),
-            vm_metadata: None, owner_stack_frame_token: stack_frame_token, size_has_been_validated: false, partial_type: false});
+            vm_metadata: None, owner_stack_frame_token: stack_frame_token, size_has_been_validated: false, partial_type: false, source_function_args: None});
         new_type_index
     }
     fn validate_type_not_partial(&mut self, type_index: usize, source_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<()> {
@@ -343,7 +344,7 @@ pub enum GospelVMValue {
     Primitive(u64), // 64-bit primitive value with context-dependent type
     #[strum(to_string = "Closure({0})")]
     Closure(Box<GospelVMClosure>), // pointer to a function with some number (or no) arguments captured with it
-    #[strum(to_string = "TypeLayout({0})")]
+    #[strum(to_string = "TypeReference({0})")]
     TypeReference(usize), // index of the type in the current run context
     #[strum(to_string = "Array({0:#?})")]
     Array(Vec<GospelVMValue>), // array of values
@@ -1109,6 +1110,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     // Resetting the stack frame token seals the type and prevents any future modifications to it
                     run_context.types[type_index].owner_stack_frame_token = 0;
+                    run_context.types[type_index].source_function_args = Some(state.argument_values.clone());
                 }
                 GospelOpcode::TypeEnumAllocate => {
                     let type_name_index = state.immediate_value_checked(instruction, 0)? as i32;

@@ -134,7 +134,7 @@ pub struct CompilerFunctionParameter {
 /// Represents a signature of the function with all the implicit and explicit parameters, as well as return value, listed
 #[derive(Debug, Clone, Default)]
 pub struct CompilerFunctionSignature {
-    pub implicit_parameters: Vec<Weak<CompilerLexicalDeclaration>>,
+    pub implicit_parameters: Vec<CompilerFunctionParameter>,
     pub explicit_parameters: Option<Vec<CompilerFunctionParameter>>,
     pub return_value_type: ExpressionValueType,
 }
@@ -202,7 +202,7 @@ impl CompilerFunctionBuilder {
         let mut argument_source_declarations: Vec<Rc<CompilerLexicalDeclaration>> = Vec::new();
 
         for weak_implicit_parameter in &function_reference.signature.implicit_parameters {
-            if let Some(implicit_parameter) = weak_implicit_parameter.upgrade() {
+            if let Some(implicit_parameter) = weak_implicit_parameter.parameter_declaration.upgrade() {
                 match &implicit_parameter.class {
                     CompilerLexicalDeclarationClass::Parameter(_) => {
                         argument_source_declarations.push(implicit_parameter);
@@ -886,7 +886,7 @@ impl CompilerFunctionBuilder {
 
         // Implicit parameters precede any explicit parameters
         for weak_implicit_parameter in &function.signature.implicit_parameters {
-            let implicit_parameter = weak_implicit_parameter.upgrade()
+            let implicit_parameter = weak_implicit_parameter.parameter_declaration.upgrade()
                 .ok_or_else(|| compiler_error!(source_context, "Internal error, reference to function declaration scope lost"))?;
             let implicit_parameter_scope = implicit_parameter.parent.upgrade()
                 .ok_or_else(|| compiler_error!(source_context, "Internal error, reference to function declaration parent scope lost"))?;
@@ -2773,13 +2773,13 @@ impl CompilerLexicalScope {
             } else { Some(child) }
         } else { None }
     }
-    fn collect_implicit_scope_parameters(self: &Rc<Self>) -> Vec<Weak<CompilerLexicalDeclaration>> {
+    fn collect_implicit_scope_parameters(self: &Rc<Self>) -> Vec<CompilerFunctionParameter> {
         self.iterate_scope_chain_outer_first().flat_map(|x| x.iterate_children().collect::<Vec<CompilerLexicalNode>>()).filter_map(|x| {
             if let CompilerLexicalNode::Declaration(decl) = x {
-                if let CompilerLexicalDeclarationClass::Parameter(_) = &decl.class {
-                    Some(Rc::downgrade(&decl))
-                } else if let CompilerLexicalDeclarationClass::LocalVariable(_) = &decl.class {
-                    Some(Rc::downgrade(&decl))
+                if let CompilerLexicalDeclarationClass::Parameter(parameter_type) = &decl.class {
+                    Some(CompilerFunctionParameter{parameter_type: parameter_type.clone(), default_value: None, parameter_declaration: Rc::downgrade(&decl)})
+                } else if let CompilerLexicalDeclarationClass::LocalVariable(local_variable) = &decl.class {
+                    Some(CompilerFunctionParameter{parameter_type: local_variable.variable_type.clone(), default_value: None, parameter_declaration: Rc::downgrade(&decl)})
                 } else { None }
             } else { None }
         }).collect()

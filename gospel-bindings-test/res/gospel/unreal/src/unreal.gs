@@ -46,6 +46,12 @@ public struct TSizedHeapAllocator {
     FScriptElement* Data;
 };
 
+template<typename InElementType, unsigned int InNumInlineElements, typename InSecondaryAllocator>
+public struct TInlineAllocator {
+    InElementType InlineAllocation[InNumInlineElements];
+    InSecondaryAllocator SecondaryAllocation;
+};
+
 template<typename InElementType, typename InAllocator = TSizedHeapAllocator<int32_t>>
 public struct TArray {
     type ElementType = InElementType;
@@ -1015,4 +1021,8 @@ enum EClassCastFlags : unsigned long long int {
 	FUtf8StrProperty = 0x1000000000000000u64,
 	FAnsiStrProperty = 0x2000000000000000u64,
 	FVCellProperty = 0x4000000000000000u64,
+};
+
+struct InlineAllocatorTest {
+    TArray<int, TInlineAllocator<int, 4, TSizedHeapAllocator<int32_t>>> Elements;
 };
