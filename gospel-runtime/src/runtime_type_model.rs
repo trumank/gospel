@@ -88,11 +88,11 @@ impl TypePtrNamespace {
         } else if let Type::UDT(from_user_defined_type) = from_base_type && let Type::UDT(to_user_defined_type) = to_base_type {
             // Struct types can be upcasted or downcasted. Try upcasting (casting from derived class to base class first) first, and then downcasting (casting from base class to derived class) as a fallback
             let mut layout_cache = self.layout_cache.write().unwrap();
-            let base_class_offsets= from_user_defined_type.find_all_base_class_offsets(to_base_type_index, type_graph.deref(), layout_cache.deref_mut()).unwrap();
+            let base_class_offsets= from_user_defined_type.find_all_base_class_offsets(from_base_type_index, to_base_type_index, type_graph.deref(), layout_cache.deref_mut()).unwrap();
             if  !base_class_offsets.is_empty() {
                 // When upcasting, base class is located at positive offset from this pointer. In this case, it is also safe to pick any instance of base class within the derived class, preferring for the outermost first instance
                 Some(base_class_offsets[0] as i64)
-            } else if let derived_class_offsets = to_user_defined_type.find_all_base_class_offsets(from_base_type_index, type_graph.deref(), layout_cache.deref_mut()).unwrap() && derived_class_offsets.len() == 1 {
+            } else if let derived_class_offsets = to_user_defined_type.find_all_base_class_offsets(to_base_type_index, from_base_type_index, type_graph.deref(), layout_cache.deref_mut()).unwrap() && derived_class_offsets.len() == 1 {
                 // Downcasting can only be performed where there is only once instance of base class in the hierarchy chain. When there are multiple instances, it is not possible to know pointer to which instance we have
                 // Downcasting also goes from base to derived class, which is at lower addresses, so the offset here is negative
                 Some(-(derived_class_offsets[0] as i64))
@@ -184,8 +184,8 @@ impl TypePtrMetadata {
     pub fn size_and_alignment(&self) -> (usize, usize) {
         let type_graph = self.namespace.type_graph.read().unwrap();
         let mut layout_cache = self.namespace.layout_cache.write().unwrap();
-        let type_data = type_graph.base_type_by_index(self.type_index);
-        type_data.size_and_alignment(type_graph.deref(), layout_cache.deref_mut()).unwrap()
+        let base_type_index = type_graph.base_type_index(self.type_index);
+        Type::size_and_alignment(base_type_index, type_graph.deref(), layout_cache.deref_mut()).unwrap()
     }
     pub fn primitive_type_and_size(&self) -> Option<(PrimitiveType, usize)> {
         let type_graph = self.namespace.type_graph.read().unwrap();
@@ -241,9 +241,10 @@ impl TypePtrMetadata {
     pub fn struct_field_type_index_and_offset(&self, field_name: &str) -> Option<(usize, usize)> {
         let type_graph = self.namespace.type_graph.read().unwrap();
         let mut layout_cache = self.namespace.layout_cache.write().unwrap();
-        let type_data = type_graph.base_type_by_index(self.type_index);
+        let base_type_index = type_graph.base_type_index(self.type_index);
+        let type_data = type_graph.type_by_index(base_type_index);
         if let Type::UDT(user_defined_type) = type_data {
-            user_defined_type.find_map_member_layout(field_name, &|context| {
+            user_defined_type.find_map_member_layout(base_type_index, field_name, &|context| {
                 if let UserDefinedTypeMember::Field(field) = &context.owner_udt.members[context.member_index] &&
                     let ResolvedUDTMemberLayout::Field(field_layout) = &context.owner_layout.member_layouts[context.member_index] {
                     Some((field.member_type_index, context.owner_offset + field_layout.offset))

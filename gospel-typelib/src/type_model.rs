@@ -248,8 +248,8 @@ pub trait MutableTypeGraph : TypeGraphLike {
 #[derive(Debug, Clone)]
 pub struct TypeLayoutCache {
     pub target_triplet: TargetTriplet,
-    type_cache: HashMap<Type, (usize, usize)>,
-    udt_cache: HashMap<UserDefinedType, Arc<ResolvedUDTLayout>>,
+    type_cache: HashMap<usize, (usize, usize)>,
+    udt_cache: HashMap<usize, Arc<ResolvedUDTLayout>>,
 }
 impl TypeLayoutCache {
     /// Creates a new type layout cache for the given target triplet
@@ -378,6 +378,7 @@ impl IntegralType {
     /// - casting from larger type to a smaller type results in truncation (regardless of signedness of either operand)
     /// - casting from smaller signed type to larger type results in sign extension
     /// - casting from smaller unsigned type to larger type results in zero extension
+    #[allow(clippy::unnecessary_cast)]
     pub fn cast_integral_value(value: u64, from_type: &IntegralType, to_type: &IntegralType) -> u64 {
         match from_type.signedness {
             IntegerSignedness::Signed => match from_type.bit_width {
@@ -396,6 +397,7 @@ impl IntegralType {
     }
     /// Returns true if the given integral value fits within the given integral type range
     #[allow(unused_comparisons)]
+    #[allow(clippy::unnecessary_cast)]
     pub fn can_fit_integral_value(value: u64, value_type: &IntegralType, check_fit_type: &IntegralType) -> bool {
         match value_type.signedness {
             IntegerSignedness::Signed => match value_type.bit_width {
@@ -520,8 +522,7 @@ impl ArrayType {
     }
     /// Returns the size and alignment of the array type
     pub fn size_and_alignment<'a>(&self, type_graph: &'a dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<(usize, usize)> {
-        let element_type = self.element_type(type_graph);
-        let (element_size, element_alignment) = element_type.size_and_alignment(type_graph, layout_cache)?;
+        let (element_size, element_alignment) = Type::size_and_alignment(self.element_type_index, type_graph, layout_cache)?;
         Ok((element_size * self.array_length, element_alignment))
     }
 }
@@ -740,22 +741,22 @@ impl UserDefinedType {
         }
     }
     /// Resolved the layout of this user defined type for a particular target triplet
-    pub fn layout(&self, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<Arc<ResolvedUDTLayout>> {
-        if let Some(existing_layout) = layout_cache.udt_cache.get(self) {
+    pub fn layout(&self, type_index: usize, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<Arc<ResolvedUDTLayout>> {
+        if let Some(existing_layout) = layout_cache.udt_cache.get(&type_index) {
             return Ok(existing_layout.clone());
         }
         let new_layout = Arc::new(self.calculate_layout_internal(type_graph, layout_cache)?);
-        layout_cache.udt_cache.insert(self.clone(), new_layout.clone());
+        layout_cache.udt_cache.insert(type_index, new_layout.clone());
         Ok(new_layout)
     }
     /// Returns size and alignment of this user defined type
-    pub fn size_and_alignment(&self, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<(usize, usize)> {
-        let layout = self.layout(type_graph, layout_cache)?;
+    pub fn size_and_alignment(&self, type_index: usize, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<(usize, usize)> {
+        let layout = self.layout(type_index, type_graph, layout_cache)?;
         Ok((layout.size, layout.alignment))
     }
     /// Returns all offsets of the given base class from the start of the user defined type. Can return multiple results if the same base class appears multiple times at different levels in the class hierarchy
-    pub fn find_all_base_class_offsets(&self, base_class_index: usize, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<Vec<usize>> {
-        let type_layout = self.layout(type_graph, layout_cache)?;
+    pub fn find_all_base_class_offsets(&self, type_index: usize, base_class_index: usize, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<Vec<usize>> {
+        let type_layout = self.layout(type_index, type_graph, layout_cache)?;
         let mut all_base_class_offsets: Vec<usize> = Vec::new();
         // Try direct base classes first (in case of the same base class being present multiple times at different levels of class hierarchy)
         for i in 0..self.base_class_indices.len() {
@@ -766,7 +767,7 @@ impl UserDefinedType {
         // Try to recursively look up base classes of our base classes now
         for i in 0..self.base_class_indices.len() {
             if let Type::UDT(base_class_udt) = type_graph.type_by_index(self.base_class_indices[i]) {
-                all_base_class_offsets.extend(base_class_udt.find_all_base_class_offsets(base_class_index, type_graph, layout_cache)?.into_iter()
+                all_base_class_offsets.extend(base_class_udt.find_all_base_class_offsets(self.base_class_indices[i], base_class_index, type_graph, layout_cache)?.into_iter()
                     .map(|base_class_relative_offset| type_layout.base_class_offsets[i] + base_class_relative_offset));
             }
         }
@@ -774,11 +775,11 @@ impl UserDefinedType {
         Ok(all_base_class_offsets)
     }
     /// Attempts to find a member by name in this user defined type or its base class, and runs the map function on it
-    pub fn find_map_member_layout<T, S: Fn(&MemberLayoutMapContext) -> Option<T>>(&self, name: &str, map_function: &S, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<Option<T>> {
-        self.find_map_member_layout_internal(name, map_function, 0, type_graph, layout_cache)
+    pub fn find_map_member_layout<T, S: Fn(&MemberLayoutMapContext) -> Option<T>>(&self, type_index: usize, name: &str, map_function: &S, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<Option<T>> {
+        self.find_map_member_layout_internal(type_index, name, map_function, 0, type_graph, layout_cache)
     }
-    fn find_map_member_layout_internal<T, S: Fn(&MemberLayoutMapContext) -> Option<T>>(&self, name: &str, map_function: &S, base_offset: usize, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<Option<T>> {
-        let type_layout = self.layout(type_graph, layout_cache)?;
+    fn find_map_member_layout_internal<T, S: Fn(&MemberLayoutMapContext) -> Option<T>>(&self, type_index: usize, name: &str, map_function: &S, base_offset: usize, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<Option<T>> {
+        let type_layout = self.layout(type_index, type_graph, layout_cache)?;
 
         // Check members of this user defined type before checking base classes
         for i in 0..self.members.len() {
@@ -789,7 +790,7 @@ impl UserDefinedType {
         // Base class members are used as a fallback
         for i in 0..self.base_class_indices.len() {
             if let Type::UDT(base_class) = type_graph.type_by_index(self.base_class_indices[i]) &&
-                let Some(result) = base_class.find_map_member_layout_internal(name, map_function, base_offset + type_layout.base_class_offsets[i], type_graph, layout_cache)? {
+                let Some(result) = base_class.find_map_member_layout_internal(type_index, name, map_function, base_offset + type_layout.base_class_offsets[i], type_graph, layout_cache)? {
                 return Ok(Some(result))
             }
         }
@@ -821,9 +822,9 @@ impl UserDefinedType {
         };
 
         let base_class_layouts: Vec<Arc<ResolvedUDTLayout>> = self.base_class_indices.iter()
-            .map(|x| type_graph.type_by_index(*x))
-            .filter_map(|x| if let Type::UDT(base_class) = x { Some(base_class) } else { None })
-            .map(|base_class_type| base_class_type.layout(type_graph, layout_cache).map_err(|error| {
+            .map(|x| (x, type_graph.type_by_index(*x)))
+            .filter_map(|(index, type_ref)| if let Type::UDT(base_class) = type_ref { Some((index, base_class)) } else { None })
+            .map(|(base_class_index, base_class_type)| base_class_type.layout(*base_class_index, type_graph, layout_cache).map_err(|error| {
                 let base_class_name = base_class_type.name.as_ref().map(|x| x.as_str()).unwrap_or("<unnamed type>");
                 anyhow!("Failed to calculate layout of base class {}: {}", base_class_name, error)
             }))
@@ -909,8 +910,7 @@ impl UserDefinedType {
                     bail!("Union types cannot have virtual functions");
                 }
             } else if let UserDefinedTypeMember::Field(field) = member {
-                let member_type = field.member_type(type_graph);
-                let (member_size, member_type_alignment) = member_type.size_and_alignment(type_graph, layout_cache)
+                let (member_size, member_type_alignment) = Type::size_and_alignment(field.member_type_index, type_graph, layout_cache)
                     .map_err(|error| {
                         let member_name = member.name().unwrap_or("<unnamed member>");
                         anyhow!("Failed to calculate member {} size: {}", member_name, error)
@@ -1080,7 +1080,7 @@ impl CVQualifiedType {
     }
     /// Returns the size and alignment of this CV-qualified type
     pub fn size_and_alignment<'a>(&self, type_graph: &'a dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<(usize, usize)> {
-        self.base_type(type_graph).size_and_alignment(type_graph, layout_cache)
+        Type::size_and_alignment(self.base_type_index, type_graph, layout_cache)
     }
     /// Returns true if the underlying type is sizeless
     pub fn is_sizeless(&self, type_graph: &dyn TypeGraphLike) -> bool {
@@ -1126,20 +1126,20 @@ pub enum Type {
 }
 impl Type {
     /// Returns the size and alignment of this type
-    pub fn size_and_alignment(&self, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<(usize, usize)> {
-        if let Some((existing_size, existing_alignment)) = &layout_cache.type_cache.get(self) {
+    pub fn size_and_alignment(type_index: usize, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<(usize, usize)> {
+        if let Some((existing_size, existing_alignment)) = &layout_cache.type_cache.get(&type_index) {
             return Ok((*existing_size, *existing_alignment))
         }
-        let (size, alignment) = match self {
+        let (size, alignment) = match type_graph.type_by_index(type_index) {
             Type::Primitive(primitive_type) => { let size_and_alignment = primitive_type.size_and_alignment(&layout_cache.target_triplet)?; (size_and_alignment, size_and_alignment) },
             Type::Array(array_type) => array_type.size_and_alignment(type_graph, layout_cache)?,
             Type::Pointer(pointer_type) => { let size_and_alignment = pointer_type.size_and_alignment(&layout_cache.target_triplet); (size_and_alignment, size_and_alignment) },
             Type::CVQualified(cv_qualified_type) => cv_qualified_type.size_and_alignment(type_graph, layout_cache)?,
             Type::Function(_) => { bail!("Function type is sizeless") },
-            Type::UDT(udt_type) => udt_type.size_and_alignment(type_graph, layout_cache)?,
+            Type::UDT(udt_type) => udt_type.size_and_alignment(type_index, type_graph, layout_cache)?,
             Type::Enum(enum_type) => enum_type.size_and_alignment(&layout_cache.target_triplet)?,
         };
-        layout_cache.type_cache.insert(self.clone(), (size, alignment));
+        layout_cache.type_cache.insert(type_index, (size, alignment));
         Ok((size, alignment))
     }
     /// Returns true if the given type is sizeless

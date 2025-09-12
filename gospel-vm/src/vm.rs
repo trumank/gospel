@@ -1454,7 +1454,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     run_context.validate_type_not_partial(type_index, Some(state))?;
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
-                    let result = run_context.type_by_index(type_index).size_and_alignment(run_context, &mut new_type_cache)
+                    let result = Type::size_and_alignment(type_index, run_context, &mut new_type_cache)
                         .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?.0 as u64;
                     state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
@@ -1463,7 +1463,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     run_context.validate_type_not_partial(type_index, Some(state))?;
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
-                    let result = run_context.type_by_index(type_index).size_and_alignment(run_context, &mut new_type_cache)
+                    let result = Type::size_and_alignment(type_index, run_context, &mut new_type_cache)
                         .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?.1 as u64;
                     state.push_stack_check_overflow(GospelVMValue::Primitive(result))?;
                 }
@@ -1474,7 +1474,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        user_defined_type.layout(run_context, &mut new_type_cache)
+                        user_defined_type.layout(type_index, run_context, &mut new_type_cache)
                             .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?.unaligned_size as u64
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
@@ -1488,7 +1488,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        if user_defined_type.layout(run_context, &mut new_type_cache)
+                        if user_defined_type.layout(type_index, run_context, &mut new_type_cache)
                             .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?.vtable.is_some() { 1 } else { 0 }
                     } else {
                         vm_bail!(Some(state), "Type #{} is not a user defined type", type_index);
@@ -1502,7 +1502,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let vtable = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        user_defined_type.layout(run_context, &mut new_type_cache)
+                        user_defined_type.layout(type_index, run_context, &mut new_type_cache)
                             .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?
                             .vtable.clone().ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have a virtual function table", type_index))?
                     } else {
@@ -1522,7 +1522,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let result = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        user_defined_type.find_all_base_class_offsets(base_class_index, run_context, &mut new_type_cache)
+                        user_defined_type.find_all_base_class_offsets(type_index, base_class_index, run_context, &mut new_type_cache)
                             .map_err(|x| vm_error!(Some(&state), "Failed to calculate type layout: {}", x))?
                             .first().cloned() // take the first index of the base class in case there are multiple. This will be the outermost base class
                             .ok_or_else(|| vm_error!(Some(&state), "Type #{} does not have Type #{} as a Base Class", type_index, base_class_index))? as u64
@@ -1541,7 +1541,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let (vtable_offset, function_offset) = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        user_defined_type.find_map_member_layout(&function_name, &|ctx| {
+                        user_defined_type.find_map_member_layout(type_index, &function_name, &|ctx| {
                             if let ResolvedUDTMemberLayout::VirtualFunction(virtual_function) = &ctx.owner_layout.member_layouts[ctx.member_index] {
                                 Some((ctx.owner_offset + virtual_function.vtable_offset, virtual_function.offset))
                             } else { None }
@@ -1564,7 +1564,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let field_offset = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        user_defined_type.find_map_member_layout(&field_name, &|ctx| {
+                        user_defined_type.find_map_member_layout(type_index, &field_name, &|ctx| {
                             if let ResolvedUDTMemberLayout::Field(field_layout) = &ctx.owner_layout.member_layouts[ctx.member_index] {
                                 Some(ctx.owner_offset + field_layout.offset)
                             } else { None }
@@ -1586,7 +1586,7 @@ impl<'a> GospelVMExecutionState<'a> {
 
                     let mut new_type_cache = state.new_type_layout_cache(run_context)?;
                     let (field_offset, field_bit_offset, field_bit_width) = if let Type::UDT(user_defined_type) = run_context.type_by_index(type_index) {
-                        user_defined_type.find_map_member_layout(&field_name, &|ctx| {
+                        user_defined_type.find_map_member_layout(type_index, &field_name, &|ctx| {
                             if let ResolvedUDTMemberLayout::Bitfield(bitfield) = &ctx.owner_layout.member_layouts[ctx.member_index] {
                                 Some((ctx.owner_offset + bitfield.offset, bitfield.bitfield_offset, bitfield.bitfield_width))
                             } else { None }

@@ -304,7 +304,7 @@ fn print_full_type_tree(type_tree: &TypeTree, root_type_container: Option<&Gospe
         if let Some(type_layout_cache) = optional_type_layout_cache.as_mut() {
             let type_data = type_tree.type_by_index(type_index);
             if !type_data.is_sizeless(type_tree) {
-                match type_data.size_and_alignment(type_tree, type_layout_cache) {
+                match Type::size_and_alignment(type_index, type_tree, type_layout_cache) {
                     Ok((size, alignment)) => {
                         println!("Type #{} (alignment: 0x{:x}; size: 0x{:x}): ", type_index, alignment, size);       
                     }
@@ -333,7 +333,7 @@ fn print_full_type_tree(type_tree: &TypeTree, root_type_container: Option<&Gospe
         if let Some(type_layout_cache) = optional_type_layout_cache.as_mut() {
             if let Type::UDT(user_defined_type) = &type_tree.type_by_index(type_index) {
                 println!(" |# UDT Layout:");
-                match user_defined_type.layout(type_tree, type_layout_cache) {
+                match user_defined_type.layout(type_index, type_tree, type_layout_cache) {
                     Ok(type_layout) => {
                         serde_json::to_string_pretty(&type_layout.deref())?.lines().for_each(|x| {
                             println!(" |# {}", x);
@@ -363,9 +363,9 @@ fn print_full_type_tree(type_tree: &TypeTree, root_type_container: Option<&Gospe
 
 fn print_simplified_type_tree(type_tree: &TypeTree, target_triplet: Option<TargetTriplet>) -> anyhow::Result<()> {
     let mut type_layout_cache = TypeLayoutCache::create(target_triplet.ok_or_else(|| anyhow!("Simplified type tree format requires target triplet"))?);
-    for type_in_tree in &type_tree.types {
-        if let Type::UDT(user_defined_type) = type_in_tree {
-            let layout = user_defined_type.layout(type_tree, &mut type_layout_cache)?;
+    for type_index in 0..type_tree.types.len() {
+        if let Type::UDT(user_defined_type) = type_tree.type_by_index(type_index) {
+            let layout = user_defined_type.layout(type_index, type_tree, &mut type_layout_cache)?;
             println!("{}.layout {{ // 0x{:x}", user_defined_type.name.as_deref().unwrap_or("<unknown>"), layout.size);
             for (member, member_layout) in user_defined_type.members.iter().zip(&layout.member_layouts) {
                 match member_layout {
