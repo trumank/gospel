@@ -40,11 +40,13 @@ pub struct TypePtrNamespace {
     field_layout_cache: Arc<RwLock<HashMap<FastLayoutCacheKey<()>, Option<(usize, usize)>>>>,
     enum_constant_cache: Arc<RwLock<HashMap<FastLayoutCacheKey<()>, Option<u64>>>>,
     static_type_cache: Arc<RwLock<HashMap<usize, Option<usize>>>>,
+    static_cast_cache: Arc<RwLock<HashMap<(usize, usize), Option<i64>>>>,
 }
 impl TypePtrNamespace {
     /// Creates a new type pointer namespace from the given type graph
     pub fn create(type_graph: Arc<RwLock<dyn MutableTypeGraph>>, target_triplet: TargetTriplet) -> TypePtrNamespace {
-        TypePtrNamespace{ type_graph, layout_cache: Arc::new(RwLock::new(TypeLayoutCache::create(target_triplet))), field_layout_cache: Arc::default(), enum_constant_cache: Arc::default(), static_type_cache: Arc::default() }
+        TypePtrNamespace{ type_graph, layout_cache: Arc::new(RwLock::new(TypeLayoutCache::create(target_triplet))), field_layout_cache: Arc::default(),
+            enum_constant_cache: Arc::default(), static_type_cache: Arc::default(), static_cast_cache: Arc::default() }
     }
     /// This function answers the question "by how much do I need to offset pointer to type from_index to get a pointer to type to_index?"
     /// Returns None if two types are not related and their values are not convertible, or pointer adjustment necessary for conversion (in case of upcasting and downcasting)
@@ -53,6 +55,16 @@ impl TypePtrNamespace {
     /// this cast will only succeed if no coercion is necessary (e.g. while static_cast from float to int will succeed in C++, it will fail here).
     /// Additionally, it will not convert between pointers and integers
     pub fn get_static_cast_pointer_adjust(&self, from_type_index: usize, to_type_index: usize) -> Option<i64> {
+        let cache_key = (from_type_index, to_type_index);
+        if let Some(existing_pointer_adjust) = self.static_cast_cache.read().unwrap().get(&cache_key) {
+            existing_pointer_adjust.clone()
+        } else {
+            let new_pointer_adjust = self.get_static_cast_pointer_adjust_uncached(from_type_index, to_type_index);
+            self.static_cast_cache.write().unwrap().insert(cache_key, new_pointer_adjust.clone());
+            new_pointer_adjust
+        }
+    }
+    fn get_static_cast_pointer_adjust_uncached(&self, from_type_index: usize, to_type_index: usize) -> Option<i64> {
         let type_graph = self.type_graph.read().unwrap();
         let target_triplet = self.layout_cache.read().unwrap().target_triplet.clone();
 
