@@ -261,13 +261,36 @@ impl CodeGenerationContext {
             }
         }
 
-        let (merged_param_decl, merged_param_list, merged_call_args, merged_phantom_data, opaque_type_decl) = if !parameter_list.is_empty() {
-            let opaque_type_name = Ident::new(&format!("Opaque{}", type_name.to_string()), Span::call_site());
+        let mut merged_parameter_declaration: Option<TokenStream> = None;
+        let mut merged_parameter_list: Option<TokenStream> = None;
+        let mut merged_phantom_data_list: Option<TokenStream> = None;
+        let mut opaque_type_declaration: Option<TokenStream> = None;
+        let static_type_implementation: TokenStream;
+
+        if !parameter_list.is_empty() {
+            merged_parameter_declaration = Some(quote!{ <#(#parameter_declarations),*> });
+            merged_parameter_list = Some(quote!{ <#(#parameter_list),*> });
+
             let phantom_data_list: Vec<TokenStream> = parameter_list.iter().map(|parameter_name| {
                 let field_ident = Ident::new(&format!("_phantom_{}", parameter_name.to_string()), Span::call_site());
                 quote!{ #field_ident: std::marker::PhantomData::<#parameter_name> }
             }).collect();
-            let dynamic_type_tokens = quote! {
+            merged_phantom_data_list = Some(quote! { #(#phantom_data_list),*, });
+
+            static_type_implementation = quote! {
+                impl #merged_parameter_declaration gospel_runtime::static_type_wrappers::StaticTypeTag for #type_name #merged_parameter_list {
+                    fn store_type_descriptor(namespace: &gospel_runtime::runtime_type_model::TypePtrNamespace) -> usize {
+                        use crate::gospel_runtime::static_type_wrappers::StaticTypeTag;
+                        use crate::gospel_runtime::static_type_wrappers::IntegralValueTypeTag;
+                        let type_arguments: Vec<gospel_typelib::type_model::TypeTemplateArgument> = vec![#(#parameter_call_arguments),*];
+                        let mut type_graph = namespace.type_graph.write().unwrap();
+                        type_graph.create_named_type(#full_type_name, type_arguments).unwrap().unwrap_or_else(|| panic!("Named UDT type not found: {}", #full_type_name))
+                    }
+                }
+            };
+
+            let opaque_type_name = Ident::new(&format!("Opaque{}", type_name.to_string()), Span::call_site());
+            opaque_type_declaration = Some(quote! {
                 #type_doc_comment
                 #[doc = "Opaque types represent template instantiations without statically known arguments"]
                 pub struct #opaque_type_name {
@@ -285,34 +308,35 @@ impl CodeGenerationContext {
                 impl #opaque_type_name {
                     #(#generated_fields)*
                 }
+            });
+        } else {
+            // No type parameters for this type, we can use a faster cached version keyed by type name
+            static_type_implementation = quote! {
+                impl gospel_runtime::static_type_wrappers::StaticTypeTag for #type_name {
+                    fn store_type_descriptor(namespace: &gospel_runtime::runtime_type_model::TypePtrNamespace) -> usize {
+                        namespace.get_static_type_index_cached(#full_type_name).unwrap_or_else(|| panic!("Named UDT type not found: {}", #full_type_name))
+                    }
+                }
             };
-            (Some(quote!{ <#(#parameter_declarations),*> }), Some(quote!{ <#(#parameter_list),*> }), quote!{ vec![#(#parameter_call_arguments),*] }, Some(quote! { #(#phantom_data_list),*, }), Some(dynamic_type_tokens))
-        } else { (None, None, quote!{ vec![] }, None, None) };
+        }
+
         quote! {
             #type_doc_comment
-            pub struct #type_name #merged_param_decl {
-                #merged_phantom_data
+            pub struct #type_name #merged_parameter_declaration {
+                #merged_phantom_data_list
                 _dynamic_size_marker: [u8],
             }
-            impl #merged_param_decl gospel_runtime::static_type_wrappers::StaticTypeTag for #type_name #merged_param_list {
-                fn store_type_descriptor(namespace: &gospel_runtime::runtime_type_model::TypePtrNamespace) -> usize {
-                    use crate::gospel_runtime::static_type_wrappers::StaticTypeTag;
-                    use crate::gospel_runtime::static_type_wrappers::IntegralValueTypeTag;
-                    let type_arguments: Vec<gospel_typelib::type_model::TypeTemplateArgument> = #merged_call_args;
-                    let mut type_graph = namespace.type_graph.write().unwrap();
-                    type_graph.create_named_type(#full_type_name, type_arguments).unwrap().unwrap_or_else(|| panic!("Named UDT type not found: {}", #full_type_name))
-                }
-            }
-            impl #merged_param_decl gospel_runtime::static_type_wrappers::DynamicTypeTag for #type_name #merged_param_list {
+            #static_type_implementation
+            impl #merged_parameter_declaration gospel_runtime::static_type_wrappers::DynamicTypeTag for #type_name #merged_parameter_list {
                 fn get_cast_target_type_descriptor(ptr_metadata: &gospel_runtime::runtime_type_model::TypePtrMetadata) -> Option<usize> {
                     use crate::gospel_runtime::static_type_wrappers::StaticTypeTag;
                     Some(Self::store_type_descriptor(&ptr_metadata.namespace))
                 }
             }
-            impl #merged_param_decl #type_name #merged_param_list {
+            impl #merged_parameter_declaration #type_name #merged_parameter_list {
                 #(#generated_fields)*
             }
-            #opaque_type_decl
+            #opaque_type_declaration
         }
     }
     fn generate_enum_constant_definition(&self, enum_definition: &BindingsTypeDefinition, type_name: &Ident, enum_underlying_type: &Option<PrimitiveType>, source_constant_name: &str, constant_name: Ident, is_prototype_constant: bool) -> TokenStream {

@@ -15,25 +15,25 @@ macro_rules! gsb_codegen_implement_udt_field {
     ($field_name:ident, $source_file_name:literal, required, {$(#[$field_attributes:meta])*}, $field_type:ty) => {
         $(#[$field_attributes])*
         pub fn $field_name<M : gospel_runtime::memory_access::Memory>(self: &gospel_runtime::static_type_wrappers::Ref<M, Self>) -> gospel_runtime::static_type_wrappers::Ref<M, $field_type> {
-            self.inner_ptr.get_struct_field_ptr($source_file_name).unwrap_or_else(|| panic!("Struct missing field: {}", $source_file_name)).cast_ref_checked()
+            self.inner_ptr.get_struct_field_ptr_cached($source_file_name).unwrap_or_else(|| panic!("Struct missing field: {}", $source_file_name)).cast_ref_checked()
         }
     };
     ($field_name:ident, $source_file_name:literal, optional, {$(#[$field_attributes:meta])*}, $field_type:ty) => {
         $(#[$field_attributes])*
         pub fn $field_name<M : gospel_runtime::memory_access::Memory>(self: &gospel_runtime::static_type_wrappers::Ref<M, Self>) -> Option<gospel_runtime::static_type_wrappers::Ref<M, $field_type>> {
-            self.inner_ptr.get_struct_field_ptr($source_file_name).map(|x| x.cast_ref_checked())
+            self.inner_ptr.get_struct_field_ptr_cached($source_file_name).map(|x| x.cast_ref_checked())
         }
     };
     ($field_name:ident, $source_file_name:literal, required, {$(#[$field_attributes:meta])*}) => {
         $(#[$field_attributes])*
         pub fn $field_name<M : gospel_runtime::memory_access::Memory>(self: &gospel_runtime::static_type_wrappers::Ref<M, Self>) -> gospel_runtime::static_type_wrappers::Ref<M, ()> {
-            self.inner_ptr.get_struct_field_ptr($source_file_name).unwrap_or_else(|| panic!("Struct missing field: {}", $source_file_name)).cast_ref_checked()
+            self.inner_ptr.get_struct_field_ptr_cached($source_file_name).unwrap_or_else(|| panic!("Struct missing field: {}", $source_file_name)).cast_ref_checked()
         }
     };
     ($field_name:ident, $source_file_name:literal, optional, {$(#[$field_attributes:meta])*}) => {
         $(#[$field_attributes])*
         pub fn $field_name<M : gospel_runtime::memory_access::Memory>(self: &gospel_runtime::static_type_wrappers::Ref<M, Self>) -> Option<gospel_runtime::static_type_wrappers::Ref<M, ()>> {
-            self.inner_ptr.get_struct_field_ptr($source_file_name).map(|x| x.cast_ref_checked())
+            self.inner_ptr.get_struct_field_ptr_cached($source_file_name).map(|x| x.cast_ref_checked())
         }
     };
 }
@@ -43,8 +43,7 @@ macro_rules! gsb_codegen_implement_enum_type {
     ($type_name:ident, $full_type_name:literal, static_type) => {
         impl gospel_runtime::static_type_wrappers::StaticTypeTag for $type_name {
             fn store_type_descriptor(namespace: &gospel_runtime::runtime_type_model::TypePtrNamespace) -> usize {
-                let mut type_graph = namespace.type_graph.write().unwrap();
-                type_graph.create_named_type($full_type_name, vec![]).unwrap().unwrap_or_else(|| panic!("Named enum type not found: {}", $full_type_name))
+                namespace.get_static_type_index_cached($full_type_name).unwrap_or_else(|| panic!("Named enum type not found: {}", $full_type_name))
             }
         }
         impl gospel_runtime::static_type_wrappers::DynamicTypeTag for $type_name {
@@ -119,7 +118,7 @@ macro_rules! gsb_codegen_implement_enum_constant {
             use crate::gospel_runtime::static_type_wrappers::StaticTypeTag;
             use crate::gospel_runtime::static_type_wrappers::EnumUnderlyingType;
             let enum_type_index = Self::store_type_descriptor(&namespace);
-            let constant_raw_value = namespace.get_enum_type_constant_value(enum_type_index, $source_file_name)
+            let constant_raw_value = namespace.get_enum_type_constant_value_cached(enum_type_index, $source_file_name)
                 .unwrap_or_else(|| panic!("Enum missing constant: {}:{}", stringify!($type_name), $source_file_name));
             Self(<$inner_type>::from_raw_discriminant(constant_raw_value))
         }
@@ -130,7 +129,7 @@ macro_rules! gsb_codegen_implement_enum_constant {
             use crate::gospel_runtime::static_type_wrappers::StaticTypeTag;
             use crate::gospel_runtime::static_type_wrappers::EnumUnderlyingType;
             let enum_type_index = Self::store_type_descriptor(&namespace);
-            let constant_raw_value = namespace.get_enum_type_constant_value(enum_type_index, $source_file_name)?;
+            let constant_raw_value = namespace.get_enum_type_constant_value_cached(enum_type_index, $source_file_name)?;
             Some(Self(<$inner_type>::from_raw_discriminant(constant_raw_value)))
         }
     };
@@ -138,7 +137,7 @@ macro_rules! gsb_codegen_implement_enum_constant {
         $(#[$field_attributes])*
         pub fn $constant_name(ptr_metadata: &gospel_runtime::runtime_type_model::TypePtrMetadat) -> Self {
             use crate::gospel_runtime::static_type_wrappers::EnumUnderlyingType;
-            let constant_raw_value = ptr_metadata.namespace.get_enum_type_constant_value(ptr_metadata.type_index, $source_file_name)
+            let constant_raw_value = ptr_metadata.namespace.get_enum_type_constant_value_cached(ptr_metadata.type_index, $source_file_name)
                 .unwrap_or_else(|| panic!("Enum missing constant: {}:{}", stringify!($type_name), $source_file_name));
             Self(<$inner_type>::from_raw_discriminant(constant_raw_value))
         }
@@ -147,7 +146,7 @@ macro_rules! gsb_codegen_implement_enum_constant {
         $(#[$field_attributes])*
         pub fn $constant_name(ptr_metadata: &gospel_runtime::runtime_type_model::TypePtrMetadat) -> Option<Self> {
             use crate::gospel_runtime::static_type_wrappers::EnumUnderlyingType;
-            let constant_raw_value = ptr_metadata.namespace.get_enum_type_constant_value(ptr_metadata.type_index, $source_file_name)?;
+            let constant_raw_value = ptr_metadata.namespace.get_enum_type_constant_value_cached(ptr_metadata.type_index, $source_file_name)?;
             Some(Self(<$inner_type>::from_raw_discriminant(constant_raw_value)))
         }
     };
@@ -156,7 +155,7 @@ macro_rules! gsb_codegen_implement_enum_constant {
         pub fn $constant_name(namespace: &gospel_runtime::runtime_type_model::TypePtrNamespace) -> Self {
             use crate::gospel_runtime::static_type_wrappers::StaticTypeTag;
             let enum_type_index = Self::store_type_descriptor(&namespace);
-            let constant_raw_value = namespace.get_enum_type_constant_value(enum_type_index, $source_file_name)
+            let constant_raw_value = namespace.get_enum_type_constant_value_cached(enum_type_index, $source_file_name)
                 .unwrap_or_else(|| panic!("Enum missing constant: {}:{}", stringify!($type_name), $source_file_name));
             Self(constant_raw_value)
         }
@@ -166,14 +165,14 @@ macro_rules! gsb_codegen_implement_enum_constant {
         pub fn $constant_name(namespace: &gospel_runtime::runtime_type_model::TypePtrNamespace) -> Option<Self> {
             use crate::gospel_runtime::static_type_wrappers::StaticTypeTag;
             let enum_type_index = Self::store_type_descriptor(&namespace);
-            let constant_raw_value = namespace.get_enum_type_constant_value(enum_type_index, $source_file_name)?;
+            let constant_raw_value = namespace.get_enum_type_constant_value_cached(enum_type_index, $source_file_name)?;
             Some(Self(constant_raw_value))
         }
     };
     ($type_name:ty, $constant_name:ident, $source_file_name:literal, dynamic_type, required, {$(#[$field_attributes:meta])*}) => {
         $(#[$field_attributes])*
         pub fn $constant_name(ptr_metadata: &gospel_runtime::runtime_type_model::TypePtrMetadat) -> Self {
-            let constant_raw_value = ptr_metadata.namespace.get_enum_type_constant_value(ptr_metadata.type_index, $source_file_name)
+            let constant_raw_value = ptr_metadata.namespace.get_enum_type_constant_value_cached(ptr_metadata.type_index, $source_file_name)
                 .unwrap_or_else(|| panic!("Enum missing constant: {}:{}", stringify!($type_name), $source_file_name));
             Self(constant_raw_value)
         }
@@ -181,7 +180,7 @@ macro_rules! gsb_codegen_implement_enum_constant {
     ($type_name:ty, $constant_name:ident, $source_file_name:literal, dynamic_type, optional, {$(#[$field_attributes:meta])*}) => {
         $(#[$field_attributes])*
         pub fn $constant_name(ptr_metadata: &gospel_runtime::runtime_type_model::TypePtrMetadat) -> Option<Self> {
-            let constant_raw_value = ptr_metadata.namespace.get_enum_type_constant_value(ptr_metadata.type_index, $source_file_name)?;
+            let constant_raw_value = ptr_metadata.namespace.get_enum_type_constant_value_cached(ptr_metadata.type_index, $source_file_name)?;
             Some(Self(constant_raw_value))
         }
     };

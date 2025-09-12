@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use anyhow::anyhow;
-use gospel_typelib::type_model::{MutableTypeGraph, Type, TypeGraphLike, TypeLayoutCache, TypeTemplateArgument};
+use gospel_typelib::type_model::{MutableTypeGraph, Type, TypeGraphLike, TypeTemplateArgument};
 use gospel_vm::vm::{GospelVMOptions, GospelVMRunContext, GospelVMState, GospelVMValue};
 use gospel_vm::writer::GospelSourceObjectReference;
 #[cfg(feature = "compiler")]
@@ -38,7 +38,7 @@ impl GospelVMTypeGraphBackend {
     }
     pub fn to_type_ptr_namespace(self) -> anyhow::Result<TypePtrNamespace> {
         let target_triplet = self.vm_run_context.target_triplet().ok_or_else(|| anyhow!("Missing target triplet on run context"))?.clone();
-        Ok(TypePtrNamespace{type_graph: Arc::new(RwLock::new(self)), layout_cache: Arc::new(RwLock::new(TypeLayoutCache::create(target_triplet)))})
+        Ok(TypePtrNamespace::create(Arc::new(RwLock::new(self)), target_triplet))
     }
 }
 

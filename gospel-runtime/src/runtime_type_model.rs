@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, RwLock};
@@ -8,13 +8,44 @@ use paste::paste;
 use gospel_typelib::type_model::{CVQualifiedType, MutableTypeGraph, PrimitiveType, ResolvedUDTMemberLayout, TargetTriplet, Type, TypeLayoutCache, UserDefinedTypeMember};
 use crate::memory_access::{Memory, OpaquePtr};
 
+/// Used as a key to hash lookups for the calculation of various forms of layout
+#[derive(Debug)]
+struct FastLayoutCacheKey<T: Hash + PartialEq + Eq> {
+    type_index: usize,
+    name: &'static str,
+    additional_data: T,
+}
+impl<T: Hash + PartialEq + Eq> Hash for FastLayoutCacheKey<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.type_index.hash(state);
+        self.name.as_ptr().addr().hash(state);
+        self.additional_data.hash(state);
+    }
+}
+impl<T: Hash + PartialEq + Eq> PartialEq for FastLayoutCacheKey<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.type_index == other.type_index &&
+            self.name.as_ptr().addr() == other.name.as_ptr().addr() &&
+            self.additional_data == other.additional_data
+    }
+}
+impl<T: Hash + PartialEq + Eq> Eq for FastLayoutCacheKey<T> {}
+
+
 /// Type ptr namespace represents a type hierarchy used by a hierarchy of related type pointers
 #[derive(Clone)]
 pub struct TypePtrNamespace {
     pub type_graph: Arc<RwLock<dyn MutableTypeGraph>>,
     pub layout_cache: Arc<RwLock<TypeLayoutCache>>,
+    field_layout_cache: Arc<RwLock<HashMap<FastLayoutCacheKey<()>, Option<(usize, usize)>>>>,
+    enum_constant_cache: Arc<RwLock<HashMap<FastLayoutCacheKey<()>, Option<u64>>>>,
+    static_type_cache: Arc<RwLock<HashMap<usize, Option<usize>>>>,
 }
 impl TypePtrNamespace {
+    /// Creates a new type pointer namespace from the given type graph
+    pub fn create(type_graph: Arc<RwLock<dyn MutableTypeGraph>>, target_triplet: TargetTriplet) -> TypePtrNamespace {
+        TypePtrNamespace{ type_graph, layout_cache: Arc::new(RwLock::new(TypeLayoutCache::create(target_triplet))), field_layout_cache: Arc::default(), enum_constant_cache: Arc::default(), static_type_cache: Arc::default() }
+    }
     /// This function answers the question "by how much do I need to offset pointer to type from_index to get a pointer to type to_index?"
     /// Returns None if two types are not related and their values are not convertible, or pointer adjustment necessary for conversion (in case of upcasting and downcasting)
     /// Note that for indirect pointers to be considered convertible the wrapped pointer types must be convertible with no offset
@@ -96,6 +127,27 @@ impl TypePtrNamespace {
                 Some(enum_type.constant_value(constant, &layout_cache.target_triplet).unwrap())
             } else { None }
         } else { None }
+    }
+    pub fn get_enum_type_constant_value_cached(&self, enum_type_index: usize, constant_name: &'static str) -> Option<u64> {
+        let cache_key = FastLayoutCacheKey{type_index: enum_type_index, name: constant_name, additional_data: ()};
+        if let Some(existing_constant_value) = self.enum_constant_cache.read().unwrap().get(&cache_key) {
+            existing_constant_value.clone()
+        } else {
+            let enum_constant_value = self.get_enum_type_constant_value(enum_type_index, constant_name);
+            self.enum_constant_cache.write().unwrap().insert(cache_key, enum_constant_value.clone());
+            enum_constant_value
+        }
+    }
+    pub fn get_static_type_index_cached(&self, full_type_name: &'static str) -> Option<usize> {
+        let cache_key = full_type_name.as_ptr().addr();
+        if let Some(existing_static_type_index) = self.static_type_cache.read().unwrap().get(&cache_key) {
+            existing_static_type_index.clone()
+        } else {
+            let mut type_graph = self.type_graph.write().unwrap();
+            let new_type_index = type_graph.create_named_type(full_type_name, vec![]).unwrap();
+            self.static_type_cache.write().unwrap().insert(cache_key, new_type_index.clone());
+            new_type_index
+        }
     }
 }
 
@@ -199,6 +251,16 @@ impl TypePtrMetadata {
             }, type_graph.deref(), layout_cache.deref_mut()).unwrap()
         } else { None }
     }
+    pub fn struct_field_type_index_and_offset_cached(&self, field_name: &'static str) -> Option<(usize, usize)> {
+        let layout_cache = FastLayoutCacheKey{type_index: self.type_index, name: field_name, additional_data: ()};
+        if let Some(existing_layout) = self.namespace.field_layout_cache.read().unwrap().get(&layout_cache) {
+            existing_layout.clone()
+        } else {
+            let field_layout = self.struct_field_type_index_and_offset(field_name);
+            self.namespace.field_layout_cache.write().unwrap().insert(layout_cache, field_layout.clone());
+            field_layout
+        }
+    }
 }
 
 macro_rules! implement_dynamic_ptr_numeric_access {
@@ -288,6 +350,12 @@ impl<M: Memory> DynamicPtr<M> {
     /// Returns the pointer to the struct field with the given name
     pub fn get_struct_field_ptr(&self, field_name: &str) -> Option<Self> {
         if let Some((field_type_index, field_offset)) = self.metadata.struct_field_type_index_and_offset(field_name) {
+            Some(Self{opaque_ptr: self.opaque_ptr.clone() + field_offset, metadata: self.metadata.with_type_index(field_type_index)})
+        } else { None }
+    }
+    /// Returns the pointer to the struct field with the given name. Caches the result by string ptr
+    pub fn get_struct_field_ptr_cached(&self, field_name: &'static str) -> Option<Self> {
+        if let Some((field_type_index, field_offset)) = self.metadata.struct_field_type_index_and_offset_cached(field_name) {
             Some(Self{opaque_ptr: self.opaque_ptr.clone() + field_offset, metadata: self.metadata.with_type_index(field_type_index)})
         } else { None }
     }

@@ -71,24 +71,22 @@ macro_rules! implement_numeric_trivial_value {
        impl TrivialValue for $value_type {
             fn static_read<M: Memory>(ptr: &DynamicPtr<M>) -> anyhow::Result<Self> {
                 paste! {
-                    ptr.[<read_ $value_type>]()?.ok_or_else(|| anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))
+                    ptr.opaque_ptr.[<read_ $value_type>]()
                 }
             }
             fn static_write<M: Memory>(ptr: &DynamicPtr<M>, value: Self) -> anyhow::Result<()> {
                 paste! {
-                    ptr.[<write_ $value_type>](value)
+                    ptr.opaque_ptr.[<write_ $value_type>](value)
                 }
             }
             fn static_read_slice_unchecked<M: Memory>(ptr: &DynamicPtr<M>, buffer: &mut [$value_type]) -> anyhow::Result<()> {
                  paste! {
-                    if !ptr.[<read_ $value_type _slice_unchecked>](buffer)? {
-                        Err(anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))
-                    } else { Ok({}) }
+                    ptr.opaque_ptr.[<read_ $value_type _array>](buffer)
                 }
             }
             fn static_write_slice_unchecked<M: Memory>(ptr: &DynamicPtr<M>, buffer: &[$value_type]) -> anyhow::Result<()> {
                 paste! {
-                    ptr.[<write_ $value_type _slice_unchecked>](buffer)
+                    ptr.opaque_ptr.[<write_ $value_type _array>](buffer)
                 }
             }
         }
@@ -121,41 +119,40 @@ macro_rules! implement_variable_size_trivial_value {
             }
             impl TrivialValue for $value_type {
                 fn static_read<M: Memory>(ptr: &DynamicPtr<M>) -> anyhow::Result<Self> {
-                    let (_, primitive_size) = ptr.metadata.primitive_type_and_size().unwrap();
+                    let target_triplet = ptr.metadata.namespace.layout_cache.read().unwrap().target_triplet.clone();
+                    let primitive_size = $primitive_type.bit_width(&target_triplet).unwrap().value_in_bytes();
                     if primitive_size == size_of::<$small_underlying_type>() {
-                        Ok($value_type(ptr.[<read_ $small_underlying_type>]()?.ok_or_else(|| anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))? as $large_underlying_type))
+                        Ok($value_type(ptr.opaque_ptr.[<read_ $small_underlying_type>]()? as $large_underlying_type))
                     } else if primitive_size == size_of::<$large_underlying_type>() {
-                        Ok($value_type(ptr.[<read_ $large_underlying_type>]()?.ok_or_else(|| anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))? as $large_underlying_type))
+                        Ok($value_type(ptr.opaque_ptr.[<read_ $large_underlying_type>]()? as $large_underlying_type))
                     } else {
                         Err(anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))
                     }
                 }
                 fn static_write<M: Memory>(ptr: &DynamicPtr<M>, value: Self) -> anyhow::Result<()> {
-                   let (_, primitive_size) = ptr.metadata.primitive_type_and_size().unwrap();
+                    let target_triplet = ptr.metadata.namespace.layout_cache.read().unwrap().target_triplet.clone();
+                    let primitive_size = $primitive_type.bit_width(&target_triplet).unwrap().value_in_bytes();
                    if primitive_size == size_of::<$small_underlying_type>() {
-                       ptr.[<write_ $small_underlying_type>](value.0 as $small_underlying_type)
+                       ptr.opaque_ptr.[<write_ $small_underlying_type>](value.0 as $small_underlying_type)
                    } else if primitive_size == size_of::<$large_underlying_type>() {
-                       ptr.[<write_ $large_underlying_type>](value.0 as $large_underlying_type)
+                       ptr.opaque_ptr.[<write_ $large_underlying_type>](value.0 as $large_underlying_type)
                    } else {
                        Err(anyhow!("Failed to write: value is not compatible with {} type", core::stringify!($value_type)))
                    }
                 }
                 fn static_read_slice_unchecked<M: Memory>(ptr: &DynamicPtr<M>, buffer: &mut [$value_type]) -> anyhow::Result<()> {
-                    let (_, primitive_size) = ptr.metadata.primitive_type_and_size().unwrap();
+                    let target_triplet = ptr.metadata.namespace.layout_cache.read().unwrap().target_triplet.clone();
+                    let primitive_size = $primitive_type.bit_width(&target_triplet).unwrap().value_in_bytes();
                     if primitive_size == size_of::<$small_underlying_type>() {
                         let mut local_buffer: Box<[$small_underlying_type]> = vec![0; buffer.len()].into_boxed_slice();
-                        if !ptr.[<read_ $small_underlying_type _slice_unchecked>](local_buffer.deref_mut())? {
-                            bail!("Failed to read: value is not compatible with {} type", core::stringify!($value_type));
-                        }
+                        ptr.opaque_ptr.[<read_ $small_underlying_type _array>](local_buffer.deref_mut())?;
                         for index in 0..buffer.len() {
                             buffer[index] = $value_type(local_buffer[index] as $large_underlying_type)
                         }
                         Ok({})
                     } else if primitive_size == size_of::<$large_underlying_type>() {
                         let mut local_buffer: Box<[$large_underlying_type]> = vec![0; buffer.len()].into_boxed_slice();
-                        if !ptr.[<read_ $large_underlying_type _slice_unchecked>](local_buffer.deref_mut())? {
-                            bail!("Failed to read: value is not compatible with {} type", core::stringify!($value_type));
-                        }
+                        ptr.opaque_ptr.[<read_ $large_underlying_type _array>](local_buffer.deref_mut())?;
                         for index in 0..buffer.len() {
                             buffer[index] = $value_type(local_buffer[index] as $large_underlying_type)
                         }
@@ -165,19 +162,20 @@ macro_rules! implement_variable_size_trivial_value {
                     }
                 }
                 fn static_write_slice_unchecked<M: Memory>(ptr: &DynamicPtr<M>, buffer: &[Self]) -> anyhow::Result<()> {
-                    let (_, primitive_size) = ptr.metadata.primitive_type_and_size().unwrap();
+                    let target_triplet = ptr.metadata.namespace.layout_cache.read().unwrap().target_triplet.clone();
+                    let primitive_size = $primitive_type.bit_width(&target_triplet).unwrap().value_in_bytes();
                     if primitive_size == size_of::<$small_underlying_type>() {
                         let mut local_buffer: Box<[$small_underlying_type]> = vec![0; buffer.len()].into_boxed_slice();
                         for index in 0..buffer.len() {
                             local_buffer[index] = buffer[index].0 as $small_underlying_type;
                         }
-                        ptr.[<write_ $small_underlying_type _slice_unchecked>](local_buffer.deref())
+                        ptr.opaque_ptr.[<write_ $small_underlying_type _array>](local_buffer.deref())
                     } else if primitive_size == size_of::<$large_underlying_type>() {
                         let mut local_buffer: Box<[$large_underlying_type]> = vec![0; buffer.len()].into_boxed_slice();
                         for index in 0..buffer.len() {
                             local_buffer[index] = buffer[index].0 as $large_underlying_type;
                         }
-                        ptr.[<write_ $large_underlying_type _slice_unchecked>](local_buffer.deref())
+                        ptr.opaque_ptr.[<write_ $large_underlying_type _array>](local_buffer.deref())
                     } else {
                        Err(anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))
                     }
@@ -242,16 +240,14 @@ impl DynamicTypeTag for bool {
 }
 impl TrivialValue for bool {
     fn static_read<M: Memory>(ptr: &DynamicPtr<M>) -> anyhow::Result<Self> {
-        Ok(ptr.read_u8()?.ok_or_else(|| anyhow!("Failed to read: value is not compatible with bool type"))? != 0)
+        Ok(ptr.opaque_ptr.read_u8()? != 0)
     }
     fn static_write<M: Memory>(ptr: &DynamicPtr<M>, value: Self) -> anyhow::Result<()> {
-        ptr.write_u8(if value { 1 } else { 0 })
+        ptr.opaque_ptr.write_u8(if value { 1 } else { 0 })
     }
     fn static_read_slice_unchecked<M: Memory>(ptr: &DynamicPtr<M>, buffer: &mut [Self]) -> anyhow::Result<()> {
         let mut byte_buffer: Box<[u8]> = vec![0; buffer.len()].into_boxed_slice();
-        if !ptr.read_u8_slice_unchecked(byte_buffer.deref_mut())? {
-            bail!("Failed to read: value is not compatible with bool type");
-        }
+        ptr.opaque_ptr.read_u8_array(byte_buffer.deref_mut())?;
         for index in 0..buffer.len() {
             buffer[index] = byte_buffer[index] != 0;
         }
@@ -262,7 +258,7 @@ impl TrivialValue for bool {
         for index in 0..buffer.len() {
             byte_buffer[index] = if buffer[index] { 1 } else { 0 };
         }
-        ptr.write_u8_slice_unchecked(byte_buffer.deref())
+        ptr.opaque_ptr.write_u8_array(byte_buffer.deref())
     }
 }
 
