@@ -112,6 +112,9 @@ impl TypePtrNamespace {
                 // Given UDTs are not related otherwise, and the cast is not possible
                 None
             }
+        } else if let Type::Primitive(to_primitive_type) = to_base_type && to_primitive_type == &PrimitiveType::Void {
+            // Anything can be cast to void type without pointer adjust
+            Some(0)
         } else {
             // Types are not related otherwise and there is no implicit conversion available
             None
