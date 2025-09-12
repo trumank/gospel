@@ -15,25 +15,25 @@ macro_rules! gsb_codegen_implement_udt_field {
     ($field_name:ident, $source_file_name:literal, required, {$(#[$field_attributes:meta])*}, $field_type:ty) => {
         $(#[$field_attributes])*
         pub fn $field_name<M : gospel_runtime::memory_access::Memory>(self: &gospel_runtime::static_type_wrappers::Ref<M, Self>) -> gospel_runtime::static_type_wrappers::Ref<M, $field_type> {
-            self.inner_ptr.get_struct_field_ptr_cached($source_file_name).unwrap_or_else(|| panic!("Struct missing field: {}", $source_file_name)).cast_ref_checked()
+            gospel_runtime::static_type_wrappers::Ref::from_ptr_unchecked(self.inner_ptr.get_struct_field_ptr_cached($source_file_name).unwrap_or_else(|| panic!("Struct missing field: {}", $source_file_name)))
         }
     };
     ($field_name:ident, $source_file_name:literal, optional, {$(#[$field_attributes:meta])*}, $field_type:ty) => {
         $(#[$field_attributes])*
         pub fn $field_name<M : gospel_runtime::memory_access::Memory>(self: &gospel_runtime::static_type_wrappers::Ref<M, Self>) -> Option<gospel_runtime::static_type_wrappers::Ref<M, $field_type>> {
-            self.inner_ptr.get_struct_field_ptr_cached($source_file_name).map(|x| x.cast_ref_checked())
+            self.inner_ptr.get_struct_field_ptr_cached($source_file_name).map(|x| gospel_runtime::static_type_wrappers::Ref::from_ptr_unchecked(x))
         }
     };
     ($field_name:ident, $source_file_name:literal, required, {$(#[$field_attributes:meta])*}) => {
         $(#[$field_attributes])*
         pub fn $field_name<M : gospel_runtime::memory_access::Memory>(self: &gospel_runtime::static_type_wrappers::Ref<M, Self>) -> gospel_runtime::static_type_wrappers::Ref<M, ()> {
-            self.inner_ptr.get_struct_field_ptr_cached($source_file_name).unwrap_or_else(|| panic!("Struct missing field: {}", $source_file_name)).cast_ref_checked()
+            gospel_runtime::static_type_wrappers::Ref::from_ptr_unchecked(self.inner_ptr.get_struct_field_ptr_cached($source_file_name).unwrap_or_else(|| panic!("Struct missing field: {}", $source_file_name)))
         }
     };
     ($field_name:ident, $source_file_name:literal, optional, {$(#[$field_attributes:meta])*}) => {
         $(#[$field_attributes])*
         pub fn $field_name<M : gospel_runtime::memory_access::Memory>(self: &gospel_runtime::static_type_wrappers::Ref<M, Self>) -> Option<gospel_runtime::static_type_wrappers::Ref<M, ()>> {
-            self.inner_ptr.get_struct_field_ptr_cached($source_file_name).map(|x| x.cast_ref_checked())
+            self.inner_ptr.get_struct_field_ptr_cached($source_file_name).map(|x| gospel_runtime::static_type_wrappers::Ref::from_ptr_unchecked(x))
         }
     };
 }
