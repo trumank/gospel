@@ -1,105 +1,34 @@
-use std::cmp::{Ordering};
+﻿use std::cmp::{Ordering};
 use std::hash::{Hash, Hasher};
 use std::ops::{Add, Deref, DerefMut, Sub};
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
-use std::sync::Arc;
+use std::sync::{Arc};
 use paste::paste;
+use gospel_typelib::type_model::TargetTriplet;
 
-/// Describes possible endianness of the data
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum DataEndianness {
-    LittleEndian,
-    BigEndian,
-}
-macro_rules! impl_endian_aware_type {
-    ($data_type: ident) => {
-        paste! {
-            pub fn [<$data_type _from_bytes>](self, bytes: [u8; size_of::<$data_type>()]) -> $data_type {
-                match self {
-                    DataEndianness::LittleEndian => $data_type::from_le_bytes(bytes),
-                    DataEndianness::BigEndian => $data_type::from_be_bytes(bytes),
-                }
-            }
-            pub fn [<$data_type _to_bytes>](self, value: $data_type) -> [u8; size_of::<$data_type>()] {
-                match self {
-                    DataEndianness::LittleEndian => value.to_le_bytes(),
-                    DataEndianness::BigEndian => value.to_be_bytes(),
-                }
-            }
-            pub fn [<$data_type _array_from_bytes>](self, bytes: &[u8], data: &mut [$data_type]) {
-                assert_eq!(bytes.len(), data.len() * size_of::<$data_type>());
-                if DataEndianness::host_endianness() == self {
-                    // If endianness is the same between the host and the target, we can just transmute bytes
-                    data.copy_from_slice(unsafe { &*slice_from_raw_parts(bytes.as_ptr() as *const $data_type, data.len()) })
-                } else {
-                    // Endianness flip is necessary
-                    for data_index in 0..data.len() {
-                        let start_index = data_index * size_of::<$data_type>();
-                        let bytes_slice = &bytes[start_index..(start_index + size_of::<$data_type>())];
-                        let mut conversion_buffer: [u8; size_of::<$data_type>()] = [0; size_of::<$data_type>()];
-                        conversion_buffer.copy_from_slice(bytes_slice);
-                        data[data_index] = self.[<$data_type _from_bytes>](conversion_buffer)
-                    }
-                }
-            }
-            pub fn [<$data_type _array_to_bytes>](self, data: &[$data_type], bytes: &mut [u8]) {
-                assert_eq!(bytes.len(), data.len() * size_of::<$data_type>());
-                if DataEndianness::host_endianness() == self {
-                    // If endianness is the same between the host and the target, we can just transmute bytes
-                    bytes.copy_from_slice(unsafe { &*slice_from_raw_parts(data.as_ptr() as *const u8, data.len() * size_of::<$data_type>()) })
-                } else {
-                    // Endianness flip is necessary
-                    for data_index in 0..data.len() {
-                        let start_index = data_index * size_of::<$data_type>();
-                        let bytes_slice = &mut bytes[start_index..(start_index + size_of::<$data_type>())];
-                        bytes_slice.copy_from_slice(&self.[<$data_type _to_bytes>](data[data_index]));
-                    }
-                }
-            }
-        }
-    };
-}
-impl DataEndianness {
-    pub fn host_endianness() -> DataEndianness {
-        if cfg!(target_endian = "big") {
-            DataEndianness::BigEndian
-        } else {
-            DataEndianness::LittleEndian
-        }
-    }
-    impl_endian_aware_type!(u16);
-    impl_endian_aware_type!(u32);
-    impl_endian_aware_type!(u64);
-    impl_endian_aware_type!(i16);
-    impl_endian_aware_type!(i32);
-    impl_endian_aware_type!(i64);
-    impl_endian_aware_type!(f32);
-    impl_endian_aware_type!(f64);
-}
-
-macro_rules! impl_memory_access {
+macro_rules! impl_endian_dependent_memory_access {
     ($data_type: ident) => {
         paste! {
             fn [<read_ $data_type>](&self, address: u64) -> anyhow::Result<$data_type> {
-                let endianness = self.data_endianness();
+                let endianness = self.target_triplet().data_endianness();
                 let mut buffer: [u8; size_of::<$data_type>()] = [0; size_of::<$data_type>()];
                 self.read_chunk(address, &mut buffer)?;
                 Ok(endianness.[<$data_type _from_bytes>](buffer))
             }
             fn [<read_ $data_type _array>](&self, address: u64, buffer: &mut [$data_type]) -> anyhow::Result<()> {
-                let endianness = self.data_endianness();
+                let endianness = self.target_triplet().data_endianness();
                 let mut byte_buffer: Box<[u8]> = vec![0; buffer.len() * size_of::<$data_type>()].into_boxed_slice();
                 self.read_chunk(address, byte_buffer.deref_mut())?;
                 endianness.[<$data_type _array_from_bytes>](&*byte_buffer, buffer);
                 Ok({})
             }
             fn [<write_ $data_type>](&self, address: u64, value: $data_type) -> anyhow::Result<()> {
-                let endianness = self.data_endianness();
+                let endianness = self.target_triplet().data_endianness();
                 let buffer: [u8; size_of::<$data_type>()] = endianness.[<$data_type _to_bytes>](value);
                 self.write_chunk(address, &buffer)
             }
             fn [<write_ $data_type _array>](&self, address: u64, buffer: &[$data_type]) -> anyhow::Result<()> {
-                let endianness = self.data_endianness();
+                let endianness = self.target_triplet().data_endianness();
                 let mut byte_buffer: Box<[u8]> = vec![0; buffer.len() * size_of::<$data_type>()].into_boxed_slice();
                 endianness.[<$data_type _array_to_bytes>](buffer, byte_buffer.deref_mut());
                 self.write_chunk(address, byte_buffer.deref())
@@ -108,21 +37,20 @@ macro_rules! impl_memory_access {
     }
 }
 
-/// Interface for reading and writing memory at arbitrary addresses. Address in this context can refer to either relative or absolute address located within this process or another process address space
+/// Trait for reading and writing memory at arbitrary addresses. Address in this context can refer to either relative or absolute address located within this process or another process address space
 pub trait Memory {
-    /// Returns the address width in bytes for the memory backend. Address width determines the size of the pointer type
-    fn address_width(&self) -> usize;
-    /// Returns the endianness of this memory backend
-    fn data_endianness(&self) -> DataEndianness;
+    /// Returns target triplet for the target the memory of which this trait represents
+    fn target_triplet(&self) -> TargetTriplet;
 
-    impl_memory_access!(u16);
-    impl_memory_access!(u32);
-    impl_memory_access!(u64);
-    impl_memory_access!(i16);
-    impl_memory_access!(i32);
-    impl_memory_access!(i64);
-    impl_memory_access!(f32);
-    impl_memory_access!(f64);
+    // Implement memory access for endianness-dependent primitive types
+    impl_endian_dependent_memory_access!(u16);
+    impl_endian_dependent_memory_access!(u32);
+    impl_endian_dependent_memory_access!(u64);
+    impl_endian_dependent_memory_access!(i16);
+    impl_endian_dependent_memory_access!(i32);
+    impl_endian_dependent_memory_access!(i64);
+    impl_endian_dependent_memory_access!(f32);
+    impl_endian_dependent_memory_access!(f64);
 
     fn read_u8(&self, address: u64) -> anyhow::Result<u8> {
         let mut buffer: [u8; 1] = [0; 1];
@@ -141,14 +69,14 @@ pub trait Memory {
         self.read_chunk(address, unsafe { &mut *slice_from_raw_parts_mut(buffer.as_ptr() as *mut u8, buffer.len()) })
     }
     fn read_raw_ptr(&self, address: u64) -> anyhow::Result<u64> {
-        match self.address_width() {
+        match self.target_triplet().address_width() {
             8 => Ok(self.read_u64(address)?),
             4 => Ok(self.read_u32(address)? as u64),
             _ => panic!("Unsupported address width")
         }
     }
     fn read_raw_ptr_array(&self, address: u64, buffer: &mut [u64]) -> anyhow::Result<()> {
-        match self.address_width() {
+        match self.target_triplet().address_width() {
             8 => Ok(self.read_u64_array(address, buffer)?),
             4 => {
                 let mut raw_address_buffer: Box<[u32]> = vec![0; buffer.len()].into_boxed_slice();
@@ -178,14 +106,14 @@ pub trait Memory {
         self.write_chunk(address, unsafe { &*slice_from_raw_parts(buffer.as_ptr() as *const u8, buffer.len()) })
     }
     fn write_raw_ptr(&self, address: u64, value: u64) -> anyhow::Result<()> {
-        match self.address_width() {
+        match self.target_triplet().address_width() {
             8 => self.write_u64(address, value),
             4 => self.write_u32(address, value as u32),
             _ => panic!("Unsupported address width")
         }
     }
     fn write_raw_ptr_array(&self, address: u64, buffer: &[u64]) -> anyhow::Result<()> {
-        match self.address_width() {
+        match self.target_triplet().address_width() {
             8 => self.write_u64_array(address, buffer),
             4 => {
                 let mut raw_address_buffer: Box<[u32]> = vec![0; buffer.len()].into_boxed_slice();

@@ -324,6 +324,7 @@ dependencies = [
  "gospel-compiler",
  "gospel-typelib",
  "gospel-vm",
+ "lazy_static",
  "minidump",
  "paste",
  "process-memory",
@@ -334,6 +335,7 @@ name = "gospel-typelib"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "paste",
  "serde",
  "strum",
 ]

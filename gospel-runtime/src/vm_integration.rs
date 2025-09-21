@@ -1,15 +1,20 @@
 use std::path::PathBuf;
+use std::ptr::null_mut;
 use std::str::FromStr;
-use std::sync::{Arc, RwLock};
+use std::sync::{Mutex, RwLock};
+use std::sync::atomic::{AtomicPtr, Ordering};
 use anyhow::anyhow;
-use gospel_typelib::type_model::{MutableTypeGraph, Type, TypeGraphLike, TypeTemplateArgument};
+use gospel_typelib::type_model::{MutableTypeGraph, TargetTriplet, Type, TypeGraphLike, TypeTemplateArgument};
 use gospel_vm::vm::{GospelVMOptions, GospelVMRunContext, GospelVMState, GospelVMValue};
 use gospel_vm::writer::GospelSourceObjectReference;
 #[cfg(feature = "compiler")]
 use gospel_compiler::backend::{CompilerInstance, CompilerOptions};
 #[cfg(feature = "compiler")]
 use gospel_compiler::module_definition::resolve_module_dependencies;
-use crate::runtime_type_model::TypePtrNamespace;
+use lazy_static::lazy_static;
+use crate::core_type_definitions::StaticTypeLayoutCache;
+use crate::external_type_model::TypeNamespace;
+use crate::local_type_model::TypeUniverse;
 
 #[derive(Debug)]
 pub struct GospelVMTypeGraphBackend {
@@ -36,9 +41,70 @@ impl GospelVMTypeGraphBackend {
         let vm_run_context = GospelVMRunContext::create(vm_options);
         Ok(GospelVMTypeGraphBackend{vm_instance, vm_run_context})
     }
-    pub fn to_type_ptr_namespace(self) -> anyhow::Result<TypePtrNamespace> {
-        let target_triplet = self.vm_run_context.target_triplet().ok_or_else(|| anyhow!("Missing target triplet on run context"))?.clone();
-        Ok(TypePtrNamespace::create(Arc::new(RwLock::new(self)), target_triplet))
+    pub fn to_type_ptr_namespace(self) -> GospelVMTypeNamespace {
+        let target_triplet = self.vm_run_context.target_triplet().unwrap().clone();
+        let static_type_cache = Mutex::new(StaticTypeLayoutCache::create(target_triplet));
+        GospelVMTypeNamespace{target_triplet, type_graph: RwLock::new(self), static_type_cache}
+    }
+}
+
+pub struct GospelVMTypeNamespace {
+    target_triplet: TargetTriplet,
+    pub type_graph: RwLock<GospelVMTypeGraphBackend>,
+    static_type_cache: Mutex<StaticTypeLayoutCache>,
+}
+impl TypeNamespace for GospelVMTypeNamespace {
+    fn type_target_triplet(&self) -> TargetTriplet {
+        self.target_triplet
+    }
+    fn type_graph(&self) -> &RwLock<dyn MutableTypeGraph> {
+        &self.type_graph
+    }
+    fn type_layout_cache(&self) -> &Mutex<StaticTypeLayoutCache> {
+        &self.static_type_cache
+    }
+}
+
+pub enum GospelVMTypeUniverse {}
+impl GospelVMTypeUniverse {
+    /// Sets up type graph backend for the default Gospel VM type universe.
+    /// Will panic if backend is set more than once
+    /// This function is not thread safe, and you must ensure that there is no race condition with type_graph_backend
+    pub fn set_type_graph_backend(backend: GospelVMTypeGraphBackend) {
+        let type_graph_backend = Self::type_graph_backend_ref();
+        if type_graph_backend.load(Ordering::Relaxed) != null_mut() {
+            panic!("Attempt to set type graph on GospelVMTypeUniverse after it has already been set");
+        }
+        type_graph_backend.store(Box::into_raw(Box::new(Some(RwLock::new(backend)))), Ordering::Relaxed);
+    }
+    /// Returns the currently set type graph backend. Will panic if no type graph backend has been set
+    pub fn type_graph_backend() -> &'static RwLock<GospelVMTypeGraphBackend> {
+        let type_graph_backend = Self::type_graph_backend_ref().load(Ordering::Relaxed);
+        if type_graph_backend == null_mut() {
+            panic!("Attempt to access type graph on GospelVMTypeUniverse before it is set");
+        }
+        unsafe { type_graph_backend.as_ref_unchecked() }.as_ref().unwrap()
+    }
+    fn type_graph_backend_ref() -> &'static AtomicPtr<Option<RwLock<GospelVMTypeGraphBackend>>> {
+        static STATIC_TYPE_GRAPH: AtomicPtr<Option<RwLock<GospelVMTypeGraphBackend>>> = AtomicPtr::new(null_mut());
+        &STATIC_TYPE_GRAPH
+    }
+}
+impl TypeUniverse for GospelVMTypeUniverse {
+    fn target_triplet() -> TargetTriplet {
+        lazy_static! {
+            static ref cached_target_triplet: TargetTriplet = GospelVMTypeUniverse::type_graph_backend().read().unwrap().vm_run_context.target_triplet().cloned().unwrap();
+        }
+        *cached_target_triplet
+    }
+    fn type_graph() -> &'static RwLock<dyn MutableTypeGraph> {
+        GospelVMTypeUniverse::type_graph_backend()
+    }
+    fn type_layout_cache() -> &'static Mutex<StaticTypeLayoutCache> {
+        lazy_static! {
+            static ref type_layout_cache: Mutex<StaticTypeLayoutCache> = Mutex::new(StaticTypeLayoutCache::create(GospelVMTypeUniverse::target_triplet()));
+        }
+        &*type_layout_cache
     }
 }
 

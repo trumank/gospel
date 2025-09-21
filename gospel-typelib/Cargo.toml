@@ -11,3 +11,4 @@ edition.workspace = true
 anyhow = "1.0.93"
 strum = { version = "0.27.2", features = ["derive"] }
 serde = { version = "1.0.219", features = ["derive"] }
+paste = "1.0.15"

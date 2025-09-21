@@ -6,11 +6,94 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
+use paste::paste;
+use std::ptr::slice_from_raw_parts;
 
 /// Aligns the value up to the nearest multiple of the alignment
 pub fn align_value(value: usize, align: usize) -> usize {
     let reminder = if align == 0 { 0 } else { value % align };
     if reminder == 0 { value } else { value + (align - reminder) }
+}
+
+/// Describes possible endianness of the data
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum DataEndianness {
+    LittleEndian,
+    BigEndian,
+}
+impl DataEndianness {
+    /// Returns the endianness of the target this module has been compiled for
+    pub fn host_endianness() -> DataEndianness {
+        if cfg!(target_endian = "big") {
+            DataEndianness::BigEndian
+        } else {
+            DataEndianness::LittleEndian
+        }
+    }
+}
+
+macro_rules! implement_integral_type_endian_conversion {
+    ($data_type: ident) => {
+        paste! {
+            /// Converts bytes in this endian to the value of this type in endianness native for the running target
+            pub fn [<$data_type _from_bytes>](self, bytes: [u8; size_of::<$data_type>()]) -> $data_type {
+                match self {
+                    DataEndianness::LittleEndian => $data_type::from_le_bytes(bytes),
+                    DataEndianness::BigEndian => $data_type::from_be_bytes(bytes),
+                }
+            }
+            /// Converts value of the given type in native endian to this endian
+            pub fn [<$data_type _to_bytes>](self, value: $data_type) -> [u8; size_of::<$data_type>()] {
+                match self {
+                    DataEndianness::LittleEndian => value.to_le_bytes(),
+                    DataEndianness::BigEndian => value.to_be_bytes(),
+                }
+            }
+            /// Converts bytes in this endian to a slice of values of this type in endianness native for the running target
+            pub fn [<$data_type _array_from_bytes>](self, bytes: &[u8], data: &mut [$data_type]) {
+                assert_eq!(bytes.len(), data.len() * size_of::<$data_type>());
+                if DataEndianness::host_endianness() == self {
+                    // If endianness is the same between the host and the target, we can just transmute bytes
+                    data.copy_from_slice(unsafe { &*slice_from_raw_parts(bytes.as_ptr() as *const $data_type, data.len()) })
+                } else {
+                    // Endianness flip is necessary
+                    for data_index in 0..data.len() {
+                        let start_index = data_index * size_of::<$data_type>();
+                        let bytes_slice = &bytes[start_index..(start_index + size_of::<$data_type>())];
+                        let mut conversion_buffer: [u8; size_of::<$data_type>()] = [0; size_of::<$data_type>()];
+                        conversion_buffer.copy_from_slice(bytes_slice);
+                        data[data_index] = self.[<$data_type _from_bytes>](conversion_buffer)
+                    }
+                }
+            }
+            /// Converts slice of values of the given type in native endian to this endian
+            pub fn [<$data_type _array_to_bytes>](self, data: &[$data_type], bytes: &mut [u8]) {
+                assert_eq!(bytes.len(), data.len() * size_of::<$data_type>());
+                if DataEndianness::host_endianness() == self {
+                    // If endianness is the same between the host and the target, we can just transmute bytes
+                    bytes.copy_from_slice(unsafe { &*slice_from_raw_parts(data.as_ptr() as *const u8, data.len() * size_of::<$data_type>()) })
+                } else {
+                    // Endianness flip is necessary
+                    for data_index in 0..data.len() {
+                        let start_index = data_index * size_of::<$data_type>();
+                        let bytes_slice = &mut bytes[start_index..(start_index + size_of::<$data_type>())];
+                        bytes_slice.copy_from_slice(&self.[<$data_type _to_bytes>](data[data_index]));
+                    }
+                }
+            }
+        }
+    };
+}
+// Utility functions for reading integral types with the explicit endianness
+impl DataEndianness {
+    implement_integral_type_endian_conversion!(u16);
+    implement_integral_type_endian_conversion!(u32);
+    implement_integral_type_endian_conversion!(u64);
+    implement_integral_type_endian_conversion!(i16);
+    implement_integral_type_endian_conversion!(i32);
+    implement_integral_type_endian_conversion!(i64);
+    implement_integral_type_endian_conversion!(f32);
+    implement_integral_type_endian_conversion!(f64);
 }
 
 /// Corresponds to <arch> in LLVM target triplet
@@ -78,16 +161,20 @@ pub enum TargetEnvironment {
 /// This includes the operating system, the processor architecture, and environment (ABI)
 /// This defines values of certain built-in input variables, as well as size of certain built-in
 /// platform-dependent types such as pointer, int or long int.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub struct TargetTriplet {
     pub arch: TargetArchitecture,
     pub sys: TargetOperatingSystem,
     pub env: TargetEnvironment,
 }
 impl TargetTriplet {
-    /// Returns the address size for the provided target triplet
-    pub fn address_size(&self) -> usize {
+    /// Returns the address width for the provided target triplet
+    pub fn address_width(&self) -> usize {
         8 // All currently supported architectures are 64-bit
+    }
+    /// Returns the data endianness for the provided target triplet
+    pub fn data_endianness(&self) -> DataEndianness {
+        DataEndianness::LittleEndian // All currently supported architectures are Little Endian
     }
     /// Returns the size of the "long" type for the provided target triplet
     pub fn long_size(&self) -> BitWidth {
@@ -104,6 +191,7 @@ impl TargetTriplet {
     }
     /// Returns the target that the current executable has been compiled for
     pub fn current_target() -> Option<TargetTriplet> {
+        // TODO: Current implementation is not ideal, we should instead parse TARGET env var provided to us during crate compilation
         let current_arch = TargetArchitecture::current_arch();
         let current_os = TargetOperatingSystem::current_os();
         let default_env = current_os.as_ref().and_then(|x| {
@@ -256,6 +344,73 @@ impl TypeLayoutCache {
     pub fn create(target_triplet: TargetTriplet) -> Self {
         Self{target_triplet, type_cache: HashMap::new(), udt_cache: HashMap::new()}
     }
+}
+
+/// Calculates the offset that needs to be applied to the pointer to from_type_index to convert it to a pointer to to_type_index. Returns None if pointee types are incompatible and conversion is not possible
+pub fn calculate_static_cast_pointer_adjust(type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache, from_type_index: usize, to_type_index: usize) -> Option<i64> {
+    let from_base_type_index = type_graph.base_type_index(from_type_index);
+    let to_base_type_index = type_graph.base_type_index(to_type_index);
+    let from_base_type = type_graph.type_by_index(from_base_type_index);
+    let to_base_type = type_graph.type_by_index(to_base_type_index);
+
+    if from_base_type_index == to_base_type_index {
+        // Shortcut for when from and to is the same base type
+        Some(0)
+    } else if let Type::Primitive(from_primitive_type) = from_base_type && let Type::Primitive(to_primitive_type) = to_base_type {
+        // Primitive types can only be converted in-place, so their offset is always 0
+        if are_primitive_types_convertible(*from_primitive_type, *to_primitive_type, &layout_cache.target_triplet) { Some(0) } else { None }
+    } else if let Type::Enum(from_enum_type) = from_base_type && let Type::Primitive(to_primitive_type) = to_base_type {
+        // Enum type can be converted to primitive type if its underlying type can be converted to it
+        let from_underlying_type = from_enum_type.underlying_type(&layout_cache.target_triplet).unwrap();
+        if are_primitive_types_convertible(from_underlying_type, *to_primitive_type, &layout_cache.target_triplet) { Some(0) } else { None }
+    } else if let Type::Primitive(from_primitive_type) = from_base_type && let Type::Enum(to_enum_type) = to_base_type {
+        // Primitive type can be converted to enum type if it can be converted to its underlying type
+        let to_underlying_type = to_enum_type.underlying_type(&layout_cache.target_triplet).unwrap();
+        if are_primitive_types_convertible(*from_primitive_type, to_underlying_type, &layout_cache.target_triplet) { Some(0) } else { None }
+    } else if let Type::Pointer(from_pointer_type) = from_base_type && let Type::Pointer(to_pointer_type) = to_base_type {
+        // Pointer types are only convertible if pointee type can be converted without applying any adjustment
+        // Re-entry to get_static_cast_pointer_adjust is okay in this context because read lock that we are holding can be shared
+        if calculate_static_cast_pointer_adjust(type_graph, layout_cache, from_pointer_type.pointee_type_index, to_pointer_type.pointee_type_index) == Some(0) { Some(0) } else { None }
+    } else if let Type::Array(from_array_type) = from_base_type && let Type::Array(to_array_type) = to_base_type {
+        // Similar logic applies to arrays as it does to pointers, two array types are convertible if their element types are convertible without any adjustment
+        // Arrays also have an additional requirement of their length being equal
+        if from_array_type.array_length == to_array_type.array_length &&
+            calculate_static_cast_pointer_adjust(type_graph, layout_cache, from_array_type.element_type_index, to_array_type.element_type_index) == Some(0) { Some(0) } else { None }
+    } else if let Type::UDT(from_user_defined_type) = from_base_type && let Type::UDT(to_user_defined_type) = to_base_type {
+        // Struct types can be upcast or downcast. Try upcasting (casting from derived class to base class first) first, and then downcasting (casting from base class to derived class) as a fallback
+        let base_class_offsets= from_user_defined_type.find_all_base_class_offsets(from_base_type_index, to_base_type_index, type_graph, layout_cache).unwrap();
+        if  !base_class_offsets.is_empty() {
+            // When upcasting, base class is located at positive offset from this pointer. In this case, it is also safe to pick any instance of base class within the derived class, preferring for the outermost first instance
+            Some(base_class_offsets[0] as i64)
+        } else if let derived_class_offsets = to_user_defined_type.find_all_base_class_offsets(to_base_type_index, from_base_type_index, type_graph, layout_cache).unwrap() && derived_class_offsets.len() == 1 {
+            // Downcasting can only be performed where there is only once instance of base class in the hierarchy chain. When there are multiple instances, it is not possible to know pointer to which instance we have
+            // Downcasting also goes from base to derived class, which is at lower addresses, so the offset here is negative
+            Some(-(derived_class_offsets[0] as i64))
+        } else {
+            // Given UDTs are not related otherwise, and the cast is not possible
+            None
+        }
+    } else if let Type::Primitive(to_primitive_type) = to_base_type && to_primitive_type == &PrimitiveType::Void {
+        // Anything can be cast to void type without pointer adjust
+        Some(0)
+    } else {
+        // Types are not related otherwise and there is no implicit conversion available
+        None
+    }
+}
+
+fn are_primitive_types_convertible(from_primitive_type: PrimitiveType, to_primitive_type: PrimitiveType, target_triplet: &TargetTriplet) -> bool {
+    // Primitive types are convertible if they are of the same bit width and integral status. Signedness changing conversions are allowed
+    if let Some(from_bit_width) = from_primitive_type.bit_width(&target_triplet) &&
+        let Some(to_bit_width) = to_primitive_type.bit_width(&target_triplet) &&
+        from_bit_width == to_bit_width && from_primitive_type.is_integral() == to_primitive_type.is_integral() {
+        return true;
+    }
+    // Otherwise, primitive types are convertible if they are the exact same type, or to type is void
+    if from_primitive_type == to_primitive_type || to_primitive_type == PrimitiveType::Void {
+        return true;
+    }
+    false
 }
 
 /// Represents possible bit width values for integral types
@@ -542,7 +697,7 @@ impl PointerType {
     }
     /// Returns the size and alignment of the pointer type
     pub fn size_and_alignment(&self, target_triplet: &TargetTriplet) -> usize {
-        target_triplet.address_size()
+        target_triplet.address_width()
     }
 }
 
@@ -848,9 +1003,9 @@ impl UserDefinedType {
             if has_inherited_vtable || unique_virtual_function_count > 0 {
                 if !has_inherited_vtable {
                     // Virtual function table is not inherited from the first base class, need to allocate space for it
-                    let size_and_alignment = layout_cache.target_triplet.address_size();
+                    let size_and_alignment = layout_cache.target_triplet.address_width();
                     vtable_function_start_offset = calculate_member_offset(size_and_alignment, size_and_alignment);
-                    let slot_size = layout_cache.target_triplet.address_size();
+                    let slot_size = layout_cache.target_triplet.address_width();
                     vtable_layout = Some(ResolvedUDTVtableLayout{offset: vtable_function_start_offset, slot_size, size: slot_size * unique_virtual_function_count});
 
                 } else {

@@ -23,7 +23,7 @@ impl CodeGenerationContext {
             PrimitiveType::Void => quote!{ () },
             PrimitiveType::Char => quote!{ i8 },
             PrimitiveType::UnsignedChar => quote!{ u8 },
-            PrimitiveType::WideChar => quote! { gospel_runtime::static_type_wrappers::WideChar },
+            PrimitiveType::WideChar => quote! { gospel_runtime::external_type_model::ExternalWideChar },
             PrimitiveType::ShortInt => quote!{ i16 },
             PrimitiveType::UnsignedShortInt => quote!{ u16 },
             PrimitiveType::Int => quote!{ i32 },
@@ -31,8 +31,8 @@ impl CodeGenerationContext {
             PrimitiveType::Float => quote!{ f32 },
             PrimitiveType::Double => quote!{ f64 },
             PrimitiveType::Bool => quote!{ bool },
-            PrimitiveType::LongInt => quote! { gospel_runtime::static_type_wrappers::LongInt },
-            PrimitiveType::UnsignedLongInt => quote! { gospel_runtime::static_type_wrappers::UnsignedLongInt },
+            PrimitiveType::LongInt => quote! { gospel_runtime::external_type_model::ExternalLongInt },
+            PrimitiveType::UnsignedLongInt => quote! { gospel_runtime::external_type_model::ExternalUnsignedLongInt },
             PrimitiveType::LongLongInt => quote!{ i64 },
             PrimitiveType::UnsignedLongLongInt => quote!{ u64 },
             PrimitiveType::Char8 => quote!{ u8 },
@@ -69,7 +69,7 @@ impl CodeGenerationContext {
         if !self.generated_extra_types.borrow().contains(&type_name) {
             let type_def = quote!{
                 pub enum #type_ident {}
-                impl gospel_runtime::static_type_wrappers::IntegralValueTypeTag for #type_ident { fn get_raw_integral_value() -> u64 { #primitive_value } }
+                impl gospel_runtime::core_type_definitions::IntegralValueTypeTag for #type_ident { fn get_raw_integral_value() -> u64 { #primitive_value } }
             };
             self.extra_definitions.borrow_mut().push(type_def);
             self.generated_extra_types.borrow_mut().insert(type_name);
@@ -89,15 +89,16 @@ impl CodeGenerationContext {
 
         match type_definition {
             Type::Array(array_type) => {
-                let pointee_type = self.generate_type_reference(array_type.element_type_index);
-                quote! {gospel_runtime::static_type_wrappers::StaticArray::<#pointee_type>}
+                let element_type = self.generate_type_reference(array_type.element_type_index);
+                let array_length = self.generate_primitive_value_as_type(array_type.array_length as u64);
+                quote! {gospel_runtime::external_type_model::StaticArray::<#element_type, #array_length>}
             },
             Type::Pointer(pointer_type) => {
                 let pointee_type = self.generate_type_reference(pointer_type.pointee_type_index);
                 if pointer_type.is_reference {
-                    quote! {gospel_runtime::static_type_wrappers::Ref::<M, #pointee_type>}
+                    quote! {gospel_runtime::external_type_model::Ref::<M, #pointee_type>}
                 } else {
-                    quote! {gospel_runtime::static_type_wrappers::Ptr::<M, #pointee_type>}
+                    quote! {gospel_runtime::external_type_model::Ptr::<M, #pointee_type>}
                 }
             }
             Type::CVQualified(cv_qualified_type) => {
@@ -134,8 +135,7 @@ impl CodeGenerationContext {
                     quote! { #full_type_name }
                 } else if let Some(underlying_primitive_type) = enum_type.underlying_type_no_target_no_constants() {
                     // Fall back to the explicitly specified underlying type if it can be determined without looking up target platform or constants
-                    let underlying_type = Self::generate_primitive_type(&underlying_primitive_type);
-                    quote! {gospel_runtime::static_type_wrappers::TrivialPtr::<M, #underlying_type>}
+                    Self::generate_primitive_type(&underlying_primitive_type)
                 } else {
                     // If there is no code generated stub for this enum, and its type is also not known, return unit type
                     quote! { () }
@@ -172,19 +172,19 @@ impl CodeGenerationContext {
         match parameter_type {
             // TODO: This should be BoolValueTypeTag but due to current implementation of VM value conversion for type references it cannot be
             ExpressionValueType::Bool => (quote! {
-                #parameter_name : gospel_runtime::static_type_wrappers::IntegralValueTypeTag
+                #parameter_name : gospel_runtime::core_type_definitions::IntegralValueTypeTag
             }, quote! {
                 gospel_typelib::type_model::TypeTemplateArgument::Integer(#parameter_name::get_raw_integral_value())
             }),
             ExpressionValueType::Integer(_) => (quote! {
-                #parameter_name : gospel_runtime::static_type_wrappers::IntegralValueTypeTag
+                #parameter_name : gospel_runtime::core_type_definitions::IntegralValueTypeTag
             }, quote!{
                 gospel_typelib::type_model::TypeTemplateArgument::Integer(#parameter_name::get_raw_integral_value())
             }),
             ExpressionValueType::Typename => (quote!{
-                #parameter_name : gospel_runtime::static_type_wrappers::StaticTypeTag + ?Sized
+                #parameter_name : gospel_runtime::core_type_definitions::StaticTypeTag + ?Sized
             }, quote!{
-                gospel_typelib::type_model::TypeTemplateArgument::Type(#parameter_name::store_type_descriptor(namespace))
+                gospel_typelib::type_model::TypeTemplateArgument::Type(#parameter_name::store_type_descriptor_raw(type_graph, target_triplet, type_cache))
             }),
             _ => panic!("Unhandled type parameter expression type: {}", parameter_type)
         }
@@ -264,7 +264,7 @@ impl CodeGenerationContext {
         let mut merged_parameter_declaration: Option<TokenStream> = None;
         let mut merged_parameter_list: Option<TokenStream> = None;
         let mut merged_phantom_data_list: Option<TokenStream> = None;
-        let mut opaque_type_declaration: Option<TokenStream> = None;
+        let opaque_type_declaration: Option<TokenStream> = None;
         let static_type_implementation: TokenStream;
 
         if !parameter_list.is_empty() {
@@ -278,25 +278,26 @@ impl CodeGenerationContext {
             merged_phantom_data_list = Some(quote! { #(#phantom_data_list),*, });
 
             static_type_implementation = quote! {
-                impl #merged_parameter_declaration gospel_runtime::static_type_wrappers::StaticTypeTag for #type_name #merged_parameter_list {
-                    fn store_type_descriptor(namespace: &gospel_runtime::runtime_type_model::TypePtrNamespace) -> usize {
-                        use crate::gospel_runtime::static_type_wrappers::StaticTypeTag;
-                        use crate::gospel_runtime::static_type_wrappers::IntegralValueTypeTag;
+                impl #merged_parameter_declaration gospel_runtime::core_type_definitions::StaticTypeTag for #type_name #merged_parameter_list {
+                    fn store_type_descriptor_raw(type_graph: &std::sync::RwLock<dyn gospel_typelib::type_model::MutableTypeGraph>, target_triplet: gospel_typelib::type_model::TargetTriplet, type_cache: &std::sync::Mutex<gospel_runtime::core_type_definitions::StaticTypeLayoutCache>) -> usize {
+                        use gospel_runtime::core_type_definitions::StaticTypeTag;
+                        use gospel_runtime::core_type_definitions::IntegralValueTypeTag;
                         let type_arguments: Vec<gospel_typelib::type_model::TypeTemplateArgument> = vec![#(#parameter_call_arguments),*];
-                        let mut type_graph = namespace.type_graph.write().unwrap();
-                        type_graph.create_named_type(#full_type_name, type_arguments).unwrap().unwrap_or_else(|| panic!("Named UDT type not found: {}", #full_type_name))
+                        let mut writeable_type_graph = type_graph.write().unwrap();
+                        writeable_type_graph.create_named_type(#full_type_name, type_arguments).unwrap().unwrap_or_else(|| panic!("Named UDT type not found: {}", #full_type_name))
                     }
                 }
             };
 
-            let opaque_type_name = Ident::new(&format!("Opaque{}", type_name.to_string()), Span::call_site());
+            // TODO: Fix opaque type generation at some point
+            /*let opaque_type_name = Ident::new(&format!("Opaque{}", type_name.to_string()), Span::call_site());
             opaque_type_declaration = Some(quote! {
                 #type_doc_comment
                 #[doc = "Opaque types represent template instantiations without statically known arguments"]
                 pub struct #opaque_type_name {
-                    _dynamic_size_marker: [u8],
+                    _private_constructor_marker: u8,
                 }
-                impl gospel_runtime::static_type_wrappers::DynamicTypeTag for #opaque_type_name {
+                impl gospel_runtime::core_type_definitions::DynamicTypeTag for #opaque_type_name {
                     fn get_cast_target_type_descriptor(ptr_metadata: &gospel_runtime::runtime_type_model::TypePtrMetadata) -> Option<usize> {
                         if let Some(struct_type_name) = ptr_metadata.struct_type_name() && struct_type_name == #full_type_name {
                             Some(ptr_metadata.type_index)
@@ -308,13 +309,13 @@ impl CodeGenerationContext {
                 impl #opaque_type_name {
                     #(#generated_fields)*
                 }
-            });
+            });*/
         } else {
             // No type parameters for this type, we can use a faster cached version keyed by type name
             static_type_implementation = quote! {
-                impl gospel_runtime::static_type_wrappers::StaticTypeTag for #type_name {
-                    fn store_type_descriptor(namespace: &gospel_runtime::runtime_type_model::TypePtrNamespace) -> usize {
-                        namespace.get_static_type_index_cached(#full_type_name).unwrap_or_else(|| panic!("Named UDT type not found: {}", #full_type_name))
+                impl gospel_runtime::core_type_definitions::StaticTypeTag for #type_name {
+                    fn store_type_descriptor_raw(type_graph: &std::sync::RwLock<dyn gospel_typelib::type_model::MutableTypeGraph>, target_triplet: gospel_typelib::type_model::TargetTriplet, type_cache: &std::sync::Mutex<gospel_runtime::core_type_definitions::StaticTypeLayoutCache>) -> usize {
+                        type_cache.lock().unwrap().get_static_type_index_cached(type_graph, #full_type_name).unwrap_or_else(|| panic!("Named UDT type not found: {}", #full_type_name))
                     }
                 }
             };
@@ -324,15 +325,9 @@ impl CodeGenerationContext {
             #type_doc_comment
             pub struct #type_name #merged_parameter_declaration {
                 #merged_phantom_data_list
-                _dynamic_size_marker: [u8],
+                _private_constructor_marker: u8,
             }
             #static_type_implementation
-            impl #merged_parameter_declaration gospel_runtime::static_type_wrappers::DynamicTypeTag for #type_name #merged_parameter_list {
-                fn get_cast_target_type_descriptor(ptr_metadata: &gospel_runtime::runtime_type_model::TypePtrMetadata) -> Option<usize> {
-                    use crate::gospel_runtime::static_type_wrappers::StaticTypeTag;
-                    Some(Self::store_type_descriptor(&ptr_metadata.namespace))
-                }
-            }
             impl #merged_parameter_declaration #type_name #merged_parameter_list {
                 #(#generated_fields)*
             }
@@ -341,19 +336,18 @@ impl CodeGenerationContext {
     }
     fn generate_enum_constant_definition(&self, enum_definition: &BindingsTypeDefinition, type_name: &Ident, enum_underlying_type: &Option<PrimitiveType>, source_constant_name: &str, constant_name: Ident, is_prototype_constant: bool) -> TokenStream {
         let field_doc_comment = Self::generate_doc_comment(enum_definition, &format!("doc_{}", source_constant_name));
-        let type_impl_kind = if enum_definition.is_parameterless_type() { quote! { static_type } } else { quote!{ dynamic_type } };
         if let Some(explicit_underlying_type) = enum_underlying_type {
             let underlying_type = Self::generate_primitive_type(explicit_underlying_type);
             if is_prototype_constant {
-                quote! { gsb_codegen_implement_enum_constant!(#type_name, #constant_name, #source_constant_name, #type_impl_kind, optional, { #field_doc_comment }, #underlying_type); }
+                quote! { gsb_codegen_implement_enum_constant!(#type_name, #constant_name, #source_constant_name, optional, { #field_doc_comment }, #underlying_type); }
             } else {
-                quote! { gsb_codegen_implement_enum_constant!(#type_name, #constant_name, #source_constant_name, #type_impl_kind, required, { #field_doc_comment }, #underlying_type); }
+                quote! { gsb_codegen_implement_enum_constant!(#type_name, #constant_name, #source_constant_name, required, { #field_doc_comment }, #underlying_type); }
             }
         } else {
             if is_prototype_constant {
-                quote! { gsb_codegen_implement_enum_constant!(#type_name, #constant_name, #source_constant_name, #type_impl_kind, optional, { #field_doc_comment }); }
+                quote! { gsb_codegen_implement_enum_constant!(#type_name, #constant_name, #source_constant_name, optional, { #field_doc_comment }); }
             } else {
-                quote! { gsb_codegen_implement_enum_constant!(#type_name, #constant_name, #source_constant_name, #type_impl_kind, required, { #field_doc_comment }); }
+                quote! { gsb_codegen_implement_enum_constant!(#type_name, #constant_name, #source_constant_name, required, { #field_doc_comment }); }
             }
         }
     }
@@ -366,7 +360,6 @@ impl CodeGenerationContext {
         // In that case we have to read enum value as variable length integral value
         // TODO: This could be relaxed to also allow implicit underlying type for scoped enums (enum class) since it has platform-independent underlying type
         let enum_underlying_type: Option<PrimitiveType> = enum_type.underlying_type.clone();
-        let type_impl_kind = if type_definition.is_parameterless_type() { quote! { static_type } } else { quote!{ dynamic_type } };
         let enum_inner_type = if enum_underlying_type.is_some() { Self::generate_primitive_type(enum_underlying_type.as_ref().unwrap()) } else { quote!{ u64 } };
 
         let mut generated_constant_names: HashSet<String> = HashSet::new();
@@ -401,7 +394,11 @@ impl CodeGenerationContext {
             #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
             #[repr(transparent)]
             pub struct #type_name(pub #enum_inner_type);
-            gsb_codegen_implement_enum_type!(#type_name, #full_type_name, #type_impl_kind);
+            impl gospel_runtime::core_type_definitions::StaticTypeTag for #type_name {
+                fn store_type_descriptor_raw(type_graph: &std::sync::RwLock<dyn gospel_typelib::type_model::MutableTypeGraph>, target_triplet: gospel_typelib::type_model::TargetTriplet, type_cache: &std::sync::Mutex<gospel_runtime::core_type_definitions::StaticTypeLayoutCache>) -> usize {
+                    type_cache.lock().unwrap().get_static_type_index_cached(type_graph, #full_type_name).unwrap_or_else(|| panic!("Named enum type not found: {}", #full_type_name))
+                }
+            }
             #trivial_value_impl_call
             impl #type_name {
                 #(#generated_constants)*
@@ -410,7 +407,7 @@ impl CodeGenerationContext {
     }
     fn generate_fallback_type_definition(&self, raw_type_name: &str) -> TokenStream {
         let type_name = Ident::new(&Self::generate_short_type_name(&raw_type_name), Span::call_site());
-        quote! { type #type_name<M: gospel_runtime::memory_access::Memory> = (); }
+        quote! { type #type_name = (); }
     }
     pub(crate) fn generate_bindings_file(self) -> anyhow::Result<String> {
         let mut type_definitions: Vec<TokenStream> = Vec::new();
@@ -438,7 +435,7 @@ impl CodeGenerationContext {
         let bindings_mod_name = Ident::new(&self.bindings_mod_name, Span::call_site());
         let bindings_extra_definitions = self.extra_definitions.borrow().clone();
         let result_file_token_stream = quote! {
-            #[macro_use(gsb_codegen_implement_udt_field, gsb_codegen_implement_enum_type, gsb_codegen_implement_enum_trivial_value, gsb_codegen_implement_enum_constant)]
+            #[macro_use(gsb_codegen_implement_udt_field, gsb_codegen_implement_enum_trivial_value, gsb_codegen_implement_enum_constant)]
             #[allow(unused)]
             extern crate gospel_runtime;
 

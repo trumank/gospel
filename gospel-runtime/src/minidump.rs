@@ -1,7 +1,8 @@
+use crate::external_memory::Memory;
 use anyhow::{anyhow, bail};
-use minidump::{Endian, MinidumpSystemInfo, UnifiedMemory, UnifiedMemoryList};
-use minidump::system_info::{PointerWidth};
-use crate::memory_access::{DataEndianness, Memory};
+use gospel_typelib::type_model::{TargetArchitecture, TargetEnvironment, TargetOperatingSystem, TargetTriplet};
+use minidump::system_info::{Cpu, Os};
+use minidump::{MinidumpSystemInfo, UnifiedMemoryList};
 
 pub trait MinidumpAccess {
     /// Retrieves the system info for the minidump
@@ -9,30 +10,37 @@ pub trait MinidumpAccess {
     /// Allows access to the minidump memory list within the scope of the lambda
     fn use_minidump_memory_list<T, S: FnOnce(&UnifiedMemoryList) -> T>(&self, op: S) -> T;
 }
+fn default_target_triplet_for_minidump<T: MinidumpAccess>(minidump: &T) -> TargetTriplet {
+    let target_arch = match minidump.minidump_system_info().cpu {
+        Cpu::Arm64 => TargetArchitecture::ARM64,
+        Cpu::X86_64 => TargetArchitecture::X86_64,
+        _ => panic!("Unsupported dump Arch")
+    };
+    let (target_os, target_env_override) = match minidump.minidump_system_info().os {
+        Os::Windows => (TargetOperatingSystem::Win32, None),
+        Os::Linux => (TargetOperatingSystem::Linux, None),
+        Os::MacOs => (TargetOperatingSystem::Darwin, None),
+        Os::Ios => (TargetOperatingSystem::Darwin, None),
+        Os::Android => (TargetOperatingSystem::Linux, Some(TargetEnvironment::Android)),
+        _ => panic!("Unsupported dump OS")
+    };
+    let target_env = target_env_override.or(target_os.default_env()).unwrap();
+    TargetTriplet{arch: target_arch, sys: target_os, env: target_env}
+}
 
 pub struct MinidumpMemory<T : MinidumpAccess> {
+    target_triplet: TargetTriplet,
     minidump: T,
 }
-impl<T : MinidumpAccess> Memory for MinidumpMemory<T> {
-    fn address_width(&self) -> usize {
-        match self.minidump.minidump_system_info().cpu.pointer_width() {
-            PointerWidth::Bits64 => 8,
-            PointerWidth::Bits32 => 4,
-            _ => panic!("Unknown pointer width for minidump"),
-        }
+impl<T : MinidumpAccess> MinidumpMemory<T> {
+    pub fn create(minidump: T, target_triplet_override: Option<TargetTriplet>) -> Self {
+        let target_triplet = target_triplet_override.unwrap_or_else(|| default_target_triplet_for_minidump(&minidump));
+        Self{minidump, target_triplet}
     }
-    fn data_endianness(&self) -> DataEndianness {
-        self.minidump.use_minidump_memory_list(|x| {
-            let first_memory = x.iter().next().unwrap();
-            let minidump_endian = match first_memory {
-                UnifiedMemory::Memory(x) => x.endian,
-                UnifiedMemory::Memory64(x) => x.endian,
-            };
-            match minidump_endian {
-                Endian::Big => DataEndianness::BigEndian,
-                Endian::Little => DataEndianness::LittleEndian,
-            }
-        })
+}
+impl<T : MinidumpAccess> Memory for MinidumpMemory<T> {
+    fn target_triplet(&self) -> TargetTriplet {
+        self.target_triplet
     }
     fn read_chunk(&self, address: u64, buffer: &mut [u8]) -> anyhow::Result<()> {
         self.minidump.use_minidump_memory_list(|memory_list| {

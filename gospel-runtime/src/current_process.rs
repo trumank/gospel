@@ -1,14 +1,12 @@
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
-use crate::memory_access::{DataEndianness, Memory};
+use gospel_typelib::type_model::TargetTriplet;
+use crate::external_memory::{Memory};
 
 #[derive(Clone, Default)]
 pub struct CurrentProcessMemory {}
 impl Memory for CurrentProcessMemory {
-    fn address_width(&self) -> usize {
-        size_of::<*const u8>()
-    }
-    fn data_endianness(&self) -> DataEndianness {
-        DataEndianness::host_endianness()
+    fn target_triplet(&self) -> TargetTriplet {
+        TargetTriplet::current_target().unwrap()
     }
     fn read_chunk(&self, address: u64, buffer: &mut [u8]) -> anyhow::Result<()> {
         let memory_buffer = unsafe { &*slice_from_raw_parts(address as *const u8, buffer.len()) };

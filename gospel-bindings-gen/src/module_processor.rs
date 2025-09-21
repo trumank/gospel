@@ -14,13 +14,6 @@ pub(crate) struct BindingsTypeDefinition {
     pub(crate) type_index: Option<usize>,
     pub(crate) function_declaration: Option<CompilerFunctionDeclaration>,
 }
-impl BindingsTypeDefinition {
-    pub(crate) fn is_parameterless_type(&self) -> bool {
-        if let Some(declaration) = &self.function_declaration {
-            declaration.reference.signature.explicit_parameters.is_none() && declaration.reference.signature.implicit_parameters.is_empty()
-        } else { false }
-    }
-}
 
 #[derive(Debug)]
 pub(crate) struct ResolvedBindingsModuleContext {
