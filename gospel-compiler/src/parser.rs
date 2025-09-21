@@ -7,8 +7,9 @@ use std::fmt::{Display, Formatter};
 use strum::Display;
 use fancy_regex::{Captures, Regex};
 use itertools::Itertools;
+use gospel_typelib::target_triplet::BitWidth;
 use crate::ast::ExpressionWithCondition;
-use gospel_typelib::type_model::{BitWidth, EnumKind, IntegerSignedness, IntegralType, PrimitiveType, UserDefinedTypeKind};
+use gospel_typelib::type_model::{EnumKind, IntegerSignedness, IntegralType, PrimitiveType, UserDefinedTypeKind};
 
 #[derive(Logos, Debug, Clone, PartialEq, Display)]
 #[logos(skip r"[ \r\t\n\u{feff}]+")]

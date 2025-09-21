@@ -4,7 +4,7 @@ use std::str::FromStr;
 use std::sync::{Mutex, RwLock};
 use std::sync::atomic::{AtomicPtr, Ordering};
 use anyhow::anyhow;
-use gospel_typelib::type_model::{MutableTypeGraph, TargetTriplet, Type, TypeGraphLike, TypeTemplateArgument};
+use gospel_typelib::type_model::{MutableTypeGraph, Type, TypeGraphLike, TypeTemplateArgument};
 use gospel_vm::vm::{GospelVMOptions, GospelVMRunContext, GospelVMState, GospelVMValue};
 use gospel_vm::writer::GospelSourceObjectReference;
 #[cfg(feature = "compiler")]
@@ -12,8 +12,11 @@ use gospel_compiler::backend::{CompilerInstance, CompilerOptions};
 #[cfg(feature = "compiler")]
 use gospel_compiler::module_definition::resolve_module_dependencies;
 use lazy_static::lazy_static;
+use gospel_typelib::target_triplet::TargetTriplet;
 use crate::core_type_definitions::StaticTypeLayoutCache;
+#[cfg(feature = "external")]
 use crate::external_type_model::TypeNamespace;
+#[cfg(feature = "local")]
 use crate::local_type_model::TypeUniverse;
 
 #[derive(Debug)]
@@ -41,6 +44,7 @@ impl GospelVMTypeGraphBackend {
         let vm_run_context = GospelVMRunContext::create(vm_options);
         Ok(GospelVMTypeGraphBackend{vm_instance, vm_run_context})
     }
+    #[cfg(feature = "external")]
     pub fn to_type_ptr_namespace(self) -> GospelVMTypeNamespace {
         let target_triplet = self.vm_run_context.target_triplet().unwrap().clone();
         let static_type_cache = Mutex::new(StaticTypeLayoutCache::create(target_triplet));
@@ -48,11 +52,13 @@ impl GospelVMTypeGraphBackend {
     }
 }
 
+#[cfg(feature = "external")]
 pub struct GospelVMTypeNamespace {
     target_triplet: TargetTriplet,
     pub type_graph: RwLock<GospelVMTypeGraphBackend>,
     static_type_cache: Mutex<StaticTypeLayoutCache>,
 }
+#[cfg(feature = "external")]
 impl TypeNamespace for GospelVMTypeNamespace {
     fn type_target_triplet(&self) -> TargetTriplet {
         self.target_triplet
@@ -65,7 +71,9 @@ impl TypeNamespace for GospelVMTypeNamespace {
     }
 }
 
+#[cfg(feature = "local")]
 pub enum GospelVMTypeUniverse {}
+#[cfg(feature = "local")]
 impl GospelVMTypeUniverse {
     /// Sets up type graph backend for the default Gospel VM type universe.
     /// Will panic if backend is set more than once
@@ -90,6 +98,7 @@ impl GospelVMTypeUniverse {
         &STATIC_TYPE_GRAPH
     }
 }
+#[cfg(feature = "local")]
 impl TypeUniverse for GospelVMTypeUniverse {
     fn target_triplet() -> TargetTriplet {
         lazy_static! {

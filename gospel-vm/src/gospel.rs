@@ -1,6 +1,6 @@
 ﻿use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
-use gospel_typelib::type_model::TargetTriplet;
+use gospel_typelib::target_triplet::TargetTriplet;
 use crate::bytecode::GospelInstruction;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, EnumString, Display, Serialize, Deserialize)]
@@ -16,7 +16,7 @@ impl GospelTargetProperty {
         match self {
             GospelTargetProperty::TargetArch => { target.arch as u64 }
             GospelTargetProperty::TargetOS => { target.sys as u64 }
-            GospelTargetProperty::TargetEnv => { target.env as u64 }
+            GospelTargetProperty::TargetEnv => { target.env.map(|x| x as u64).unwrap_or(u64::MAX) }
             GospelTargetProperty::AddressSize => { target.address_width() as u64 }
         }
     }

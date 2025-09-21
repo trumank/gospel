@@ -1,12 +1,13 @@
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
-use gospel_typelib::type_model::TargetTriplet;
+use gospel_typelib::compiled_target_triplet;
+use gospel_typelib::target_triplet::TargetTriplet;
 use crate::external_memory::{Memory};
 
 #[derive(Clone, Default)]
 pub struct CurrentProcessMemory {}
 impl Memory for CurrentProcessMemory {
     fn target_triplet(&self) -> TargetTriplet {
-        TargetTriplet::current_target().unwrap()
+        compiled_target_triplet().unwrap()
     }
     fn read_chunk(&self, address: u64, buffer: &mut [u8]) -> anyhow::Result<()> {
         let memory_buffer = unsafe { &*slice_from_raw_parts(address as *const u8, buffer.len()) };

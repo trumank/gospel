@@ -279,7 +279,7 @@ impl CodeGenerationContext {
 
             static_type_implementation = quote! {
                 impl #merged_parameter_declaration gospel_runtime::core_type_definitions::StaticTypeTag for #type_name #merged_parameter_list {
-                    fn store_type_descriptor_raw(type_graph: &std::sync::RwLock<dyn gospel_typelib::type_model::MutableTypeGraph>, target_triplet: gospel_typelib::type_model::TargetTriplet, type_cache: &std::sync::Mutex<gospel_runtime::core_type_definitions::StaticTypeLayoutCache>) -> usize {
+                    fn store_type_descriptor_raw(type_graph: &std::sync::RwLock<dyn gospel_typelib::type_model::MutableTypeGraph>, target_triplet: gospel_typelib::target_triplet::TargetTriplet, type_cache: &std::sync::Mutex<gospel_runtime::core_type_definitions::StaticTypeLayoutCache>) -> usize {
                         use gospel_runtime::core_type_definitions::StaticTypeTag;
                         use gospel_runtime::core_type_definitions::IntegralValueTypeTag;
                         let type_arguments: Vec<gospel_typelib::type_model::TypeTemplateArgument> = vec![#(#parameter_call_arguments),*];
@@ -314,7 +314,7 @@ impl CodeGenerationContext {
             // No type parameters for this type, we can use a faster cached version keyed by type name
             static_type_implementation = quote! {
                 impl gospel_runtime::core_type_definitions::StaticTypeTag for #type_name {
-                    fn store_type_descriptor_raw(type_graph: &std::sync::RwLock<dyn gospel_typelib::type_model::MutableTypeGraph>, target_triplet: gospel_typelib::type_model::TargetTriplet, type_cache: &std::sync::Mutex<gospel_runtime::core_type_definitions::StaticTypeLayoutCache>) -> usize {
+                    fn store_type_descriptor_raw(type_graph: &std::sync::RwLock<dyn gospel_typelib::type_model::MutableTypeGraph>, target_triplet: gospel_typelib::target_triplet::TargetTriplet, type_cache: &std::sync::Mutex<gospel_runtime::core_type_definitions::StaticTypeLayoutCache>) -> usize {
                         type_cache.lock().unwrap().get_static_type_index_cached(type_graph, #full_type_name).unwrap_or_else(|| panic!("Named UDT type not found: {}", #full_type_name))
                     }
                 }
@@ -395,7 +395,7 @@ impl CodeGenerationContext {
             #[repr(transparent)]
             pub struct #type_name(pub #enum_inner_type);
             impl gospel_runtime::core_type_definitions::StaticTypeTag for #type_name {
-                fn store_type_descriptor_raw(type_graph: &std::sync::RwLock<dyn gospel_typelib::type_model::MutableTypeGraph>, target_triplet: gospel_typelib::type_model::TargetTriplet, type_cache: &std::sync::Mutex<gospel_runtime::core_type_definitions::StaticTypeLayoutCache>) -> usize {
+                fn store_type_descriptor_raw(type_graph: &std::sync::RwLock<dyn gospel_typelib::type_model::MutableTypeGraph>, target_triplet: gospel_typelib::target_triplet::TargetTriplet, type_cache: &std::sync::Mutex<gospel_runtime::core_type_definitions::StaticTypeLayoutCache>) -> usize {
                     type_cache.lock().unwrap().get_static_type_index_cached(type_graph, #full_type_name).unwrap_or_else(|| panic!("Named enum type not found: {}", #full_type_name))
                 }
             }

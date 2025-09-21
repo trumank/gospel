@@ -1,13 +1,13 @@
 ﻿use std::cell::Cell;
 use std::cmp::{max, min};
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::sync::Arc;
 use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
 use paste::paste;
 use std::ptr::slice_from_raw_parts;
+use crate::target_triplet::{BitWidth, DataEndianness, TargetTriplet};
 
 /// Aligns the value up to the nearest multiple of the alignment
 pub fn align_value(value: usize, align: usize) -> usize {
@@ -15,12 +15,6 @@ pub fn align_value(value: usize, align: usize) -> usize {
     if reminder == 0 { value } else { value + (align - reminder) }
 }
 
-/// Describes possible endianness of the data
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum DataEndianness {
-    LittleEndian,
-    BigEndian,
-}
 impl DataEndianness {
     /// Returns the endianness of the target this module has been compiled for
     pub fn host_endianness() -> DataEndianness {
@@ -31,7 +25,6 @@ impl DataEndianness {
         }
     }
 }
-
 macro_rules! implement_integral_type_endian_conversion {
     ($data_type: ident) => {
         paste! {
@@ -94,139 +87,6 @@ impl DataEndianness {
     implement_integral_type_endian_conversion!(i64);
     implement_integral_type_endian_conversion!(f32);
     implement_integral_type_endian_conversion!(f64);
-}
-
-/// Corresponds to <arch> in LLVM target triplet
-/// Architecture determines the instruction set and, sometimes, the calling convention used (combined with sys)
-#[derive(Debug, PartialEq, Eq, Clone, Copy, EnumString, Serialize, Deserialize)]
-pub enum TargetArchitecture {
-    X86_64,
-    ARM64,
-    ARM64EC,
-}
-impl TargetArchitecture {
-    /// Returns the architecture current binary has been compiled for (if it can be represented)
-    pub fn current_arch() -> Option<TargetArchitecture> {
-        match std::env::consts::ARCH {
-            "x86_64" => Some(TargetArchitecture::X86_64),
-            "aarch64" => Some(TargetArchitecture::ARM64),
-            _ => None,
-        }
-    }
-}
-
-/// Corresponds to <sys> in LLVM target triplet
-/// Target system generally defines calling convention used and object file format
-#[derive(Debug, PartialEq, Eq, Clone, Copy, EnumString, Serialize, Deserialize)]
-pub enum TargetOperatingSystem {
-    None,
-    Win32,
-    Linux,
-    Darwin,
-}
-impl TargetOperatingSystem {
-    /// Returns the OS the binary has been compiled for (if it can be represented)
-    pub fn current_os() -> Option<TargetOperatingSystem> {
-        match std::env::consts::OS {
-            "windows" => Some(TargetOperatingSystem::Win32),
-            "linux" => Some(TargetOperatingSystem::Linux),
-            "android" => Some(TargetOperatingSystem::Linux),
-            "macos" => Some(TargetOperatingSystem::Darwin),
-            "ios" => Some(TargetOperatingSystem::Darwin),
-            _ => None,
-        }
-    }
-    /// Returns the default environment for the OS in question. Returns none for bare metal
-    pub fn default_env(self) -> Option<TargetEnvironment> {
-        match self {
-            TargetOperatingSystem::None => None,
-            TargetOperatingSystem::Win32 => Some(TargetEnvironment::MSVC),
-            TargetOperatingSystem::Linux => Some(TargetEnvironment::Gnu),
-            TargetOperatingSystem::Darwin => Some(TargetEnvironment::Macho),
-        }
-    }
-}
-
-/// Corresponds to <env> in LLVM target triplet
-/// Target env determines the ABI rules used for type layout calculation, for example semantics used for C++ class inheritance and exception handling
-#[derive(Debug, PartialEq, Eq, Clone, Copy, EnumString, Serialize, Deserialize)]
-pub enum TargetEnvironment {
-    MSVC,
-    Gnu,
-    Macho,
-    Android,
-}
-
-/// Target triplet defines the target which the type layouts are being calculated for
-/// This includes the operating system, the processor architecture, and environment (ABI)
-/// This defines values of certain built-in input variables, as well as size of certain built-in
-/// platform-dependent types such as pointer, int or long int.
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
-pub struct TargetTriplet {
-    pub arch: TargetArchitecture,
-    pub sys: TargetOperatingSystem,
-    pub env: TargetEnvironment,
-}
-impl TargetTriplet {
-    /// Returns the address width for the provided target triplet
-    pub fn address_width(&self) -> usize {
-        8 // All currently supported architectures are 64-bit
-    }
-    /// Returns the data endianness for the provided target triplet
-    pub fn data_endianness(&self) -> DataEndianness {
-        DataEndianness::LittleEndian // All currently supported architectures are Little Endian
-    }
-    /// Returns the size of the "long" type for the provided target triplet
-    pub fn long_size(&self) -> BitWidth {
-        // 4 on Win32, 8 on everything else
-        if self.sys == TargetOperatingSystem::Win32 { BitWidth::Width32 } else { BitWidth::Width64 }
-    }
-    /// Returns the size of the "wchar_t" type for the provided target triplet
-    pub fn wide_char_size(&self) -> BitWidth {
-        // 2 on Win32, 4 on everything else
-        if self.sys == TargetOperatingSystem::Win32 { BitWidth::Width16 } else { BitWidth::Width32 }
-    }
-    pub fn uses_aligned_base_class_size(&self) -> bool {
-        self.env == TargetEnvironment::MSVC // MSVC uses aligned base class size when calculating layout of child class, GNU and Darwin use unaligned size
-    }
-    /// Returns the target that the current executable has been compiled for
-    pub fn current_target() -> Option<TargetTriplet> {
-        // TODO: Current implementation is not ideal, we should instead parse TARGET env var provided to us during crate compilation
-        let current_arch = TargetArchitecture::current_arch();
-        let current_os = TargetOperatingSystem::current_os();
-        let default_env = current_os.as_ref().and_then(|x| {
-            // Default environment for android OS is android, despite the OS being reported as linux (due to it being linux based)
-            if std::env::consts::OS == "android" { Some(TargetEnvironment::Android) } else { x.default_env() }
-        });
-
-        if current_arch.is_none() || current_os.is_none() || default_env.is_none() {
-            None
-        } else { Some(TargetTriplet {
-            arch: current_arch.unwrap(),
-            sys: current_os.unwrap(),
-            env: default_env.unwrap(),
-        }) }
-    }
-    pub fn parse(triplet_str: &str) -> anyhow::Result<TargetTriplet> {
-        let splits: Vec<&str> = triplet_str.split('-').collect();
-        if splits.len() < 2 {
-            bail!("Target triplet string too short, need at least 2 parts (<arch>-<os>)");
-        }
-        if splits.len() > 3 {
-            bail!("Target triplet string too long, should consist of at most 3 parts (<arch>-<os>-<env>)");
-        }
-        let arch = TargetArchitecture::from_str(splits[0])
-            .map_err(|x| anyhow!("Failed to parse arch: {}", x.to_string()))?;
-        let sys = TargetOperatingSystem::from_str(splits[1])
-            .map_err(|x| anyhow!("Failed to parse OS: {}", x.to_string()))?;
-        let env = if splits.len() >= 3 {
-            TargetEnvironment::from_str(splits[2])
-                .map_err(|x| anyhow!("Failed to parse env: {}", x.to_string()))?
-        } else {
-            sys.default_env().ok_or_else(|| anyhow!("Default env for OS not available please specify env manually (<arch>-<os>-<env>)"))?
-        };
-        Ok(TargetTriplet {arch, sys, env})
-    }
 }
 
 pub fn fork_type_graph<'a, T : TypeGraphLike>(graph: &'a T, type_index: usize, result: &mut TypeTree, type_lookup: &mut HashMap<usize, usize>) -> usize {
@@ -411,26 +271,6 @@ fn are_primitive_types_convertible(from_primitive_type: PrimitiveType, to_primit
         return true;
     }
     false
-}
-
-/// Represents possible bit width values for integral types
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Display, EnumString)]
-pub enum BitWidth {
-    Width8,
-    Width16,
-    Width32,
-    Width64,
-}
-impl BitWidth {
-    /// Returns bit width value in bytes
-    pub fn value_in_bytes(self) -> usize {
-        match self {
-            BitWidth::Width8 => 1,
-            BitWidth::Width16 => 2,
-            BitWidth::Width32 => 4,
-            BitWidth::Width64 => 8,
-        }
-    }
 }
 
 /// Describes whenever an integral type is signed or unsigned
@@ -1158,7 +998,7 @@ impl EnumType {
     pub fn default_constant_integral_type(&self, target_triplet: &TargetTriplet) -> anyhow::Result<IntegralType> {
         // default type for unscoped enumerations is int on MSVC and unsigned int for everything else
         let underlying_type = self.underlying_type_no_target_no_constants()
-            .unwrap_or(if target_triplet.env == TargetEnvironment::MSVC { PrimitiveType::Int } else { PrimitiveType::UnsignedInt });
+            .unwrap_or(if target_triplet.is_windows_msvc_target() { PrimitiveType::Int } else { PrimitiveType::UnsignedInt });
         underlying_type.to_integral_type(target_triplet)
             .ok_or_else(|| anyhow!("Underlying enum type {} is not an integral type", underlying_type))
     }
@@ -1168,7 +1008,7 @@ impl EnumType {
             return Ok(explicit_underlying_type);
         }
         // Scoped enums and all unscoped enums under MSVC always use Int as their underlying type
-        if self.kind == EnumKind::Scoped || target_triplet.env == TargetEnvironment::MSVC {
+        if self.kind == EnumKind::Scoped || target_triplet.is_windows_msvc_target() {
             return Ok(PrimitiveType::Int);
         }
         // Unscoped enums under gnu convention pick int if all values (ignoring their types) fit within 32 bits, and long int if there are 64-bit values.
@@ -1209,7 +1049,7 @@ impl EnumType {
 
         // Non-MSVC targets actually make sure that no data is lost and no signed negative value to unsigned value conversion occurs
         // MSVC just implicitly performs narrowing conversion and signed-to-unsigned conversion
-        if target_triplet.env != TargetEnvironment::MSVC {
+        if !target_triplet.is_windows_msvc_target() {
             if !IntegralType::can_fit_integral_value(constant.raw_value, &constant.integral_type, &underlying_integral_type) {
                 bail!("Constant value of of range of underlying enumeration type");
             }

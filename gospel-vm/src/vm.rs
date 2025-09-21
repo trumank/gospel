@@ -16,7 +16,8 @@ use crate::writer::{GospelSourceObjectReference};
 use serde::{Deserialize, Serialize, Serializer};
 use serde::ser::SerializeStruct;
 use gospel_typelib::map_integral_value;
-use gospel_typelib::type_model::{ArrayType, CVQualifiedType, FunctionType, PointerType, PrimitiveType, ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeBitfield, UserDefinedTypeField, UserDefinedTypeKind, UserDefinedTypeMember, FunctionDeclaration, FunctionParameterDeclaration, TypeLayoutCache, EnumType, EnumKind, EnumConstant, IntegralType, IntegerSignedness, BitWidth};
+use gospel_typelib::type_model::{ArrayType, CVQualifiedType, FunctionType, PointerType, PrimitiveType, ResolvedUDTMemberLayout, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeBitfield, UserDefinedTypeField, UserDefinedTypeKind, UserDefinedTypeMember, FunctionDeclaration, FunctionParameterDeclaration, TypeLayoutCache, EnumType, EnumKind, EnumConstant, IntegralType, IntegerSignedness};
+use gospel_typelib::target_triplet::{TargetTriplet, BitWidth};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GospelVMStackFrame {

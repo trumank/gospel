@@ -1,10 +1,12 @@
 ﻿use std::sync::{Mutex, RwLock};
-use gospel_typelib::type_model::{MutableTypeGraph, TargetTriplet};
+use gospel_typelib::compiled_target_triplet;
+use gospel_typelib::target_triplet::TargetTriplet;
+use gospel_typelib::type_model::{MutableTypeGraph};
 use crate::core_type_definitions::StaticTypeLayoutCache;
 
 /// Returns the target triplet for which this module has been compiled
 pub fn native_target_triplet() -> TargetTriplet {
-    TargetTriplet::current_target().unwrap()
+    compiled_target_triplet().unwrap()
 }
 
 /// Type universe represents a contained type graph

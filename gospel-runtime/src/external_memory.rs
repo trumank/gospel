@@ -4,7 +4,7 @@ use std::ops::{Add, Deref, DerefMut, Sub};
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
 use std::sync::{Arc};
 use paste::paste;
-use gospel_typelib::type_model::TargetTriplet;
+use gospel_typelib::target_triplet::TargetTriplet;
 
 macro_rules! impl_endian_dependent_memory_access {
     ($data_type: ident) => {

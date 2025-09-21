@@ -2,8 +2,12 @@
 use std::hash::{Hash};
 use std::ops::{Deref, DerefMut};
 use std::sync::{Mutex, RwLock};
-use gospel_typelib::type_model::{calculate_static_cast_pointer_adjust, MutableTypeGraph, PrimitiveType, ResolvedUDTMemberLayout, TargetTriplet, Type, TypeLayoutCache, UserDefinedTypeMember};
+use gospel_typelib::target_triplet::TargetTriplet;
+use gospel_typelib::type_model::{calculate_static_cast_pointer_adjust, MutableTypeGraph, PrimitiveType, ResolvedUDTMemberLayout, Type, TypeLayoutCache, UserDefinedTypeMember};
+#[cfg(feature = "local")]
 use crate::local_type_model::{native_target_triplet, TypeUniverse};
+#[cfg(feature = "external")]
+use crate::external_type_model::TypeNamespace;
 
 /// Maps to the char8_t in C++ that has the size of 8 bits on all target triplets
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -128,6 +132,7 @@ impl StaticTypeLayoutCache {
 /// Implemented on the types that have identity and can be represented in a type namespace
 pub trait StaticTypeTag {
     /// Stores type descriptor for this type in the given type graph and returns its index
+    #[cfg(feature = "external")]
     fn store_type_descriptor_to_namespace<T : TypeNamespace>(namespace: &T) -> usize {
         let target_triplet = namespace.type_target_triplet();
         let type_graph = namespace.type_graph();
@@ -135,6 +140,7 @@ pub trait StaticTypeTag {
         Self::store_type_descriptor_raw(type_graph, target_triplet, type_cache)
     }
     /// Stores type descriptor for this type in the given type graph and returns its index
+    #[cfg(feature = "local")]
     fn store_type_descriptor_to_universe<T: TypeUniverse>() -> usize {
         let target_triplet = native_target_triplet();
         let type_graph = T::type_graph();
@@ -155,7 +161,6 @@ macro_rules! implement_primitive_type_tag {
     }
 }
 pub(crate) use implement_primitive_type_tag;
-use crate::external_type_model::TypeNamespace;
 
 // Implement type tag for rust primitive types with well-known size across all platforms
 implement_primitive_type_tag!(u8, PrimitiveType::UnsignedChar);

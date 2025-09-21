@@ -12,3 +12,11 @@ anyhow = "1.0.93"
 strum = { version = "0.27.2", features = ["derive"] }
 serde = { version = "1.0.219", features = ["derive"] }
 paste = "1.0.15"
+lazy_static = "1.5.0"
+
+[build-dependencies]
+proc-macro2 = "1.0.101"
+quote = "1.0.40"
+strum = { version = "0.27.2", features = ["derive"] }
+serde = { version = "1.0.219", features = ["derive"] }
+lazy_static = "1.5.0"

@@ -1,8 +1,8 @@
 use crate::external_memory::Memory;
 use anyhow::{anyhow, bail};
-use gospel_typelib::type_model::{TargetArchitecture, TargetEnvironment, TargetOperatingSystem, TargetTriplet};
 use minidump::system_info::{Cpu, Os};
 use minidump::{MinidumpSystemInfo, UnifiedMemoryList};
+use gospel_typelib::target_triplet::{TargetArchitecture, TargetEnvironment, TargetOperatingSystem, TargetTriplet};
 
 pub trait MinidumpAccess {
     /// Retrieves the system info for the minidump
@@ -16,7 +16,7 @@ fn default_target_triplet_for_minidump<T: MinidumpAccess>(minidump: &T) -> Targe
         Cpu::X86_64 => TargetArchitecture::X86_64,
         _ => panic!("Unsupported dump Arch")
     };
-    let (target_os, target_env_override) = match minidump.minidump_system_info().os {
+    let (target_os, target_env) = match minidump.minidump_system_info().os {
         Os::Windows => (TargetOperatingSystem::Win32, None),
         Os::Linux => (TargetOperatingSystem::Linux, None),
         Os::MacOs => (TargetOperatingSystem::Darwin, None),
@@ -24,7 +24,6 @@ fn default_target_triplet_for_minidump<T: MinidumpAccess>(minidump: &T) -> Targe
         Os::Android => (TargetOperatingSystem::Linux, Some(TargetEnvironment::Android)),
         _ => panic!("Unsupported dump OS")
     };
-    let target_env = target_env_override.or(target_os.default_env()).unwrap();
     TargetTriplet{arch: target_arch, sys: target_os, env: target_env}
 }
 

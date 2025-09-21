@@ -2,14 +2,18 @@
 #![feature(ptr_as_ref_unchecked)]
 
 pub mod core_type_definitions;
+#[cfg(feature = "external")]
 pub mod external_memory;
+#[cfg(feature = "external")]
 pub mod external_type_model;
-pub mod local_type_model;
+#[cfg(feature = "external")]
 pub mod current_process;
 #[cfg(feature = "process")]
 pub mod process;
 #[cfg(feature = "minidump")]
 pub mod minidump;
+#[cfg(feature = "local")]
+pub mod local_type_model;
 #[cfg(feature = "vm")]
 pub mod vm_integration;
 

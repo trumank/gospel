@@ -9,7 +9,7 @@ use gospel_runtime::current_process::CurrentProcessMemory;
 use gospel_runtime::external_memory::OpaquePtr;
 use gospel_runtime::external_type_model::{MemoryAndTypeNamespace, Ptr};
 use gospel_runtime::vm_integration::{GospelVMTypeGraphBackend, GospelVMTypeNamespace};
-use gospel_typelib::type_model::TargetTriplet;
+use gospel_typelib::compiled_target_triplet;
 use gospel_vm::vm::GospelVMOptions;
 use crate::gospel_bindings::{EClassCastFlags, UField, UObject};
 
@@ -34,7 +34,7 @@ type M = MemoryAndTypeNamespace<CurrentProcessMemory, GospelVMTypeNamespace>;
 fn main() -> anyhow::Result<()> {
     let module_path = PathBuf::from_str(env!("CARGO_MANIFEST_DIR"))?.join("res/gospel/unreal");
 
-    let vm_options = GospelVMOptions::default().target_triplet(TargetTriplet::current_target().unwrap()).with_global("UE_VERSION", 504);
+    let vm_options = GospelVMOptions::default().target_triplet(compiled_target_triplet().unwrap()).with_global("UE_VERSION", 504);
     let type_graph_backend = GospelVMTypeGraphBackend::create_from_module_tree(&module_path, &Vec::new(), vm_options)?;
     let current_process_memory =  Arc::new(M{memory: CurrentProcessMemory{}, namespace: type_graph_backend.to_type_ptr_namespace()});
 

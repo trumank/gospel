@@ -11,16 +11,19 @@ edition.workspace = true
 gospel-typelib = { version = "0.1.0", path = "../gospel-typelib" }
 anyhow = "1.0.93"
 paste = "1.0.15"
+lazy_static = "1.5.0"
 minidump = { version = "0.26.0", optional = true }
 process-memory = { version = "0.5.0", optional = true }
 gospel-vm = { version = "0.1.0", path = "../gospel-vm", optional = true }
 gospel-compiler = { version = "0.1.0", path = "../gospel-compiler", optional = true }
-lazy_static = "1.5.0"
 
 [features]
-minidump = ["dep:minidump"]
-process = ["dep:process-memory"]
+external = []
+minidump = ["external", "dep:minidump"]
+process = ["external", "dep:process-memory"]
+local = []
 vm = ["dep:gospel-vm"]
 compiler = ["vm", "dep:gospel-compiler"]
-all = ["minidump", "process", "vm", "compiler"]
-default = ["all"]
+all_local = ["local", "compiler"]
+all_external = ["external", "minidump", "process", "compiler"]
+default = ["all_local", "all_external"]

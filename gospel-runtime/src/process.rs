@@ -1,5 +1,5 @@
 use process_memory::{CopyAddress, ProcessHandle, PutAddress};
-use gospel_typelib::type_model::TargetTriplet;
+use gospel_typelib::target_triplet::TargetTriplet;
 use crate::external_memory::{Memory};
 
 pub struct LocalProcessMemory {

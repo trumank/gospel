@@ -5,7 +5,8 @@ use std::ops::{Add, Deref, DerefMut, Receiver, Sub};
 use std::sync::{Mutex, RwLock};
 use anyhow::anyhow;
 use paste::paste;
-use gospel_typelib::type_model::{ArrayType, MutableTypeGraph, PointerType, PrimitiveType, TargetTriplet, Type};
+use gospel_typelib::target_triplet::TargetTriplet;
+use gospel_typelib::type_model::{ArrayType, MutableTypeGraph, PointerType, PrimitiveType, Type};
 use crate::core_type_definitions::{implement_primitive_type_tag, Char16, Char32, Char8, IntegralValueTypeTag, StaticTypeLayoutCache, StaticTypeTag};
 use crate::external_memory::{Memory, OpaquePtr};
 
