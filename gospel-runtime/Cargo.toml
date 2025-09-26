@@ -17,6 +17,9 @@ process-memory = { version = "0.5.0", optional = true }
 gospel-vm = { version = "0.1.0", path = "../gospel-vm", optional = true }
 gospel-compiler = { version = "0.1.0", path = "../gospel-compiler", optional = true }
 
+[build-dependencies]
+gospel-typelib = { version = "0.1.0", path = "../gospel-typelib" }
+
 [features]
 external = []
 minidump = ["external", "dep:minidump"]

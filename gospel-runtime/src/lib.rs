@@ -1,5 +1,9 @@
 #![feature(arbitrary_self_types)]
 #![feature(ptr_as_ref_unchecked)]
+#![feature(ptr_metadata)]
+#![feature(allocator_api)]
+#![feature(layout_for_ptr)]
+#![feature(min_specialization)]
 
 pub mod core_type_definitions;
 #[cfg(feature = "external")]
