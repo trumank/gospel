@@ -4,6 +4,7 @@
 #![feature(allocator_api)]
 #![feature(layout_for_ptr)]
 #![feature(min_specialization)]
+#![feature(clone_to_uninit)]
 
 pub mod core_type_definitions;
 #[cfg(feature = "external")]
@@ -22,7 +23,7 @@ pub mod local_type_model;
 pub mod vm_integration;
 
 #[macro_export]
-macro_rules! gsb_codegen_implement_udt_field {
+macro_rules! gsb_codegen_implement_external_udt_field {
     ($field_name:ident, $source_file_name:literal, required, {$(#[$field_attributes:meta])*}, $field_type:ty) => {
         $(#[$field_attributes])*
         pub fn $field_name<M : gospel_runtime::external_memory::Memory + gospel_runtime::external_type_model::TypeNamespace>(self: &gospel_runtime::external_type_model::Ref<M, Self>) -> gospel_runtime::external_type_model::Ref<M, $field_type> {
@@ -72,101 +73,138 @@ macro_rules! gsb_codegen_implement_udt_field {
 }
 
 #[macro_export]
-macro_rules! gsb_codegen_implement_enum_trivial_value {
-    ($type_name:ident) => {
-         impl gospel_runtime::external_type_model::ExternallyConvertible for $type_name {
-            fn read_external<M: gospel_runtime::external_memory::Memory>(ptr: &gospel_runtime::external_memory::OpaquePtr<M>) -> anyhow::Result<Self> {
-                use gospel_runtime::core_type_definitions::StaticTypeTag;
-                let enum_static_type_index = Self::store_type_descriptor_to_namespace(self.inner_ptr.memory.deref());
-                let enum_dyn_ptr = gospel_runtime::external_type_model::DynPtr::from_raw_ptr(self.inner_ptr.clone(), enum_static_type_index);
-                Ok(Self(enum_dyn_ptr.read_integral_type()?))
+macro_rules! gsb_codegen_implement_local_udt_field {
+    ($field_name:ident, $source_file_name:literal, $type_universe:ty, required, {$(#[$field_attributes:meta])*}, $field_type:ty) => {
+        paste! {
+            $(#[$field_attributes])*
+            pub fn $field_name<'a>(&'a self) -> &'a $field_type {
+                use generic_statics::{define_namespace, Namespace};
+                define_namespace!(FieldDescriptor);
+                FieldDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeFieldTypeAndOffset<Self, $type_universe>>().get_field_ref::<$field_type>(self, $source_file_name)
+                    .unwrap_or_else(|| panic!("Struct missing field: {}", $source_file_name))
             }
-            fn write_external<M: gospel_runtime::external_memory::Memory>(ptr: &gospel_runtime::external_memory::OpaquePtr<M>, value: Self) -> anyhow::Result<()> {
-                use gospel_runtime::core_type_definitions::StaticTypeTag;
-                let enum_static_type_index = Self::store_type_descriptor_to_namespace(self.inner_ptr.memory.deref());
-                let enum_dyn_ptr = gospel_runtime::external_type_model::DynPtr::from_raw_ptr(self.inner_ptr.clone(), enum_static_type_index);
-                enum_dyn_ptr.write_integral_type(ptr, value.0)
-            }
-            fn read_external_slice<M: gospel_runtime::external_memory::Memory>(ptr: &gospel_runtime::external_memory::OpaquePtr<M>, buffer: &mut [Self]) -> anyhow::Result<()> {
-                use gospel_runtime::core_type_definitions::StaticTypeTag;
-                let enum_static_type_index = Self::store_type_descriptor_to_namespace(self.inner_ptr.memory.deref());
-                let enum_dyn_ptr = gospel_runtime::external_type_model::DynPtr::from_raw_ptr(self.inner_ptr.clone(), enum_static_type_index);
-                // This is safe as long as type has a transparent representation
-                let mut underlying_type_buffer = unsafe { &mut *std::ptr::slice_from_raw_parts_mut(buffer.as_mut_ptr() as *mut u64, buffer.len()) };
-                enum_dyn_ptr.read_integral_type_slice(buffer)
-            }
-            fn write_external_slice<M: gospel_runtime::external_memory::Memory>(ptr: &gospel_runtime::external_memory::OpaquePtr<M>, buffer: &[Self]) -> anyhow::Result<()> {
-                use gospel_runtime::core_type_definitions::StaticTypeTag;
-                let enum_static_type_index = Self::store_type_descriptor_to_namespace(self.inner_ptr.memory.deref());
-                let enum_dyn_ptr = gospel_runtime::external_type_model::DynPtr::from_raw_ptr(self.inner_ptr.clone(), enum_static_type_index);
-                // This is safe as long as type has a transparent representation
-                let underlying_type_buffer = unsafe { &*std::ptr::slice_from_raw_parts(buffer.as_ptr() as *const u64, buffer.len()) };
-                enum_dyn_ptr.write_integral_type_slice(underlying_type_buffer)
+            $(#[$field_attributes])*
+            pub fn [<$field_name _mut>]<'a>(&'a mut self) -> &'a mut $field_type {
+                use generic_statics::{define_namespace, Namespace};
+                define_namespace!(FieldDescriptor);
+                FieldDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeFieldTypeAndOffset<Self, $type_universe>>().get_field_mut::<$field_type>(self, $source_file_name)
+                    .unwrap_or_else(|| panic!("Struct missing field: {}", $source_file_name))
             }
         }
     };
-    ($type_name:ident, $underlying_type:ty) => {
-         impl gospel_runtime::external_type_model::ExternallyConvertible for $type_name {
-            fn read_external<M: gospel_runtime::external_memory::Memory>(ptr: &gospel_runtime::external_memory::OpaquePtr<M>) -> anyhow::Result<Self> {
-                Ok(Self(<$underlying_type>::read_external(ptr)?))
+    ($field_name:ident, $source_file_name:literal, $type_universe:ty, optional, {$(#[$field_attributes:meta])*}, $field_type:ty) => {
+        paste! {
+            $(#[$field_attributes])*
+            pub fn $field_name<'a>(&'a self) -> Option<&'a $field_type> {
+                use generic_statics::{define_namespace, Namespace};
+                define_namespace!(FieldDescriptor);
+                FieldDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeFieldTypeAndOffset<Self, $type_universe>>().get_field_ref::<$field_type>(self, $source_file_name)
             }
-            fn write_external<M: gospel_runtime::external_memory::Memory>(ptr: &gospel_runtime::external_memory::OpaquePtr<M>, value: Self) -> anyhow::Result<()> {
-                <$underlying_type>::write_external(ptr, value.0)
+            $(#[$field_attributes])*
+            pub fn [<$field_name _mut>]<'a>(&'a mut self) -> Option<&'a mut $field_type> {
+                use generic_statics::{define_namespace, Namespace};
+                define_namespace!(FieldDescriptor);
+                FieldDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeFieldTypeAndOffset<Self, $type_universe>>().get_field_mut::<$field_type>(self, $source_file_name)
             }
-            fn read_external_slice<M: gospel_runtime::external_memory::Memory>(ptr: &gospel_runtime::external_memory::OpaquePtr<M>, buffer: &mut [Self]) -> anyhow::Result<()> {
-                // This is safe as long as type has a transparent representation
-                let mut underlying_type_buffer = unsafe { &mut *std::ptr::slice_from_raw_parts_mut(buffer.as_mut_ptr() as *mut $underlying_type, buffer.len()) };
-                <$underlying_type>::read_external_slice(ptr, underlying_type_buffer)
+        }
+    };
+    ($field_name:ident, $source_file_name:literal, $type_universe:ty, required, {$(#[$field_attributes:meta])*}) => {
+        paste! {
+            $(#[$field_attributes])*
+            pub fn $field_name<'a>(&'a self) -> gospel_runtime::local_type_model::DynRef<'a, $type_universe> {
+                use generic_statics::{define_namespace, Namespace};
+                define_namespace!(FieldDescriptor);
+                FieldDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeFieldTypeAndOffset<Self, $type_universe>>().get_dyn_ref(self, $source_file_name)
+                    .unwrap_or_else(|| panic!("Struct missing field: {}", $source_file_name))
             }
-            fn write_external_slice<M: gospel_runtime::external_memory::Memory>(ptr: &gospel_runtime::external_memory::OpaquePtr<M>, buffer: &[Self]) -> anyhow::Result<()> {
-                // This is safe as long as type has a transparent representation
-                let underlying_type_buffer = unsafe { &*std::ptr::slice_from_raw_parts(buffer.as_ptr() as *const $underlying_type, buffer.len()) };
-                <$underlying_type>::write_external_slice(ptr, underlying_type_buffer)
+            $(#[$field_attributes])*
+            pub fn [<$field_name _mut>]<'a>(&'a mut self) -> gospel_runtime::local_type_model::DynMut<'a, $type_universe> {
+                use generic_statics::{define_namespace, Namespace};
+                define_namespace!(FieldDescriptor);
+                FieldDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeFieldTypeAndOffset<Self, $type_universe>>().get_dyn_mut(self, $source_file_name)
+                    .unwrap_or_else(|| panic!("Struct missing field: {}", $source_file_name))
+            }
+        }
+    };
+    ($field_name:ident, $source_file_name:literal, $type_universe:ty, optional, {$(#[$field_attributes:meta])*}) => {
+        paste! {
+            $(#[$field_attributes])*
+            pub fn $field_name<'a>(&'a self) -> Option<gospel_runtime::local_type_model::DynRef<'a, $type_universe>> {
+                use generic_statics::{define_namespace, Namespace};
+                define_namespace!(FieldDescriptor);
+                FieldDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeFieldTypeAndOffset<Self, $type_universe>>().get_dyn_ref(self, $source_file_name)
+            }
+            $(#[$field_attributes])*
+            pub fn [<$field_name _mut>]<'a>(&'a mut self) -> Option<gospel_runtime::local_type_model::DynMut<'a, $type_universe>> {
+                use generic_statics::{define_namespace, Namespace};
+                define_namespace!(FieldDescriptor);
+                FieldDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeFieldTypeAndOffset<Self, $type_universe>>().get_dyn_mut(self, $source_file_name)
             }
         }
     };
 }
 
 #[macro_export]
-macro_rules! gsb_codegen_implement_enum_constant {
-    ($type_name:ty, $constant_name:ident, $source_file_name:literal, required, {$(#[$field_attributes:meta])*}, $inner_type:ty) => {
+macro_rules! gsb_codegen_implement_external_enum_constant {
+    ($constant_name:ident, $source_file_name:literal, required, {$(#[$field_attributes:meta])*}) => {
         $(#[$field_attributes])*
         pub fn $constant_name<NS : gospel_runtime::external_type_model::TypeNamespace>(namespace: &NS) -> Self {
             use crate::gospel_runtime::core_type_definitions::StaticTypeTag;
-            use crate::gospel_runtime::external_type_model::EnumUnderlyingType;
             let enum_type_index = Self::store_type_descriptor_to_namespace(namespace);
             let constant_raw_value = namespace.type_layout_cache().lock().unwrap().get_enum_type_constant_value_cached(namespace.type_graph(), enum_type_index, $source_file_name)
-                .unwrap_or_else(|| panic!("Enum missing constant: {}:{}", stringify!($type_name), $source_file_name));
-            Self(<$inner_type>::from_raw_discriminant(constant_raw_value))
+                .unwrap_or_else(|| panic!("Enum missing constant: {}", $source_file_name));
+            Self::from_raw_discriminant(constant_raw_value)
         }
     };
-    ($type_name:ty, $constant_name:ident, $source_file_name:literal, optional, {$(#[$field_attributes:meta])*}, $inner_type:ty) => {
+    ($constant_name:ident, $source_file_name:literal, optional, {$(#[$field_attributes:meta])*}) => {
         $(#[$field_attributes])*
         pub fn $constant_name<NS : gospel_runtime::external_type_model::TypeNamespace>(namespace: &NS) -> Option<Self> {
             use crate::gospel_runtime::core_type_definitions::StaticTypeTag;
-            use crate::gospel_runtime::external_type_model::EnumUnderlyingType;
             let enum_type_index = Self::store_type_descriptor_to_namespace(namespace);
             let constant_raw_value = namespace.type_layout_cache().lock().unwrap().get_enum_type_constant_value_cached(namespace.type_graph(), enum_type_index, $source_file_name)?;
-            Some(Self(<$inner_type>::from_raw_discriminant(constant_raw_value)))
+            Some(Self::from_raw_discriminant(constant_raw_value))
         }
     };
-    ($type_name:ty, $constant_name:ident, $source_file_name:literal, required, {$(#[$field_attributes:meta])*}) => {
+}
+
+#[macro_export]
+macro_rules! gsb_codegen_implement_local_enum_constant {
+    ($constant_name:ident, $source_file_name:literal, $type_universe:ty, sized, required, {$(#[$field_attributes:meta])*}) => {
         $(#[$field_attributes])*
-        pub fn $constant_name<NS : gospel_runtime::external_type_model::TypeNamespace>(namespace: &NS) -> Self {
-            use crate::gospel_runtime::static_type_wrappers::StaticTypeTag;
-            let enum_type_index = Self::store_type_descriptor_to_namespace(namespace);
-            let constant_raw_value = namespace.type_layout_cache().lock().unwrap().get_enum_type_constant_value_cached(namespace.type_graph(), enum_type_index, $source_file_name)
-                .unwrap_or_else(|| panic!("Enum missing constant: {}:{}", stringify!($type_name), $source_file_name));
-            Self(constant_raw_value)
+        pub fn $constant_name() -> Self {
+            use generic_statics::{define_namespace, Namespace};
+            define_namespace!(EnumConstantDescriptor);
+            let constant_raw_value = EnumConstantDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeEnumConstant<Self, $type_universe>>().get_enum_constant_value(self, $source_file_name)
+                .unwrap_or_else(|| panic!("Enum missing constant: {}", $source_file_name));
+            Self::sized_from_raw_discriminant(constant_raw_value)
         }
     };
-    ($type_name:ty, $constant_name:ident, $source_file_name:literal, optional, {$(#[$field_attributes:meta])*}) => {
+    ($constant_name:ident, $source_file_name:literal, $type_universe:ty, sized, optional, {$(#[$field_attributes:meta])*}) => {
         $(#[$field_attributes])*
-        pub fn $constant_name<NS : gospel_runtime::external_type_model::TypeNamespace>(namespace: &NS) -> Option<Self> {
-            use crate::gospel_runtime::static_type_wrappers::StaticTypeTag;
-            let enum_type_index = Self::store_type_descriptor_to_namespace(namespace);
-            let constant_raw_value = namespace.type_layout_cache().lock().unwrap().get_enum_type_constant_value_cached(namespace.type_graph(), enum_type_index, $source_file_name)?;
-            Some(Self(constant_raw_value))
+        pub fn $constant_name() -> Option<Self> {
+            use generic_statics::{define_namespace, Namespace};
+            define_namespace!(EnumConstantDescriptor);
+            let constant_raw_value = EnumConstantDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeEnumConstant<Self, $type_universe>>().get_enum_constant_value(self, $source_file_name)?;
+            Some(Self::sized_from_raw_discriminant(constant_raw_value))
+        }
+    };
+    ($constant_name:ident, $source_file_name:literal, $type_universe:ty, boxed, required, {$(#[$field_attributes:meta])*}) => {
+        $(#[$field_attributes])*
+        pub fn $constant_name<A : std::alloc:::Allocator>(alloc: A) -> Box<Self, A> {
+            use generic_statics::{define_namespace, Namespace};
+            define_namespace!(EnumConstantDescriptor);
+            let constant_raw_value = EnumConstantDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeEnumConstant<Self, $type_universe>>().get_enum_constant_value(self, $source_file_name)
+                .unwrap_or_else(|| panic!("Enum missing constant: {}", $source_file_name));
+            Self::boxed_from_raw_discriminant::<A>(constant_raw_value, alloc)
+        }
+    };
+    ($constant_name:ident, $source_file_name:literal, $type_universe:ty, boxed, optional, {$(#[$field_attributes:meta])*}) => {
+        $(#[$field_attributes])*
+        pub fn $constant_name<A : std::alloc:::Allocator>(alloc: A) -> Option<Box<Self, A>> {
+            use generic_statics::{define_namespace, Namespace};
+            define_namespace!(EnumConstantDescriptor);
+            let constant_raw_value = EnumConstantDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeEnumConstant<Self, $type_universe>>().get_enum_constant_value(self, $source_file_name)?;
+            Some(Self::boxed_from_raw_discriminant::<A>(constant_raw_value, alloc))
         }
     };
 }

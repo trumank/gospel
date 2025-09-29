@@ -25,7 +25,7 @@ pub(crate) struct ResolvedBindingsModuleContext {
     pub(crate) types_to_generate: Vec<BindingsTypeDefinition>,
 }
 
-pub(crate) fn process_module_context(main_module_path: &PathBuf, additional_dependencies: &Vec<PathBuf>, extra_modules_to_include: &HashSet<String>, module_to_bindings_crate: &HashMap<String, String>) -> anyhow::Result<ResolvedBindingsModuleContext> {
+pub(crate) fn process_module_context(main_module_path: &PathBuf, additional_dependencies: &Vec<PathBuf>, extra_modules_to_include: &HashSet<String>, module_to_bindings_crate: &HashMap<String, String>, vm_options: GospelVMOptions) -> anyhow::Result<ResolvedBindingsModuleContext> {
     let mut all_module_paths: Vec<PathBuf> = Vec::new();
     all_module_paths.push(main_module_path.clone());
     all_module_paths.append(&mut additional_dependencies.clone());
@@ -81,7 +81,7 @@ pub(crate) fn process_module_context(main_module_path: &PathBuf, additional_depe
     vm_state.mount_container(compiled_main_module).map_err(|x| anyhow!("Failed to mount dependency module container: {}", x))?;
 
     // Run the VM to generate type hierarchy for types that we want to generate
-    let mut run_context = GospelVMRunContext::create(GospelVMOptions::default().no_default_globals());
+    let mut run_context = GospelVMRunContext::create(vm_options);
     let mut types_to_generate: Vec<BindingsTypeDefinition> = Vec::new();
     for function_declaration in &type_definition_functions {
         let type_name = function_declaration.reference.return_value_type_name.as_ref().unwrap().clone();

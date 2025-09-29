@@ -994,6 +994,19 @@ impl EnumType {
             Some(PrimitiveType::Int)
         } else { None }
     }
+    /// Calculates the underlying type for the enum type if it can be known without full constant value set
+    pub fn underlying_type_no_constants(&self, target_triplet: &TargetTriplet) -> Option<PrimitiveType> {
+        if let Some(known_underlying_type) = self.underlying_type_no_target_no_constants() {
+            return Some(known_underlying_type);
+        }
+        // On MSVC unscoped enums are always Int regardless of the constant set
+        if self.kind == EnumKind::Unscoped && target_triplet.is_windows_msvc_target() {
+            Some(PrimitiveType::Int)
+        } else {
+            // Underlying type is unknown otherwise on other platforms
+            None
+        }
+    }
     /// Returns the default integral type for the constant given the target triplet
     pub fn default_constant_integral_type(&self, target_triplet: &TargetTriplet) -> anyhow::Result<IntegralType> {
         // default type for unscoped enumerations is int on MSVC and unsigned int for everything else
@@ -1004,12 +1017,9 @@ impl EnumType {
     }
     /// Calculates the underlying type for the enum type. This relies on platform specific logic for unscoped enums
     pub fn underlying_type(&self, target_triplet: &TargetTriplet) -> anyhow::Result<PrimitiveType> {
-        if let Some(explicit_underlying_type) = self.underlying_type {
-            return Ok(explicit_underlying_type);
-        }
-        // Scoped enums and all unscoped enums under MSVC always use Int as their underlying type
-        if self.kind == EnumKind::Scoped || target_triplet.is_windows_msvc_target() {
-            return Ok(PrimitiveType::Int);
+        // Check if we know the underlying type without having to evaluate the constants
+        if let Some(known_underlying_type) = self.underlying_type_no_constants(target_triplet) {
+            return Ok(known_underlying_type);
         }
         // Unscoped enums under gnu convention pick int if all values (ignoring their types) fit within 32 bits, and long int if there are 64-bit values.
         // Unsigned types are picked if there are no signed constants with values below 0

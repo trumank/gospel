@@ -1023,6 +1023,11 @@ enum EClassCastFlags : unsigned long long int {
 	FVCellProperty = 0x4000000000000000u64,
 };
 
+enum class CookedEnumWithUnknownUnderlyingType : if (UE_VERSION >= 501) unsigned long long int else unsigned int {
+    TestEnumConstant = 150u32,
+    TestEnumConstant2 = 143u32,
+};
+
 struct InlineAllocatorTest {
     TArray<int, TInlineAllocator<int, 4, TSizedHeapAllocator<int32_t>>> Elements;
 };

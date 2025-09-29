@@ -1,14 +1,15 @@
-use std::collections::{BTreeSet};
-use std::hash::{Hash};
+use crate::core_type_definitions::EnumUnderlyingType;
+use crate::core_type_definitions::{implement_enum_underlying_type, implement_primitive_type_tag, IntegralValueTypeTag, StaticTypeLayoutCache, StaticTypeTag};
+use crate::external_memory::{Memory, OpaquePtr};
+use anyhow::anyhow;
+use gospel_typelib::target_triplet::TargetTriplet;
+use gospel_typelib::type_model::{ArrayType, IntegerSignedness, MutableTypeGraph, PointerType, PrimitiveType, Type};
+use paste::paste;
+use std::collections::BTreeSet;
+use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::{Add, Deref, DerefMut, Receiver, Sub};
 use std::sync::{Mutex, RwLock};
-use anyhow::anyhow;
-use paste::paste;
-use gospel_typelib::target_triplet::TargetTriplet;
-use gospel_typelib::type_model::{ArrayType, MutableTypeGraph, PointerType, PrimitiveType, Type};
-use crate::core_type_definitions::{implement_primitive_type_tag, Char16, Char32, Char8, IntegralValueTypeTag, StaticTypeLayoutCache, StaticTypeTag};
-use crate::external_memory::{Memory, OpaquePtr};
 
 /// Trait to represent a namespace in which types can be defined for a specific target triplet
 pub trait TypeNamespace {
@@ -64,6 +65,10 @@ pub struct ExternalWideChar(u32);
 implement_primitive_type_tag!(ExternalLongInt, PrimitiveType::LongInt);
 implement_primitive_type_tag!(ExternalUnsignedLongInt, PrimitiveType::UnsignedLongInt);
 implement_primitive_type_tag!(ExternalWideChar, PrimitiveType::WideChar);
+
+implement_enum_underlying_type!(ExternalUnsignedLongInt, u64);
+implement_enum_underlying_type!(ExternalLongInt, i64);
+implement_enum_underlying_type!(ExternalWideChar, u32);
 
 /// Represents a non-null pointer to a value of static type T. This is similar to NonNull<T> type in standard library,
 /// but refers to memory that might not be mapped to the process address space or belong to a different target
@@ -341,31 +346,31 @@ impl<T : StaticTypeTag + ExternallyConvertible, N: IntegralValueTypeTag> StaticA
 /// Trait implemented by values that can be copied from and to the external memory to the local memory
 /// Values might need to be converted to be of a compatible type, e.g. endian flip or ptr coercion or extension/truncation might be necessary
 pub trait ExternallyConvertible : Default + Clone {
-    fn read_external<M: Memory>(ptr: &OpaquePtr<M>) -> anyhow::Result<Self>;
-    fn write_external<M: Memory>(ptr: &OpaquePtr<M>, value: Self) -> anyhow::Result<()>;
-    fn read_external_slice<M: Memory>(ptr: &OpaquePtr<M>, buffer: &mut [Self]) -> anyhow::Result<()>;
-    fn write_external_slice<M: Memory>(ptr: &OpaquePtr<M>, buffer: &[Self]) -> anyhow::Result<()>;
+    fn read_external<M: Memory + TypeNamespace>(ptr: &OpaquePtr<M>) -> anyhow::Result<Self>;
+    fn write_external<M: Memory + TypeNamespace>(ptr: &OpaquePtr<M>, value: Self) -> anyhow::Result<()>;
+    fn read_external_slice<M: Memory + TypeNamespace>(ptr: &OpaquePtr<M>, buffer: &mut [Self]) -> anyhow::Result<()>;
+    fn write_external_slice<M: Memory + TypeNamespace>(ptr: &OpaquePtr<M>, buffer: &[Self]) -> anyhow::Result<()>;
 }
 
 macro_rules! implement_externally_convertible_for_primitive_type {
     ($value_type:ident) => {
        impl ExternallyConvertible for $value_type {
-            fn read_external<M: Memory>(ptr: &OpaquePtr<M>) -> anyhow::Result<Self> {
+            fn read_external<M: Memory + TypeNamespace>(ptr: &OpaquePtr<M>) -> anyhow::Result<Self> {
                 paste! {
                     ptr.[<read_ $value_type>]()
                 }
             }
-            fn write_external<M: Memory>(ptr: &OpaquePtr<M>, value: Self) -> anyhow::Result<()> {
+            fn write_external<M: Memory + TypeNamespace>(ptr: &OpaquePtr<M>, value: Self) -> anyhow::Result<()> {
                 paste! {
                     ptr.[<write_ $value_type>](value)
                 }
             }
-            fn read_external_slice<M: Memory>(ptr: &OpaquePtr<M>, buffer: &mut [$value_type]) -> anyhow::Result<()> {
+            fn read_external_slice<M: Memory + TypeNamespace>(ptr: &OpaquePtr<M>, buffer: &mut [$value_type]) -> anyhow::Result<()> {
                  paste! {
                     ptr.[<read_ $value_type _array>](buffer)
                 }
             }
-            fn write_external_slice<M: Memory>(ptr: &OpaquePtr<M>, buffer: &[$value_type]) -> anyhow::Result<()> {
+            fn write_external_slice<M: Memory + TypeNamespace>(ptr: &OpaquePtr<M>, buffer: &[$value_type]) -> anyhow::Result<()> {
                 paste! {
                     ptr.[<write_ $value_type _array>](buffer)
                 }
@@ -390,7 +395,7 @@ macro_rules! implement_variable_size_trivial_value {
     ( $value_type:ident, $large_underlying_type:ident, $small_underlying_type:ident, $primitive_type:expr) => {
         paste! {
             impl ExternallyConvertible for $value_type {
-                fn read_external<M: Memory>(ptr: &OpaquePtr<M>) -> anyhow::Result<Self> {
+                fn read_external<M: Memory + TypeNamespace>(ptr: &OpaquePtr<M>) -> anyhow::Result<Self> {
                     let target_triplet = ptr.memory.target_triplet();
                     let primitive_size = $primitive_type.bit_width(&target_triplet).unwrap().value_in_bytes();
                     if primitive_size == size_of::<$small_underlying_type>() {
@@ -401,7 +406,7 @@ macro_rules! implement_variable_size_trivial_value {
                         Err(anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))
                     }
                 }
-                fn write_external<M: Memory>(ptr: &OpaquePtr<M>, value: Self) -> anyhow::Result<()> {
+                fn write_external<M: Memory + TypeNamespace>(ptr: &OpaquePtr<M>, value: Self) -> anyhow::Result<()> {
                     let target_triplet = ptr.memory.target_triplet();
                     let primitive_size = $primitive_type.bit_width(&target_triplet).unwrap().value_in_bytes();
                    if primitive_size == size_of::<$small_underlying_type>() {
@@ -412,7 +417,7 @@ macro_rules! implement_variable_size_trivial_value {
                        Err(anyhow!("Failed to write: value is not compatible with {} type", core::stringify!($value_type)))
                    }
                 }
-                fn read_external_slice<M: Memory>(ptr: &OpaquePtr<M>, buffer: &mut [$value_type]) -> anyhow::Result<()> {
+                fn read_external_slice<M: Memory + TypeNamespace>(ptr: &OpaquePtr<M>, buffer: &mut [$value_type]) -> anyhow::Result<()> {
                     let target_triplet = ptr.memory.target_triplet();
                     let primitive_size = $primitive_type.bit_width(&target_triplet).unwrap().value_in_bytes();
                     if primitive_size == size_of::<$small_underlying_type>() {
@@ -433,7 +438,7 @@ macro_rules! implement_variable_size_trivial_value {
                        Err(anyhow!("Failed to read: value is not compatible with {} type", core::stringify!($value_type)))
                     }
                 }
-                fn write_external_slice<M: Memory>(ptr: &OpaquePtr<M>, buffer: &[Self]) -> anyhow::Result<()> {
+                fn write_external_slice<M: Memory + TypeNamespace>(ptr: &OpaquePtr<M>, buffer: &[Self]) -> anyhow::Result<()> {
                     let target_triplet = ptr.memory.target_triplet();
                     let primitive_size = $primitive_type.bit_width(&target_triplet).unwrap().value_in_bytes();
                     if primitive_size == size_of::<$small_underlying_type>() {
@@ -482,51 +487,6 @@ impl ExternallyConvertible for bool {
         }
         ptr.write_u8_array(byte_buffer.deref())
     }
-}
-
-/// Trait implemented by the types that are allowed to appear as underlying types for enums
-pub trait EnumUnderlyingType where Self : Sized {
-    /// Converts value of this type to the raw 64-bit discriminant
-    fn to_raw_discriminant(self) -> u64;
-    /// Constructs value of this type from the raw 64-bit discriminant
-    fn from_raw_discriminant(raw_discriminant: u64) -> Self;
-}
-
-macro_rules! implement_enum_underlying_type {
-    ($value_type:ty) => {
-        impl EnumUnderlyingType for $value_type {
-            fn to_raw_discriminant(self) -> u64 { self as u64 }
-            fn from_raw_discriminant(raw_discriminant: u64) -> Self { raw_discriminant as $value_type }
-        }
-    };
-    ($value_type:ty, $underlying_type:ty) => {
-        impl EnumUnderlyingType for $value_type {
-            fn to_raw_discriminant(self) -> u64 { self.0 as u64 }
-            fn from_raw_discriminant(raw_discriminant: u64) -> Self { Self(raw_discriminant as $underlying_type) }
-        }
-    };
-}
-
-// Implement underlying type for all integral types that we have
-implement_enum_underlying_type!(u8 );
-implement_enum_underlying_type!(u16);
-implement_enum_underlying_type!(u32);
-implement_enum_underlying_type!(u64);
-implement_enum_underlying_type!(i8 );
-implement_enum_underlying_type!(i16);
-implement_enum_underlying_type!(i32);
-implement_enum_underlying_type!(i64);
-implement_enum_underlying_type!(Char8, u8);
-implement_enum_underlying_type!(Char16, u16);
-implement_enum_underlying_type!(Char32, u32);
-implement_enum_underlying_type!(ExternalUnsignedLongInt, u64);
-implement_enum_underlying_type!(ExternalLongInt, i64);
-implement_enum_underlying_type!(ExternalWideChar, u32);
-
-/// Since boolean cannot be cast to other integral types, it needs to be implemented separately
-impl EnumUnderlyingType for bool {
-    fn to_raw_discriminant(self) -> u64 { self as u64 }
-    fn from_raw_discriminant(raw_discriminant: u64) -> Self { (raw_discriminant as u8) != 0 }
 }
 
 /// Represents a pointer without a statically known type. It can be cast to a statically typed ptr using cast functions,
@@ -589,46 +549,88 @@ impl<M: Memory + TypeNamespace> DynPtr<M> {
             Some(Self::from_raw_ptr(self.inner_ptr.clone().add(field_offset), field_type_index))
         } else { None }
     }
-    /// Reads value of this pointer as a value of integral type. Values will be zero-extended to 64 bit
+    /// Reads value of this pointer as a value of integral type. Value will be zero-extended (for unsigned values) or sign-extended (for signed values) to 64 bit
     pub fn read_integral_type(&self) -> anyhow::Result<u64> {
         if let Some((primitive_type, primitive_size)) = self.primitive_type_and_size() && primitive_type.is_integral() {
-            match primitive_size {
-                1 => Ok(self.inner_ptr.read_u8()? as u64),
-                2 => Ok(self.inner_ptr.read_u16()? as u64),
-                4 => Ok(self.inner_ptr.read_u32()? as u64),
-                8 => Ok(self.inner_ptr.read_u64()?),
-                _ => Err(anyhow!("unknown integral primitive size"))
+            match primitive_type.integer_signedness().unwrap() {
+                IntegerSignedness::Signed => {
+                    match primitive_size {
+                        1 => Ok(self.inner_ptr.read_i8()? as u64),
+                        2 => Ok(self.inner_ptr.read_i16()? as u64),
+                        4 => Ok(self.inner_ptr.read_i32()? as u64),
+                        8 => Ok(self.inner_ptr.read_i64()? as u64),
+                        _ => Err(anyhow!("unknown integral primitive size"))
+                    }
+                }
+                IntegerSignedness::Unsigned => {
+                    match primitive_size {
+                        1 => Ok(self.inner_ptr.read_u8()? as u64),
+                        2 => Ok(self.inner_ptr.read_u16()? as u64),
+                        4 => Ok(self.inner_ptr.read_u32()? as u64),
+                        8 => Ok(self.inner_ptr.read_u64()?),
+                        _ => Err(anyhow!("unknown integral primitive size"))
+                    }
+                }
             }
         } else { Err(anyhow!("Not an integral type")) }
     }
-    /// Reads value of this pointer as a value of integral type. Values will be zero-extended to 64 bit
+    /// Reads value of this pointer as a value of integral type. Values will be zero-extended (for unsigned values) or sign-extended (for signed values) to 64 bit
     pub fn read_integral_type_slice(&self, buffer: &mut [u64]) -> anyhow::Result<()> {
         if let Some((primitive_type, primitive_size)) = self.primitive_type_and_size() && primitive_type.is_integral() {
-            match primitive_size {
-                1 => {
-                    let mut underlying_buffer: Box<[u8]> = vec![0u8; buffer.len()].into_boxed_slice();
-                    self.inner_ptr.read_u8_array(underlying_buffer.deref_mut())?;
-                    for element_index in 0..buffer.len() { buffer[element_index] = underlying_buffer[element_index] as u64; }
-                    Ok({})
-                },
-                2 => {
-                    let mut underlying_buffer: Box<[u16]> = vec![0u16; buffer.len()].into_boxed_slice();
-                    self.inner_ptr.read_u16_array(underlying_buffer.deref_mut())?;
-                    for element_index in 0..buffer.len() { buffer[element_index] = underlying_buffer[element_index] as u64; }
-                    Ok({})
-                },
-                4 => {
-                    let mut underlying_buffer: Box<[u32]> = vec![0u32; buffer.len()].into_boxed_slice();
-                    self.inner_ptr.read_u32_array(underlying_buffer.deref_mut())?;
-                    for element_index in 0..buffer.len() { buffer[element_index] = underlying_buffer[element_index] as u64; }
-                    Ok({})
-                },
-                8 => {
-                    self.inner_ptr.read_u64_array(buffer)
-                },
-                _ => Err(anyhow!("unknown integral primitive size"))
+            match primitive_type.integer_signedness().unwrap() {
+                IntegerSignedness::Signed => {
+                    match primitive_size {
+                        1 => {
+                            let mut underlying_buffer: Box<[i8]> = vec![0i8; buffer.len()].into_boxed_slice();
+                            self.inner_ptr.read_i8_array(underlying_buffer.deref_mut())?;
+                            for element_index in 0..buffer.len() { buffer[element_index] = underlying_buffer[element_index] as u64; }
+                            Ok({})
+                        },
+                        2 => {
+                            let mut underlying_buffer: Box<[i16]> = vec![0i16; buffer.len()].into_boxed_slice();
+                            self.inner_ptr.read_i16_array(underlying_buffer.deref_mut())?;
+                            for element_index in 0..buffer.len() { buffer[element_index] = underlying_buffer[element_index] as u64; }
+                            Ok({})
+                        },
+                        4 => {
+                            let mut underlying_buffer: Box<[i32]> = vec![0i32; buffer.len()].into_boxed_slice();
+                            self.inner_ptr.read_i32_array(underlying_buffer.deref_mut())?;
+                            for element_index in 0..buffer.len() { buffer[element_index] = underlying_buffer[element_index] as u64; }
+                            Ok({})
+                        },
+                        8 => {
+                            self.inner_ptr.read_u64_array(buffer)
+                        },
+                        _ => Err(anyhow!("unknown integral primitive size"))
+                    }
+                }
+                IntegerSignedness::Unsigned => {
+                    match primitive_size {
+                        1 => {
+                            let mut underlying_buffer: Box<[u8]> = vec![0u8; buffer.len()].into_boxed_slice();
+                            self.inner_ptr.read_u8_array(underlying_buffer.deref_mut())?;
+                            for element_index in 0..buffer.len() { buffer[element_index] = underlying_buffer[element_index] as u64; }
+                            Ok({})
+                        },
+                        2 => {
+                            let mut underlying_buffer: Box<[u16]> = vec![0u16; buffer.len()].into_boxed_slice();
+                            self.inner_ptr.read_u16_array(underlying_buffer.deref_mut())?;
+                            for element_index in 0..buffer.len() { buffer[element_index] = underlying_buffer[element_index] as u64; }
+                            Ok({})
+                        },
+                        4 => {
+                            let mut underlying_buffer: Box<[u32]> = vec![0u32; buffer.len()].into_boxed_slice();
+                            self.inner_ptr.read_u32_array(underlying_buffer.deref_mut())?;
+                            for element_index in 0..buffer.len() { buffer[element_index] = underlying_buffer[element_index] as u64; }
+                            Ok({})
+                        },
+                        8 => {
+                            self.inner_ptr.read_u64_array(buffer)
+                        },
+                        _ => Err(anyhow!("unknown integral primitive size"))
+                    }
+                }
             }
-
         } else { Err(anyhow!("Not an integral type")) }
     }
     /// Writes value of this pointer as a value of integral type. Unused bits will be discarded

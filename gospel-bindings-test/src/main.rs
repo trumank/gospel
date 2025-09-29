@@ -48,7 +48,7 @@ fn main() -> anyhow::Result<()> {
     assert_eq!(test_field.baseclass_0.internal_index, object_internal_index);
 
     let class_cast_flags = EClassCastFlags::a_player_controller(current_process_memory.deref());
-    assert_eq!(class_cast_flags, EClassCastFlags(0x0000002000000000u64));
+    assert_eq!(class_cast_flags, EClassCastFlags::from_raw_discriminant(0x0000002000000000u64));
 
     Ok({})
 }

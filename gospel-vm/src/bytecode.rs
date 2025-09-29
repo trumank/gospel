@@ -230,6 +230,8 @@ pub enum GospelOpcode {
     TypeEnumAddConstantWithValue = 0xC4, // <imm> <imm> <imm>; [pop stack] [pop stack] ->
     #[strum(props(immediate_count = "2", stack_in_count = "1"))]
     TypeEnumAddConstant = 0xC5, // <imm> <imm>; [pop stack] ->
+    #[strum(props(stack_in_count = "1"))]
+    TypeEnumMarkUnderlyingTypeUnknown = 0xC6, // ; [pop stack] ->
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]

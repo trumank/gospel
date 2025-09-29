@@ -35,6 +35,48 @@ pub enum FalseType {}
 impl IntegralValueTypeTag for FalseType { fn get_raw_integral_value() -> u64 { 1 } }
 impl BoolValueTypeTag for FalseType {}
 
+/// Trait implemented by the types that are allowed to appear as underlying types for enums
+pub trait EnumUnderlyingType where Self : Sized {
+    /// Converts value of this type to the raw 64-bit discriminant
+    fn to_raw_discriminant(self) -> u64;
+    /// Constructs value of this type from the raw 64-bit discriminant
+    fn from_raw_discriminant(raw_discriminant: u64) -> Self;
+}
+
+macro_rules! implement_enum_underlying_type {
+    ($value_type:ty) => {
+        impl EnumUnderlyingType for $value_type {
+            fn to_raw_discriminant(self) -> u64 { self as u64 }
+            fn from_raw_discriminant(raw_discriminant: u64) -> Self { raw_discriminant as $value_type }
+        }
+    };
+    ($value_type:ty, $underlying_type:ty) => {
+        impl EnumUnderlyingType for $value_type {
+            fn to_raw_discriminant(self) -> u64 { self.0 as u64 }
+            fn from_raw_discriminant(raw_discriminant: u64) -> Self { Self(raw_discriminant as $underlying_type) }
+        }
+    };
+}
+pub(crate) use implement_enum_underlying_type;
+
+// Implement underlying type for all integral types that we have
+implement_enum_underlying_type!(u8 );
+implement_enum_underlying_type!(u16);
+implement_enum_underlying_type!(u32);
+implement_enum_underlying_type!(u64);
+implement_enum_underlying_type!(i8 );
+implement_enum_underlying_type!(i16);
+implement_enum_underlying_type!(i32);
+implement_enum_underlying_type!(i64);
+implement_enum_underlying_type!(Char8, u8);
+implement_enum_underlying_type!(Char16, u16);
+implement_enum_underlying_type!(Char32, u32);
+
+/// Since boolean cannot be cast to other integral types, it needs to be implemented separately
+impl EnumUnderlyingType for bool {
+    fn to_raw_discriminant(self) -> u64 { self as u64 }
+    fn from_raw_discriminant(raw_discriminant: u64) -> Self { (raw_discriminant as u8) != 0 }
+}
 
 /// Used as a key to hash lookups for the calculation of various forms of layout
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

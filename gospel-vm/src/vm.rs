@@ -113,12 +113,21 @@ impl GospelVMOptions {
 /// Wrapper for Types that also contains metadata maintained by the VM
 #[derive(Debug, Clone)]
 pub struct GospelVMTypeContainer {
+    /// Type definition wrapped by this VM type container
     pub wrapped_type: Type,
+    /// All base classes that this UDT type could potentially derive from. None if not an UDT type
     pub base_class_prototypes: Option<HashSet<usize>>,
+    /// Prototypes of all members that could be potentially defined on this UDT type. None if not an UDT type
     pub member_prototypes: Option<HashSet<UserDefinedTypeMember>>,
+    /// Names of all enum constants that could be potentially defined on this enumeration type. None if not an enumeration type
     pub enum_constant_prototypes: Option<HashSet<String>>,
+    /// Additional metadata associated with the type by the VM code
     pub vm_metadata: Option<GospelVMStruct>,
+    /// True if this type definition is incomplete (not all members are defined) and as such its layout cannot be calculated
     pub partial_type: bool,
+    /// True if underlying type of this enumeration type is unknown
+    pub enum_underlying_type_unknown: bool,
+    /// Arguments to the function call that resulted in an instantiation of this type (only set for UDT and Enum types)
     pub source_function_args: Option<Vec<GospelVMValue>>,
     owner_stack_frame_token: usize,
     size_has_been_validated: bool,
@@ -154,7 +163,7 @@ impl GospelVMRunContext {
             let new_type_index = self.types.len();
             // Simple types cannot have VM metadata assigned to them
             self.types.push(GospelVMTypeContainer {wrapped_type: type_data.clone(), base_class_prototypes: None, member_prototypes: None, enum_constant_prototypes: None,
-                vm_metadata: None, owner_stack_frame_token: 0, size_has_been_validated: false, partial_type: false, source_function_args: None});
+                vm_metadata: None, owner_stack_frame_token: 0, size_has_been_validated: false, partial_type: false, enum_underlying_type_unknown: false, source_function_args: None});
             self.simple_type_lookup.insert(type_data, new_type_index);
             new_type_index
         }
@@ -174,7 +183,7 @@ impl GospelVMRunContext {
     fn store_unique_named_type(&mut self, type_data: Type, stack_frame_token: usize) -> usize {
         let new_type_index = self.types.len();
         self.types.push(GospelVMTypeContainer{wrapped_type: type_data, base_class_prototypes: Some(HashSet::new()), member_prototypes: Some(HashSet::new()), enum_constant_prototypes: Some(HashSet::new()),
-            vm_metadata: None, owner_stack_frame_token: stack_frame_token, size_has_been_validated: false, partial_type: false, source_function_args: None});
+            vm_metadata: None, owner_stack_frame_token: stack_frame_token, size_has_been_validated: false, partial_type: false, enum_underlying_type_unknown: false, source_function_args: None});
         new_type_index
     }
     fn validate_type_not_partial(&mut self, type_index: usize, source_frame: Option<&GospelVMExecutionState>) -> GospelVMResult<()> {
@@ -1100,7 +1109,6 @@ impl<'a> GospelVMExecutionState<'a> {
                 }
                 GospelOpcode::TypeMarkPartial => {
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
-                    state.validate_type_index_user_defined_type(type_index, run_context)?;
                     state.validate_type_not_finalized(type_index, run_context)?;
 
                     run_context.types[type_index].partial_type = true;
@@ -1192,6 +1200,14 @@ impl<'a> GospelVMExecutionState<'a> {
                         };
                         enum_type.constants.push(EnumConstant{name: constant_name, raw_value, integral_type});
                     }
+                }
+                GospelOpcode::TypeEnumMarkUnderlyingTypeUnknown => {
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_index_enum_type(type_index, run_context)?;
+                    state.validate_type_not_finalized(type_index, run_context)?;
+
+                    run_context.types[type_index].partial_type = true;
+                    run_context.types[type_index].enum_underlying_type_unknown = true;
                 }
                 // Type access opcodes
                 GospelOpcode::TypeIsSameType => {

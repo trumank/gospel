@@ -1225,6 +1225,11 @@ impl CompilerFunctionBuilder {
         self.function_definition.add_simple_instruction(GospelOpcode::TypeMarkPartial, Self::get_line_number(source_context)).with_source_context(source_context)?;
         Ok({})
     }
+    fn compile_mark_enum_underlying_type_unknown_statement(&mut self, type_layout_slot_index: u32, source_context: &CompilerSourceContext) -> CompilerResult<()> {
+        self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(source_context)).with_source_context(source_context)?;
+        self.function_definition.add_simple_instruction(GospelOpcode::TypeEnumMarkUnderlyingTypeUnknown, Self::get_line_number(source_context)).with_source_context(source_context)?;
+        Ok({})
+    }
     fn compile_udt_type_alignment_expression(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, alignment_expression: &ExpressionWithCondition) -> CompilerResult<()> {
         self.compile_condition_wrapped_expression(scope, alignment_expression, |builder, expression, source_context| {
             builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
@@ -1821,7 +1826,7 @@ impl CompilerFunctionCodeGenerator for CompilerEnumFunctionGenerator {
                 function_builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, _source_context| {
                     inner_builder.compile_enum_underlying_type_expression(&inner_builder.function_scope.clone(), type_layout_slot_index, underlying_type_expression)
                 }, |inner_builder, source_context| {
-                    inner_builder.compile_generic_type_mark_partial_statement(type_layout_slot_index, source_context)
+                    inner_builder.compile_mark_enum_underlying_type_unknown_statement(type_layout_slot_index, source_context)
                 })?;
             } else {
                 function_builder.compile_enum_underlying_type_expression(&function_builder.function_scope.clone(), type_layout_slot_index, underlying_type_expression)?;
