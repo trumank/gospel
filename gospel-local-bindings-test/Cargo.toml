@@ -1,6 +1,6 @@
 [package]
-name = "gospel-bindings-test"
-description = "Test crate for Gospel bindings code generation"
+name = "gospel-local-bindings-test"
+description = "Test crate for Gospel local bindings code generation"
 repository.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -8,10 +8,12 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-gospel-runtime = { version = "0.1.0", path = "../gospel-runtime", features = ["all_external"] }
+gospel-runtime = { version = "0.1.0", path = "../gospel-runtime", features = ["all_local"] }
 gospel-vm = { version = "0.1.0", path = "../gospel-vm" }
 gospel-typelib = { version = "0.1.0", path = "../gospel-typelib" }
 anyhow = "1.0.93"
+generic-statics = "0.1.0"
+paste = "1.0.15"
 
 [build-dependencies]
 gospel-bindings-gen = { version = "0.1.0", path = "../gospel-bindings-gen" }

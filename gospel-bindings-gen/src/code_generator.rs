@@ -88,6 +88,10 @@ impl CodeGenerationContext {
             .collect();
         if documentation_attributes.is_empty() { None } else { Some(quote!{ #(#documentation_attributes)* }) }
     }
+    fn generate_type_universe_full_name(&self) -> TokenStream {
+        let partial_idents: Vec<Ident> = self.type_universe_full_name.split("::").map(|x| Ident::new(x, Span::call_site())).collect();
+        quote! { #(#partial_idents)::* }
+    }
     fn generate_primitive_value_as_type(&self, primitive_value: u64) -> TokenStream {
         let type_name = format!("IntegralConst_0x{:X}", primitive_value);
         let type_ident = Ident::new(&type_name, Span::call_site());
@@ -197,7 +201,7 @@ impl CodeGenerationContext {
                     }
                 }
                 ModuleBindingsType::Local => {
-                    let type_universe = Ident::new(&self.type_universe_full_name, Span::call_site());
+                    let type_universe = self.generate_type_universe_full_name();
                     if is_prototype_field {
                         quote! { gsb_codegen_implement_local_udt_field!(#field_name, #source_file_name, #type_universe, optional, { #field_doc_comment }, #field_type); }
                     } else {
@@ -216,7 +220,7 @@ impl CodeGenerationContext {
                     }
                 }
                 ModuleBindingsType::Local => {
-                    let type_universe = Ident::new(&self.type_universe_full_name, Span::call_site());
+                    let type_universe = self.generate_type_universe_full_name();
                     if is_prototype_field {
                         quote! { gsb_codegen_implement_local_udt_field!(#field_name, #source_file_name, #type_universe, optional, { #field_doc_comment }); }
                     } else {
@@ -369,7 +373,7 @@ impl CodeGenerationContext {
         all_type_implementations.push(static_type_implementation);
 
         if self.bindings_type == ModuleBindingsType::Local {
-            let type_universe = Ident::new(&self.type_universe_full_name, Span::call_site());
+            let type_universe = self.generate_type_universe_full_name();
             all_type_implementations.push(quote! {
                 impl #parameter_declaration gospel_runtime::local_type_model::ImplicitPtrMetadata for #type_name #parameter_list {
                     fn create_implicit_metadata() -> Self::Metadata {
@@ -390,6 +394,7 @@ impl CodeGenerationContext {
                 all_type_implementations.push(quote! {
                     unsafe impl #parameter_declaration std::clone::CloneToUninit for #type_name #parameter_list {
                         unsafe fn clone_to_uninit(&self, dest: *mut u8) {
+                            use gospel_runtime::local_type_model::ImplicitPtrMetadata;
                             dest.copy_from(self._private_bytes.as_ptr(), Self::static_size_of_val());
                         }
                     }
@@ -399,6 +404,7 @@ impl CodeGenerationContext {
                 all_type_implementations.push(quote! {
                     unsafe impl #parameter_declaration gospel_runtime::local_type_model::DefaultConstructAtUninit for #type_name #parameter_list {
                         unsafe fn default_construct_at(dest: *mut u8) {
+                            use gospel_runtime::local_type_model::ImplicitPtrMetadata;
                             dest.write_bytes(0, Self::static_size_of_val());
                         }
                     }
@@ -434,7 +440,7 @@ impl CodeGenerationContext {
                 }
             }
             ModuleBindingsType::Local => {
-                let type_universe = Ident::new(&self.type_universe_full_name, Span::call_site());
+                let type_universe = self.generate_type_universe_full_name();
                 if enum_underlying_type.is_some() {
                     if is_prototype_constant {
                         quote! { gsb_codegen_implement_local_enum_constant!(#constant_name, #source_constant_name, #type_universe, sized, optional, { #field_doc_comment }); }
@@ -609,7 +615,7 @@ impl CodeGenerationContext {
                         pub fn sized_to_raw_discriminant(self) -> u64 { use gospel_runtime::core_type_definitions::EnumUnderlyingType; self.to_underlying_type().to_raw_discriminant() }
                         pub fn sized_from_raw_discriminant(raw_discriminant: u64) -> Self { use gospel_runtime::core_type_definitions::EnumUnderlyingType; Self::from_underlying_type(#underlying_type_name::from_raw_discriminant(raw_discriminant)) }
                         pub fn boxed_to_raw_discriminant(&self) -> u64 { self.sized_to_raw_discriminant() }
-                        pub fn boxed_from_raw_discriminant<A : std::alloc:::Allocator>(raw_discriminant: u64, alloc: A) -> Box<Self, A> { Box::<Self, A>::new_in(Self::sized_from_raw_discriminant(raw_discriminant), alloc) }
+                        pub fn boxed_from_raw_discriminant<A : std::alloc::Allocator>(raw_discriminant: u64, alloc: A) -> Box<Self, A> { Box::<Self, A>::new_in(Self::sized_from_raw_discriminant(raw_discriminant), alloc) }
                     }
                 });
                 type_additional_attributes = Some(quote! {
@@ -618,7 +624,7 @@ impl CodeGenerationContext {
                 });
             } else {
                 // Underlying type is unknown, so we have to generate the enum as a dynamically sized type
-                let type_universe = Ident::new(&self.type_universe_full_name, Span::call_site());
+                let type_universe = self.generate_type_universe_full_name();
                 type_inner_field = quote! { _private_bytes: [u8] };
                 all_type_implementations.push(quote! {
                     impl #parameter_declaration gospel_runtime::local_type_model::ImplicitPtrMetadata for #type_name #parameter_list {
@@ -637,11 +643,13 @@ impl CodeGenerationContext {
                     }
                     unsafe impl #parameter_declaration std::clone::CloneToUninit for #type_name #parameter_list {
                         unsafe fn clone_to_uninit(&self, dest: *mut u8) {
+                            use gospel_runtime::local_type_model::ImplicitPtrMetadata;
                             dest.copy_from(self._private_bytes.as_ptr(), Self::static_size_of_val());
                         }
                     }
                     unsafe impl #parameter_declaration gospel_runtime::local_type_model::DefaultConstructAtUninit for #type_name #parameter_list {
                         unsafe fn default_construct_at(dest: *mut u8) {
+                            use gospel_runtime::local_type_model::ImplicitPtrMetadata;
                             dest.write_bytes(0, Self::static_size_of_val());
                         }
                     }
@@ -651,7 +659,7 @@ impl CodeGenerationContext {
                             define_namespace!(EnumTypeDescriptor);
                             EnumTypeDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeTypeSizeAndAlignment<Self, #type_universe>>().read_boxed_enum_value(self)
                         }
-                        pub fn boxed_from_raw_discriminant<A : std::alloc:::Allocator>(raw_discriminant: u64, alloc: A) -> Box<Self, A> {
+                        pub fn boxed_from_raw_discriminant<A : std::alloc::Allocator>(raw_discriminant: u64, alloc: A) -> Box<Self, A> {
                             use generic_statics::{define_namespace, Namespace};
                             define_namespace!(EnumTypeDescriptor);
                             EnumTypeDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeTypeSizeAndAlignment<Self, #type_universe>>().create_boxed_enum_value::<A>(raw_discriminant, alloc)

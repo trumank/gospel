@@ -336,6 +336,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gospel-local-bindings-test"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "generic-statics",
+ "gospel-bindings-gen",
+ "gospel-runtime",
+ "gospel-typelib",
+ "gospel-vm",
+ "paste",
+]
+
+[[package]]
 name = "gospel-runtime"
 version = "0.1.0"
 dependencies = [

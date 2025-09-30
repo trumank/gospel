@@ -334,7 +334,7 @@ pub fn calc_enum_constant_value<T : StaticTypeTag, U : TypeUniverse>(constant_na
 }
 
 #[derive(Debug, Default)]
-pub struct CachedThreadSafeTypeSizeAndAlignment<T: StaticTypeTag, U : TypeUniverse> {
+pub struct CachedThreadSafeTypeSizeAndAlignment<T: ?Sized + StaticTypeTag, U : TypeUniverse> {
     has_value_cached: AtomicBool,
     type_size: AtomicUsize,
     type_alignment: AtomicUsize,
@@ -343,8 +343,8 @@ pub struct CachedThreadSafeTypeSizeAndAlignment<T: StaticTypeTag, U : TypeUniver
     _phantom_data_type: PhantomData<T>,
     _phantom_data_type_universe: PhantomData<U>,
 }
-unsafe impl<T: StaticTypeTag, U : TypeUniverse> Zeroable for CachedThreadSafeTypeSizeAndAlignment<T, U> {}
-impl<T: StaticTypeTag, U : TypeUniverse> CachedThreadSafeTypeSizeAndAlignment<T, U> {
+unsafe impl<T: ?Sized + StaticTypeTag, U : TypeUniverse> Zeroable for CachedThreadSafeTypeSizeAndAlignment<T, U> {}
+impl<T: ?Sized + StaticTypeTag, U : TypeUniverse> CachedThreadSafeTypeSizeAndAlignment<T, U> {
     pub fn get_type_size_and_alignment(&self) -> (usize, usize) {
         if !self.has_value_cached.load(Ordering::Acquire) {
             let type_index = T::store_type_descriptor_to_universe::<U>();
@@ -361,7 +361,7 @@ impl<T: StaticTypeTag, U : TypeUniverse> CachedThreadSafeTypeSizeAndAlignment<T,
         (self.type_size.load(Ordering::Relaxed), self.type_alignment.load(Ordering::Relaxed))
     }
 }
-impl<T : StaticTypeTag + ImplicitPtrMetadata, U : TypeUniverse> CachedThreadSafeTypeSizeAndAlignment<T, U> {
+impl<T : ?Sized + StaticTypeTag + ImplicitPtrMetadata, U : TypeUniverse> CachedThreadSafeTypeSizeAndAlignment<T, U> {
     /// Creates an enum value initialized from the raw discriminant in the given allocator
     pub fn create_boxed_enum_value<A: Allocator>(&self, raw_discriminant: u64, alloc: A) -> Box<T, A> {
         // Although type size could also be derived from ImplicitPtrMetadata, we have to call get_type_size_and_alignment to calculate enum-specific fields
@@ -417,7 +417,7 @@ impl<T : StaticTypeTag + ImplicitPtrMetadata, U : TypeUniverse> CachedThreadSafe
 }
 
 #[derive(Debug, Default)]
-pub struct CachedThreadSafeStaticCastThisAdjust<From : StaticTypeTag, To: StaticTypeTag, U : TypeUniverse> {
+pub struct CachedThreadSafeStaticCastThisAdjust<From : ?Sized + StaticTypeTag, To: ?Sized + StaticTypeTag, U : TypeUniverse> {
     has_value_cached: AtomicBool,
     result_cast_possible: AtomicBool,
     cast_this_adjust: AtomicIsize,
@@ -425,8 +425,8 @@ pub struct CachedThreadSafeStaticCastThisAdjust<From : StaticTypeTag, To: Static
     _phantom_data_to: PhantomData<To>,
     _phantom_data_type_universe: PhantomData<U>,
 }
-unsafe impl<From : StaticTypeTag, To: StaticTypeTag, U : TypeUniverse> Zeroable for CachedThreadSafeStaticCastThisAdjust<From, To, U> {}
-impl<From : StaticTypeTag, To: StaticTypeTag, U : TypeUniverse> CachedThreadSafeStaticCastThisAdjust<From, To, U> {
+unsafe impl<From : ?Sized + StaticTypeTag, To: ?Sized + StaticTypeTag, U : TypeUniverse> Zeroable for CachedThreadSafeStaticCastThisAdjust<From, To, U> {}
+impl<From : ?Sized + StaticTypeTag, To: ?Sized + StaticTypeTag, U : TypeUniverse> CachedThreadSafeStaticCastThisAdjust<From, To, U> {
     pub fn get_static_cast_this_adjust(&self) -> Option<isize> {
         if !self.has_value_cached.load(Ordering::Acquire) {
             let from_type_index = From::store_type_descriptor_to_universe::<U>();
@@ -446,7 +446,7 @@ impl<From : StaticTypeTag, To: StaticTypeTag, U : TypeUniverse> CachedThreadSafe
 }
 
 #[derive(Debug, Default)]
-pub struct CachedThreadSafeFieldTypeAndOffset<T : StaticTypeTag, U : TypeUniverse> {
+pub struct CachedThreadSafeFieldTypeAndOffset<T : ?Sized + StaticTypeTag, U : TypeUniverse> {
     has_value_cached: AtomicBool,
     result_has_field: AtomicBool,
     field_type_index: AtomicUsize,
@@ -455,8 +455,8 @@ pub struct CachedThreadSafeFieldTypeAndOffset<T : StaticTypeTag, U : TypeUnivers
     _phantom_udt_type: PhantomData<T>,
     _phantom_type_universe: PhantomData<U>,
 }
-unsafe impl<T : StaticTypeTag, U : TypeUniverse> Zeroable for CachedThreadSafeFieldTypeAndOffset<T, U> {}
-impl<T : StaticTypeTag, U : TypeUniverse> CachedThreadSafeFieldTypeAndOffset<T, U> {
+unsafe impl<T : ?Sized + StaticTypeTag, U : TypeUniverse> Zeroable for CachedThreadSafeFieldTypeAndOffset<T, U> {}
+impl<T : ?Sized + StaticTypeTag, U : TypeUniverse> CachedThreadSafeFieldTypeAndOffset<T, U> {
     pub fn get_field_type_index_offset_and_size(&self, field_name: &'static str) -> Option<(usize, usize, usize)> {
         // If there is no value cached, we have to calculate the value here and then release the has_value_cached to make the results visible to other threads
         if !self.has_value_cached.load(Ordering::Acquire) {
@@ -480,14 +480,14 @@ impl<T : StaticTypeTag, U : TypeUniverse> CachedThreadSafeFieldTypeAndOffset<T, 
         } else { None }
     }
     /// Returns the reference to the field with the given name from the base reference and the field name
-    pub fn get_field_ref<'a, F : ImplicitPtrMetadata>(&self, base_ref: &'a T, field_name: &'static str) -> Option<&'a F> {
+    pub fn get_field_ref<'a, F : ?Sized + ImplicitPtrMetadata>(&self, base_ref: &'a T, field_name: &'static str) -> Option<&'a F> {
         let (_, field_offset_bytes, _) = self.get_field_type_index_offset_and_size(field_name)?;
         let field_raw_ptr = unsafe { (base_ref as *const T as *const u8).byte_offset(field_offset_bytes as isize) };
         let field_ptr = ptr::from_raw_parts::<F>(field_raw_ptr, F::create_implicit_metadata());
         Some(unsafe { field_ptr.as_ref_unchecked::<'a>() })
     }
     /// Returns the mutable reference to the field with the given name from the base reference and the field name
-    pub fn get_field_mut<'a, F : ImplicitPtrMetadata>(&self, base_ref: &'a mut T, field_name: &'static str) -> Option<&'a mut F> {
+    pub fn get_field_mut<'a, F : ?Sized + ImplicitPtrMetadata>(&self, base_ref: &'a mut T, field_name: &'static str) -> Option<&'a mut F> {
         let (_, field_offset_bytes, _) = self.get_field_type_index_offset_and_size(field_name)?;
         let field_raw_ptr = unsafe { (base_ref as *mut T as *mut u8).byte_offset(field_offset_bytes as isize) };
         let field_ptr = ptr::from_raw_parts_mut::<F>(field_raw_ptr, F::create_implicit_metadata());
@@ -510,15 +510,15 @@ impl<T : StaticTypeTag, U : TypeUniverse> CachedThreadSafeFieldTypeAndOffset<T, 
 }
 
 #[derive(Debug, Default)]
-pub struct CachedThreadSafeEnumConstant<T : StaticTypeTag, U : TypeUniverse> {
+pub struct CachedThreadSafeEnumConstant<T : ?Sized + StaticTypeTag, U : TypeUniverse> {
     has_value_cached: AtomicBool,
     result_has_constant: AtomicBool,
     constant_value: AtomicU64,
     _phantom_enum_type: PhantomData<T>,
     _phantom_type_universe: PhantomData<U>,
 }
-unsafe impl<T : StaticTypeTag, U : TypeUniverse> Zeroable for CachedThreadSafeEnumConstant<T, U> {}
-impl<T : StaticTypeTag, U : TypeUniverse> CachedThreadSafeEnumConstant<T, U> {
+unsafe impl<T : ?Sized + StaticTypeTag, U : TypeUniverse> Zeroable for CachedThreadSafeEnumConstant<T, U> {}
+impl<T : ?Sized + StaticTypeTag, U : TypeUniverse> CachedThreadSafeEnumConstant<T, U> {
     /// Returns the value of the enum constant with the given name
     pub fn get_enum_constant_value(&self, constant_name: &'static str) -> Option<u64> {
         // If there is no value cached, we have to calculate the value here and then release the has_value_cached to make the results visible to other threads

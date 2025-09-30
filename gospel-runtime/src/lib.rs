@@ -75,7 +75,7 @@ macro_rules! gsb_codegen_implement_external_udt_field {
 #[macro_export]
 macro_rules! gsb_codegen_implement_local_udt_field {
     ($field_name:ident, $source_file_name:literal, $type_universe:ty, required, {$(#[$field_attributes:meta])*}, $field_type:ty) => {
-        paste! {
+        paste::paste! {
             $(#[$field_attributes])*
             pub fn $field_name<'a>(&'a self) -> &'a $field_type {
                 use generic_statics::{define_namespace, Namespace};
@@ -93,7 +93,7 @@ macro_rules! gsb_codegen_implement_local_udt_field {
         }
     };
     ($field_name:ident, $source_file_name:literal, $type_universe:ty, optional, {$(#[$field_attributes:meta])*}, $field_type:ty) => {
-        paste! {
+        paste::paste! {
             $(#[$field_attributes])*
             pub fn $field_name<'a>(&'a self) -> Option<&'a $field_type> {
                 use generic_statics::{define_namespace, Namespace};
@@ -109,7 +109,7 @@ macro_rules! gsb_codegen_implement_local_udt_field {
         }
     };
     ($field_name:ident, $source_file_name:literal, $type_universe:ty, required, {$(#[$field_attributes:meta])*}) => {
-        paste! {
+        paste::paste! {
             $(#[$field_attributes])*
             pub fn $field_name<'a>(&'a self) -> gospel_runtime::local_type_model::DynRef<'a, $type_universe> {
                 use generic_statics::{define_namespace, Namespace};
@@ -127,7 +127,7 @@ macro_rules! gsb_codegen_implement_local_udt_field {
         }
     };
     ($field_name:ident, $source_file_name:literal, $type_universe:ty, optional, {$(#[$field_attributes:meta])*}) => {
-        paste! {
+        paste::paste! {
             $(#[$field_attributes])*
             pub fn $field_name<'a>(&'a self) -> Option<gospel_runtime::local_type_model::DynRef<'a, $type_universe>> {
                 use generic_statics::{define_namespace, Namespace};
@@ -174,7 +174,7 @@ macro_rules! gsb_codegen_implement_local_enum_constant {
         pub fn $constant_name() -> Self {
             use generic_statics::{define_namespace, Namespace};
             define_namespace!(EnumConstantDescriptor);
-            let constant_raw_value = EnumConstantDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeEnumConstant<Self, $type_universe>>().get_enum_constant_value(self, $source_file_name)
+            let constant_raw_value = EnumConstantDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeEnumConstant<Self, $type_universe>>().get_enum_constant_value($source_file_name)
                 .unwrap_or_else(|| panic!("Enum missing constant: {}", $source_file_name));
             Self::sized_from_raw_discriminant(constant_raw_value)
         }
@@ -184,26 +184,26 @@ macro_rules! gsb_codegen_implement_local_enum_constant {
         pub fn $constant_name() -> Option<Self> {
             use generic_statics::{define_namespace, Namespace};
             define_namespace!(EnumConstantDescriptor);
-            let constant_raw_value = EnumConstantDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeEnumConstant<Self, $type_universe>>().get_enum_constant_value(self, $source_file_name)?;
+            let constant_raw_value = EnumConstantDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeEnumConstant<Self, $type_universe>>().get_enum_constant_value($source_file_name)?;
             Some(Self::sized_from_raw_discriminant(constant_raw_value))
         }
     };
     ($constant_name:ident, $source_file_name:literal, $type_universe:ty, boxed, required, {$(#[$field_attributes:meta])*}) => {
         $(#[$field_attributes])*
-        pub fn $constant_name<A : std::alloc:::Allocator>(alloc: A) -> Box<Self, A> {
+        pub fn $constant_name<A : std::alloc::Allocator>(alloc: A) -> Box<Self, A> {
             use generic_statics::{define_namespace, Namespace};
             define_namespace!(EnumConstantDescriptor);
-            let constant_raw_value = EnumConstantDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeEnumConstant<Self, $type_universe>>().get_enum_constant_value(self, $source_file_name)
+            let constant_raw_value = EnumConstantDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeEnumConstant<Self, $type_universe>>().get_enum_constant_value($source_file_name)
                 .unwrap_or_else(|| panic!("Enum missing constant: {}", $source_file_name));
             Self::boxed_from_raw_discriminant::<A>(constant_raw_value, alloc)
         }
     };
     ($constant_name:ident, $source_file_name:literal, $type_universe:ty, boxed, optional, {$(#[$field_attributes:meta])*}) => {
         $(#[$field_attributes])*
-        pub fn $constant_name<A : std::alloc:::Allocator>(alloc: A) -> Option<Box<Self, A>> {
+        pub fn $constant_name<A : std::alloc::Allocator>(alloc: A) -> Option<Box<Self, A>> {
             use generic_statics::{define_namespace, Namespace};
             define_namespace!(EnumConstantDescriptor);
-            let constant_raw_value = EnumConstantDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeEnumConstant<Self, $type_universe>>().get_enum_constant_value(self, $source_file_name)?;
+            let constant_raw_value = EnumConstantDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeEnumConstant<Self, $type_universe>>().get_enum_constant_value($source_file_name)?;
             Some(Self::boxed_from_raw_discriminant::<A>(constant_raw_value, alloc))
         }
     };
