@@ -1,4 +1,4 @@
-﻿use std::collections::HashMap;
+﻿use std::collections::{BTreeMap, HashMap};
 use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ImportStatement, ModuleImportStatementType, ModuleSourceFile, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression, MemberFunctionDeclaration, FunctionParameterDeclaration, TopLevelDeclaration, EnumStatement, EnumConstantDeclaration, BoolConstantExpression, StaticCastExpression, CompilerBuiltinExpression, SwitchExpressionCase, SwitchExpressionDefaultCase, SwitchExpression, FunctionPointerExpression};
 use crate::lex_util::{get_line_number_and_offset_from_index, parse_integer_literal, ParsedIntegerLiteral};
 use anyhow::{anyhow, bail};
@@ -288,14 +288,14 @@ fn parser_parse_integer_literal(lex: &mut Lexer<CompilerToken>) -> Option<Parsed
 #[derive(Debug, Clone)]
 struct CompilerTokenWithContext<'a> {
     token: CompilerToken,
-    doc_comment: Option<&'a String>,
+    attributes: Option<&'a BTreeMap<String, Vec<String>>>,
 }
 
 #[derive(Debug, Clone)]
 struct CompilerLexerContext<'a> {
     file_name: &'a str,
     lex: Lexer<'a, CompilerToken>,
-    token_start_doc_lookup: &'a HashMap<usize, String>,
+    token_start_attribute_lookup: &'a HashMap<usize, BTreeMap<String, Vec<String>>>,
     buffered_next_token: Option<Option<CompilerTokenWithContext<'a>>>,
 }
 impl<'a> CompilerLexerContext<'a> {
@@ -320,8 +320,8 @@ impl<'a> CompilerLexerContext<'a> {
             let new_buffered_next_token = match self.lex.next() {
                 Some(wrapped_token) => match wrapped_token {
                     Ok(token) => {
-                        let doc_comment = self.token_start_doc_lookup.get(&self.lex.span().start);
-                        Some(CompilerTokenWithContext{token, doc_comment})
+                        let attributes = self.token_start_attribute_lookup.get(&self.lex.span().start);
+                        Some(CompilerTokenWithContext{token, attributes})
                     },
                     Err(_) => { return Err(self.fail("Failed to parse next token")); }
                 },
@@ -337,8 +337,8 @@ impl<'a> CompilerLexerContext<'a> {
         } else if let Some(wrapped_token) = self.lex.next() {
             match wrapped_token {
                 Ok(token) => {
-                    let doc_comment = self.token_start_doc_lookup.get(&self.lex.span().start);
-                    Ok(Some(CompilerTokenWithContext{token, doc_comment}))
+                    let attributes = self.token_start_attribute_lookup.get(&self.lex.span().start);
+                    Ok(Some(CompilerTokenWithContext{token, attributes}))
                 },
                 Err(_) => Err(self.fail("Failed to parse next token"))
             }
@@ -353,8 +353,8 @@ impl<'a> CompilerLexerContext<'a> {
     fn peek(&mut self) -> anyhow::Result<CompilerToken> {
         self.peek_or_eof()?.ok_or_else(|| self.fail("Expected a token, received <EOF>"))
     }
-    fn peek_doc_comment(&mut self) -> anyhow::Result<Option<&'a String>> {
-        Ok(self.peek_or_eof_with_context()?.ok_or_else(|| self.fail("Expected a token, received <EOF>"))?.doc_comment)
+    fn peek_attributes(&mut self) -> anyhow::Result<BTreeMap<String, Vec<String>>> {
+        Ok(self.peek_or_eof_with_context()?.ok_or_else(|| self.fail("Expected a token, received <EOF>"))?.attributes.cloned().unwrap_or_default())
     }
     fn next(&mut self) -> anyhow::Result<CompilerToken> {
         self.next_or_eof()?.ok_or_else(|| self.fail("Expected a token, received <EOF>"))
@@ -482,7 +482,7 @@ enum AssociativeExpressionGroupOperand {
 #[derive(Debug, Clone)]
 struct CompilerPreprocessorResult {
     processed_source_code: String,
-    token_start_doc_lookup: HashMap<usize, String>,
+    token_start_attribute_lookup: HashMap<usize, BTreeMap<String, Vec<String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -495,13 +495,12 @@ impl<'a> CompilerParserInstance<'a> {
     }
     // cuh
     fn preprocess_input_text(input: &str) -> anyhow::Result<CompilerPreprocessorResult> {
-        let comment_regex = Regex::new(r#"/\*((?:(?!\*/)[\S\s])*)\*/|//(.*)"#).map_err(|x| anyhow!(x.to_string()))?;
-        let mut doc_comments_with_end_offsets: Vec<(Vec<String>, usize)> = Vec::new();
+        let attribute_regex = Regex::new(r#"/\*((?:(?!\*/)[\S\s])*)\*/|//(.*)|\[\[[ \t]*([A-Za-z][A-Za-z0-9_$]*)[ \t]*(?:\([ \t]*([A-Za-z][A-Za-z0-9_$]*|[0-9]+|(?:"(?:[^"\\]|(?:\\")|(?:\\\\))*")|)[ \t]*\))?\]\]"#).map_err(|x| anyhow!(x.to_string()))?;
+        let mut attributes_with_end_offsets: Vec<(String, String, usize)> = Vec::new();
 
-        let processed_source_code = comment_regex.replace_all(input, |captures: &Captures| -> String {
-            // Save documentation comments so we can associate them with parsed output later
-            let full_comment_match = captures.get(0).unwrap();
-            if full_comment_match.as_str().starts_with("/**") {
+        let processed_source_code = attribute_regex.replace_all(input, |captures: &Captures| -> String {
+            let full_attribute_match = captures.get(0).unwrap();
+            if full_attribute_match.as_str().starts_with("/**") {
                 // Multi-line doc comment. We need to split output into lines, possibly remove preceding * characters from each, and them trim start again if we removed *
                 let raw_comment_text = captures.get(1).unwrap();
                 let comment_lines_text: Vec<String> = raw_comment_text.as_str().lines()
@@ -509,12 +508,24 @@ impl<'a> CompilerParserInstance<'a> {
                     .map(|x| if x.starts_with('*') { x[1..].trim_ascii_start().to_string() } else { x.to_string() })
                     .filter(|x| !x.is_empty())
                     .collect();
-                doc_comments_with_end_offsets.push((comment_lines_text, full_comment_match.end()));
-            } else if full_comment_match.as_str().starts_with("///") {
+                for comment_line in comment_lines_text {
+                    attributes_with_end_offsets.push((String::from("doc"), comment_line, full_attribute_match.end()));
+                }
+            } else if full_attribute_match.as_str().starts_with("///") {
                 // Single-line doc comment. We need to remove the first character and trim spaces
                 let raw_comment_text = captures.get(2).unwrap();
-                let comment_lines_text = vec![raw_comment_text.as_str()[1..].trim_ascii().to_string()];
-                doc_comments_with_end_offsets.push((comment_lines_text, full_comment_match.end()));
+                let comment_line = raw_comment_text.as_str()[1..].trim_ascii().to_string();
+                // Doc comments are synthetic "doc" attributes. [[doc("Test")]] is identical to
+                attributes_with_end_offsets.push((String::from("doc"), comment_line, full_attribute_match.end()));
+            } else if full_attribute_match.as_str().starts_with("[[") && captures.get(3).is_some() {
+                // This is an attribute definition, possibly in simple form with no value
+                let attribute_name = captures.get(3).unwrap().as_str().to_string();
+                let raw_attribute_value = captures.get(4).map(|x| x.as_str()).unwrap_or("").to_string();
+                // If attribute value is a string literal, we need to unescape it
+                let attribute_value = if raw_attribute_value.starts_with('"') {
+                    raw_attribute_value[1..(raw_attribute_value.len() - 1)].replace("\\\\", "\\")
+                } else { raw_attribute_value };
+                attributes_with_end_offsets.push((attribute_name, attribute_value, full_attribute_match.end()));
             }
 
             // We cannot simply replace comments with empty string because that would shift the line numbers and offsets, so we preserve the character subset ignored by the parser and replace everything else with whitespaces
@@ -531,16 +542,14 @@ impl<'a> CompilerParserInstance<'a> {
         }).to_string();
 
         // Now we have processed source code, map each comment to the start of the token it belongs to. Comments that do not belong to a token are discarded
-        let mut sparse_token_start_doc_lookup: HashMap<usize, Vec<String>> = HashMap::new();
-        for (comment_lines, comment_end_offset) in doc_comments_with_end_offsets {
-            let comment_substr = &processed_source_code[comment_end_offset..];
-            if let Some(next_token_start_character) = comment_substr.find(|x| !Self::is_lexer_ignored_character(x)) {
-                sparse_token_start_doc_lookup.entry(comment_end_offset + next_token_start_character).or_default().extend(comment_lines.into_iter());
+        let mut token_start_attribute_lookup: HashMap<usize, BTreeMap<String, Vec<String>>> = HashMap::new();
+        for (attribute_name, attribute_value, attribute_end_offset) in attributes_with_end_offsets {
+            let attribute_substr = &processed_source_code[attribute_end_offset..];
+            if let Some(next_token_start_character) = attribute_substr.find(|x| !Self::is_lexer_ignored_character(x)) {
+                token_start_attribute_lookup.entry(attribute_end_offset + next_token_start_character).or_default().entry(attribute_name).or_default().push(attribute_value);
             }
         }
-        let token_start_doc_lookup: HashMap<usize, String> = sparse_token_start_doc_lookup.into_iter()
-            .map(|(token_start_offset, doc_lines)| (token_start_offset, doc_lines.join("\n"))).collect();
-        Ok(CompilerPreprocessorResult{processed_source_code, token_start_doc_lookup})
+        Ok(CompilerPreprocessorResult{processed_source_code, token_start_attribute_lookup})
     }
     fn take_parse_case(self) -> ExactParseCase<'a, ()> {
         ExactParseCase{ parser: self, data: () }
@@ -1032,7 +1041,7 @@ impl<'a> CompilerParserInstance<'a> {
         // Consume the scope exit token now
         parser.ctx.discard_next()?;
         let result_expression = StructStatement{ declarations, source_context, template_declaration: None, access_specifier: None, struct_kind,
-            alignment_expression: None, member_pack_expression: None, name: None, doc_comment: None, base_class_expressions: Vec::new() };
+            alignment_expression: None, member_pack_expression: None, name: None, attributes: BTreeMap::new(), base_class_expressions: Vec::new() };
         Ok(AmbiguousExpression::unambiguous(parser, Expression::StructDeclarationExpression(Box::new(result_expression))))
     }
     fn parse_conditional_statement(mut self) -> anyhow::Result<ExactStatementCase<'a>> {
@@ -1639,8 +1648,8 @@ impl<'a> CompilerParserInstance<'a> {
         // Associative expression group is the highest level expression
         self.parse_expression_affinity_lowest()
     }
-    fn parse_template_declaration(mut self) -> anyhow::Result<AmbiguousParsingResult<'a, (TemplateDeclaration, Option<String>)>> {
-        let doc_comment = self.ctx.peek_doc_comment()?.cloned();
+    fn parse_template_declaration(mut self) -> anyhow::Result<AmbiguousParsingResult<'a, (TemplateDeclaration, BTreeMap<String, Vec<String>>)>> {
+        let attributes = self.ctx.peek_attributes()?;
         let template_token = self.ctx.next()?;
         self.ctx.check_token(template_token, CompilerToken::Template)?;
 
@@ -1664,7 +1673,7 @@ impl<'a> CompilerParserInstance<'a> {
             let arguments: Vec<TemplateArgument> = raw_arguments.into_iter().map(|((value_type, name, source_context), default_value)| {
                 TemplateArgument{ name, value_type, default_value, source_context }
             }).collect();
-            (TemplateDeclaration{arguments}, doc_comment.clone())
+            (TemplateDeclaration{arguments}, attributes.clone())
         }))
     }
     fn parse_import_statement(mut self) -> anyhow::Result<ExactTopLevelDeclarationCase<'a>> {
@@ -1710,8 +1719,8 @@ impl<'a> CompilerParserInstance<'a> {
         let result_statement = ImportStatement {statement_type: ModuleImportStatementType::QualifiedImport(namespace_or_qualified_import), source_context};
         Ok(ExactTopLevelDeclarationCase::create(self, TopLevelDeclaration::ImportStatement(result_statement)))
     }
-    fn parse_input_statement(mut self, access_specifier: Option<DeclarationAccessSpecifier>, external_doc_comment: Option<Option<String>>) -> anyhow::Result<ExactTopLevelDeclarationCase<'a>> {
-        let doc_comment = external_doc_comment.unwrap_or(self.ctx.peek_doc_comment()?.cloned());
+    fn parse_input_statement(mut self, access_specifier: Option<DeclarationAccessSpecifier>, external_attributes: Option<BTreeMap<String, Vec<String>>>) -> anyhow::Result<ExactTopLevelDeclarationCase<'a>> {
+        let attributes = external_attributes.unwrap_or(self.ctx.peek_attributes()?);
         let statement_token = self.ctx.next()?;
         self.ctx.check_token(statement_token, CompilerToken::Input)?;
         let source_context = self.ctx.source_context();
@@ -1728,7 +1737,7 @@ impl<'a> CompilerParserInstance<'a> {
                 parser.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
 
                 // Input variable declaration with default value
-                let result_statement = InputStatement{source_context: source_context.clone(), global_name: global_name.clone(), access_specifier, value_type: value_type.clone(), default_value: Some(expression), doc_comment: doc_comment.clone()};
+                let result_statement = InputStatement{source_context: source_context.clone(), global_name: global_name.clone(), access_specifier, value_type: value_type.clone(), default_value: Some(expression), attributes: attributes.clone()};
                 Ok(AmbiguousParsingResult::unambiguous(parser, TopLevelDeclaration::InputStatement(result_statement)))
             })?.disambiguate()?)
         } else {
@@ -1737,25 +1746,25 @@ impl<'a> CompilerParserInstance<'a> {
             self.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
 
             // Input variable declaration with no default value
-            let result_statement = InputStatement{source_context, global_name, access_specifier, value_type: value_type.clone(), default_value: None, doc_comment: doc_comment.clone()};
+            let result_statement = InputStatement{source_context, global_name, access_specifier, value_type: value_type.clone(), default_value: None, attributes: attributes.clone()};
             Ok(ExactTopLevelDeclarationCase::create(self, TopLevelDeclaration::InputStatement(result_statement)))
         }
     }
-    fn parse_constexpr_statement(mut self, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>, external_doc_comment: Option<Option<String>>) -> anyhow::Result<ExactParseCase<'a, DataStatement>> {
-        let doc_comment = external_doc_comment.unwrap_or(self.ctx.peek_doc_comment()?.cloned());
+    fn parse_constexpr_statement(mut self, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>, external_attributes: Option<BTreeMap<String, Vec<String>>>) -> anyhow::Result<ExactParseCase<'a, DataStatement>> {
+        let attributes = external_attributes.unwrap_or(self.ctx.peek_attributes()?);
         self.ctx.discard_next()?;
         let value_type = self.parse_expression_value_type()?;
         if value_type == ExpressionValueType::Typename {
             return Err(self.ctx.fail("Typename not allowed as constexpr declaration type. Use type alias instead"));
         }
-        self.parse_data_statement_internal(value_type, template_declaration, access_specifier, doc_comment)
+        self.parse_data_statement_internal(value_type, template_declaration, access_specifier, attributes)
     }
-    fn parse_type_statement(mut self, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>, external_doc_comment: Option<Option<String>>) -> anyhow::Result<ExactParseCase<'a, DataStatement>> {
-        let doc_comment = external_doc_comment.unwrap_or(self.ctx.peek_doc_comment()?.cloned());
+    fn parse_type_statement(mut self, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>, external_attributes: Option<BTreeMap<String, Vec<String>>>) -> anyhow::Result<ExactParseCase<'a, DataStatement>> {
+        let attributes = external_attributes.unwrap_or(self.ctx.peek_attributes()?);
         self.ctx.discard_next()?;
-        self.parse_data_statement_internal(ExpressionValueType::Typename, template_declaration, access_specifier, doc_comment)
+        self.parse_data_statement_internal(ExpressionValueType::Typename, template_declaration, access_specifier, attributes)
     }
-    fn parse_data_statement_internal(mut self, value_type: ExpressionValueType, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>, doc_comment: Option<String>) -> anyhow::Result<ExactParseCase<'a, DataStatement>> {
+    fn parse_data_statement_internal(mut self, value_type: ExpressionValueType, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>, attributes: BTreeMap<String, Vec<String>>) -> anyhow::Result<ExactParseCase<'a, DataStatement>> {
         let source_context = self.ctx.source_context();
         let data_name_token = self.ctx.next()?;
         let name = self.ctx.check_identifier(data_name_token)?;
@@ -1770,7 +1779,7 @@ impl<'a> CompilerParserInstance<'a> {
             parser.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
             Ok(AmbiguousExpression::unambiguous(parser, expression))
         })?.disambiguate()?;
-        Ok(initializer.map_data(|x| DataStatement { source_context: source_context.clone(), template_declaration, access_specifier, value_type, name, initializer: x, doc_comment: doc_comment.clone() }))
+        Ok(initializer.map_data(|x| DataStatement { source_context: source_context.clone(), template_declaration, access_specifier, value_type, name, initializer: x, attributes: attributes.clone() }))
     }
     fn parse_struct_conditional_declaration(mut self) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
         let conditional_statement_token = self.ctx.next()?;
@@ -1826,7 +1835,7 @@ impl<'a> CompilerParserInstance<'a> {
         }
     }
     fn parse_struct_member_declaration(mut self) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
-        let doc_comment = self.ctx.peek_doc_comment()?.cloned();
+        let attributes = self.ctx.peek_attributes()?;
         let source_context = self.ctx.source_context();
         self.parse_optional_struct_conditional_declaration(CompilerToken::Alignas)?
             .map_result(|parser, alignment_expression| {
@@ -1851,7 +1860,7 @@ impl<'a> CompilerParserInstance<'a> {
                         })?.disambiguate()?
                         .map_data(|array_size_expression| {
                             let result_declaration = MemberDeclaration { source_context: source_context.clone(), alignment_expression: alignment_expression.clone(),
-                                member_type_expression, name, array_size_expression: Some(array_size_expression), bitfield_width_expression: None, doc_comment: doc_comment.clone() };
+                                member_type_expression, name, array_size_expression: Some(array_size_expression), bitfield_width_expression: None, attributes: attributes.clone() };
                             StructInnerDeclaration::MemberDeclaration(Box::new(result_declaration))
                         }).to_parse_result())
                 } else if parsed_next_token == CompilerToken::BaseClass {
@@ -1865,14 +1874,14 @@ impl<'a> CompilerParserInstance<'a> {
                         })?.disambiguate()?
                         .map_data(|bitfield_width_expression| {
                             let result_declaration = MemberDeclaration { source_context: source_context.clone(), alignment_expression: alignment_expression.clone(), member_type_expression, name,
-                                array_size_expression: None, bitfield_width_expression: Some(bitfield_width_expression), doc_comment: doc_comment.clone() };
+                                array_size_expression: None, bitfield_width_expression: Some(bitfield_width_expression), attributes: attributes.clone() };
                             StructInnerDeclaration::MemberDeclaration(Box::new(result_declaration))
                         }).to_parse_result())
                 } else {
                     // This is a normal member, not a bitfield or an array
                     parser.ctx.check_token(parsed_next_token, CompilerToken::Terminator)?;
                     let result_declaration = MemberDeclaration { source_context: source_context.clone(), alignment_expression: alignment_expression.clone(), member_type_expression, name,
-                        array_size_expression: None, bitfield_width_expression: None, doc_comment: doc_comment.clone() };
+                        array_size_expression: None, bitfield_width_expression: None, attributes: attributes.clone() };
                     Ok(ExactStructInnerDeclarationCase::create(parser, StructInnerDeclaration::MemberDeclaration(Box::new(result_declaration))).to_parse_result())
                 }
             })?.disambiguate()
@@ -1893,7 +1902,7 @@ impl<'a> CompilerParserInstance<'a> {
         let result_statement = BlockDeclaration{ source_context, declarations };
         Ok(ExactStructInnerDeclarationCase::create(current_parser, StructInnerDeclaration::BlockDeclaration(Box::new(result_statement))))
     }
-    fn parse_regular_virtual_function_declaration(self, source_context: &ASTSourceContext, doc_comment: Option<String>) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
+    fn parse_regular_virtual_function_declaration(self, source_context: &ASTSourceContext, attributes: BTreeMap<String, Vec<String>>) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
         self.parse_complete_expression()?.flat_map_result(|mut parser, return_value_type| {
             let function_name_token = parser.ctx.next()?;
             let function_name = parser.ctx.check_identifier(function_name_token)?;
@@ -1920,11 +1929,11 @@ impl<'a> CompilerParserInstance<'a> {
             parser.ctx.check_token(statement_terminator_token, CompilerToken::Terminator)?;
 
             let result_declaration = MemberFunctionDeclaration {name: function_name, return_value_type, parameters: argument_list, source_context: source_context.clone(),
-                constant: is_function_constant, is_override: is_function_override, doc_comment: doc_comment.clone()};
+                constant: is_function_constant, is_override: is_function_override, attributes: attributes.clone()};
             Ok(AmbiguousParsingResult::unambiguous(parser, StructInnerDeclaration::FunctionDeclaration(Box::new(result_declaration))))
         })?.disambiguate()
     }
-    fn parse_destructor_virtual_function_declaration(mut self, source_context: &ASTSourceContext, doc_comment: Option<String>) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
+    fn parse_destructor_virtual_function_declaration(mut self, source_context: &ASTSourceContext, attributes: BTreeMap<String, Vec<String>>) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
         let destructor_token = self.ctx.next()?;
         self.ctx.check_token(destructor_token, CompilerToken::BitwiseInverse)?;
 
@@ -1944,29 +1953,29 @@ impl<'a> CompilerParserInstance<'a> {
 
         let return_value_type = PrimitiveTypeExpression{primitive_type: PrimitiveType::Void, source_context: source_context.clone()};
         let result_declaration = MemberFunctionDeclaration {name: function_name, return_value_type: Expression::PrimitiveTypeExpression(Box::new(return_value_type)),
-            parameters: Vec::new(), constant: false, is_override: is_function_override, doc_comment: doc_comment.clone(), source_context: source_context.clone()};
+            parameters: Vec::new(), constant: false, is_override: is_function_override, attributes: attributes.clone(), source_context: source_context.clone()};
         Ok(ExactStructInnerDeclarationCase::create(self, StructInnerDeclaration::FunctionDeclaration(Box::new(result_declaration))))
     }
     fn parse_virtual_function_declaration(mut self) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
-        let doc_comment = self.ctx.peek_doc_comment()?.cloned();
+        let attributes = self.ctx.peek_attributes()?;
         let virtual_function_token = self.ctx.next()?;
         self.ctx.check_token(virtual_function_token, CompilerToken::Virtual)?;
         let source_context = self.ctx.source_context();
 
         if self.ctx.peek()? == CompilerToken::BitwiseInverse {
-            self.parse_destructor_virtual_function_declaration(&source_context, doc_comment)
-        } else { self.parse_regular_virtual_function_declaration(&source_context, doc_comment) }
+            self.parse_destructor_virtual_function_declaration(&source_context, attributes)
+        } else { self.parse_regular_virtual_function_declaration(&source_context, attributes) }
     }
-    fn parse_templated_access_specifier_struct_inner_declaration(mut self, template_declaration: TemplateDeclaration, access_specifier: DeclarationAccessSpecifier, doc_comment: Option<String>) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
+    fn parse_templated_access_specifier_struct_inner_declaration(mut self, template_declaration: TemplateDeclaration, access_specifier: DeclarationAccessSpecifier, attributes: BTreeMap<String, Vec<String>>) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
         // discard access specifier token
         self.ctx.discard_next()?;
         let statement_token = self.ctx.peek()?;
         match statement_token {
-            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(Some(template_declaration), Some(access_specifier), Some(doc_comment))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
-            CompilerToken::Type => Ok(self.parse_type_statement(Some(template_declaration), Some(access_specifier), Some(doc_comment))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
-            CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, Some(template_declaration), Some(access_specifier), Some(doc_comment))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
-            CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, Some(template_declaration), Some(access_specifier), Some(doc_comment))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
-            CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, Some(template_declaration), Some(access_specifier), Some(doc_comment))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
+            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(Some(template_declaration), Some(access_specifier), Some(attributes))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+            CompilerToken::Type => Ok(self.parse_type_statement(Some(template_declaration), Some(access_specifier), Some(attributes))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+            CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, Some(template_declaration), Some(access_specifier), Some(attributes))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
+            CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, Some(template_declaration), Some(access_specifier), Some(attributes))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
+            CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, Some(template_declaration), Some(access_specifier), Some(attributes))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
             _ => Err(self.ctx.fail(format!("Expected data or nested struct declaration following template declaration and access specifier, got {}", statement_token))),
         }
     }
@@ -1996,16 +2005,16 @@ impl<'a> CompilerParserInstance<'a> {
     }
     fn parse_access_specifier_struct_inner_declaration(mut self, access_specifier: DeclarationAccessSpecifier) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
         // discard access specifier token
-        let doc_comment = self.ctx.peek_doc_comment()?.cloned();
+        let attributes = self.ctx.peek_attributes()?;
         self.ctx.discard_next()?;
         let statement_token = self.ctx.peek()?;
         match statement_token {
             // data and struct declarations
-            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(None, Some(access_specifier), Some(doc_comment))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
-            CompilerToken::Type => Ok(self.parse_type_statement(None, Some(access_specifier), Some(doc_comment))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
-            CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, None, Some(access_specifier), Some(doc_comment))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
-            CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, None, Some(access_specifier), Some(doc_comment))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
-            CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, None, Some(access_specifier), Some(doc_comment))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
+            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(None, Some(access_specifier), Some(attributes))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+            CompilerToken::Type => Ok(self.parse_type_statement(None, Some(access_specifier), Some(attributes))?.map_data(|x| StructInnerDeclaration::DataDeclaration(Box::new(x)))),
+            CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, None, Some(access_specifier), Some(attributes))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
+            CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, None, Some(access_specifier), Some(attributes))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
+            CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, None, Some(access_specifier), Some(attributes))?.map_data(|x| StructInnerDeclaration::NestedStructDeclaration(Box::new(x)))),
             _ => Err(self.ctx.fail(format!("Expected data or nested struct declaration following access specifier, got {}", statement_token))),
         }
     }
@@ -2047,8 +2056,8 @@ impl<'a> CompilerParserInstance<'a> {
         })?.disambiguate()?)
     }
     fn parse_struct_statement(mut self, struct_kind: UserDefinedTypeKind, template_declaration: Option<TemplateDeclaration>,
-                              access_specifier: Option<DeclarationAccessSpecifier>, external_doc_comment: Option<Option<String>>) -> anyhow::Result<ExactParseCase<'a, StructStatement>> {
-        let doc_comment = external_doc_comment.unwrap_or(self.ctx.peek_doc_comment()?.cloned());
+                              access_specifier: Option<DeclarationAccessSpecifier>, external_attributes: Option<BTreeMap<String, Vec<String>>>) -> anyhow::Result<ExactParseCase<'a, StructStatement>> {
+        let attributes = external_attributes.unwrap_or(self.ctx.peek_attributes()?);
         self.ctx.discard_next()?;
         let source_context = self.ctx.source_context();
         let member_pack_expression_case = self.parse_optional_struct_conditional_declaration(CompilerToken::MemberPack)?;
@@ -2100,12 +2109,12 @@ impl<'a> CompilerParserInstance<'a> {
             current_parser.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
 
             let result_statement = StructStatement{ source_context: source_context.clone(), template_declaration: template_declaration.clone(), access_specifier,
-                struct_kind, alignment_expression, member_pack_expression, name: Some(name), base_class_expressions, declarations, doc_comment: doc_comment.clone() };
+                struct_kind, alignment_expression, member_pack_expression, name: Some(name), base_class_expressions, declarations, attributes: attributes.clone() };
             Ok(AmbiguousParsingResult::unambiguous(current_parser, result_statement))
         })?.disambiguate()
     }
     fn parse_enum_constant(mut self) -> anyhow::Result<AmbiguousParsingResult<'a, EnumConstantDeclaration>> {
-        let doc_comment = self.ctx.peek_doc_comment()?.cloned();
+        let attributes = self.ctx.peek_attributes()?;
         let constant_name_token = self.ctx.next()?;
         let constant_name = self.ctx.check_optional_identifier(constant_name_token)?;
         let source_context = self.ctx.source_context();
@@ -2118,11 +2127,11 @@ impl<'a> CompilerParserInstance<'a> {
                 if parser.ctx.peek()? == CompilerToken::If {
                     let condition_expression = parser.parse_postfix_conditional_expression()?;
                     let result_declaration = EnumConstantDeclaration{condition_expression: Some(condition_expression.data), name: constant_name.clone(),
-                        value_expression: Some(value_expression), doc_comment: doc_comment.clone(), source_context: source_context.clone()};
+                        value_expression: Some(value_expression), attributes: attributes.clone(), source_context: source_context.clone()};
                     Ok(AmbiguousParsingResult::unambiguous(condition_expression.parser, result_declaration))
                 } else {
                     let result_declaration = EnumConstantDeclaration{condition_expression: None, name: constant_name.clone(), value_expression: Some(value_expression),
-                        doc_comment: doc_comment.clone(), source_context: source_context.clone()};
+                        attributes: attributes.clone(), source_context: source_context.clone()};
                     Ok(AmbiguousParsingResult::unambiguous(parser, result_declaration))
                 }
             })
@@ -2131,18 +2140,18 @@ impl<'a> CompilerParserInstance<'a> {
             let condition_expression = self.parse_postfix_conditional_expression()?;
 
             let result_declaration = EnumConstantDeclaration{condition_expression: Some(condition_expression.data), name: constant_name, value_expression: None,
-                doc_comment: doc_comment.clone(), source_context};
+                attributes: attributes.clone(), source_context};
             Ok(AmbiguousParsingResult::unambiguous(condition_expression.parser, result_declaration))
         } else {
             // This is an enum constant with no explicit value and no conditional postfix
             let result_declaration = EnumConstantDeclaration{condition_expression: None, name: constant_name, value_expression: None,
-                doc_comment: doc_comment.clone(), source_context};
+                attributes: attributes.clone(), source_context};
             Ok(AmbiguousParsingResult::unambiguous(self, result_declaration))
         }
     }
     fn parse_enum_statement(mut self, template_declaration: Option<TemplateDeclaration>, access_specifier: Option<DeclarationAccessSpecifier>,
-                            external_doc_comment: Option<Option<String>>) -> anyhow::Result<ExactParseCase<'a, EnumStatement>> {
-        let doc_comment = external_doc_comment.unwrap_or(self.ctx.peek_doc_comment()?.cloned());
+                            external_attributes: Option<BTreeMap<String, Vec<String>>>) -> anyhow::Result<ExactParseCase<'a, EnumStatement>> {
+        let attributes = external_attributes.unwrap_or(self.ctx.peek_attributes()?);
         self.ctx.discard_next()?;
         let enum_kind = if self.ctx.peek()? == CompilerToken::Class {
             self.ctx.discard_next()?;
@@ -2204,7 +2213,7 @@ impl<'a> CompilerParserInstance<'a> {
             current_parser.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
 
             let result_statement = EnumStatement{template_declaration: template_declaration.clone(), access_specifier: access_specifier.clone(),
-                enum_kind, underlying_type_expression, name: Some(name.clone()), constants, doc_comment: doc_comment.clone(), source_context: source_context.clone()};
+                enum_kind, underlying_type_expression, name: Some(name.clone()), constants, attributes: attributes.clone(), source_context: source_context.clone()};
             Ok(AmbiguousParsingResult::unambiguous(current_parser, result_statement))
         })?.disambiguate()
     }
@@ -2237,18 +2246,18 @@ impl<'a> CompilerParserInstance<'a> {
         self.ctx.check_token(statement_token, CompilerToken::Terminator)?;
         Ok(ExactTopLevelDeclarationCase::create(self, TopLevelDeclaration::EmptyStatement))
     }
-    fn parse_templated_access_specifier_top_level_statement(mut self, template_declaration: TemplateDeclaration, access_specifier: DeclarationAccessSpecifier, doc_comment: Option<String>)  -> anyhow::Result<ExactTopLevelDeclarationCase<'a>> {
+    fn parse_templated_access_specifier_top_level_statement(mut self, template_declaration: TemplateDeclaration, access_specifier: DeclarationAccessSpecifier, attributes: BTreeMap<String, Vec<String>>)  -> anyhow::Result<ExactTopLevelDeclarationCase<'a>> {
         // discard access specifier token
         self.ctx.discard_next()?;
         let statement_token = self.ctx.peek()?;
         Ok(match statement_token {
             // data and struct declarations
-            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(Some(template_declaration), Some(access_specifier), Some(doc_comment))?.map_data(|x| TopLevelDeclaration::DataStatement(x))),
-            CompilerToken::Type => Ok(self.parse_type_statement(Some(template_declaration), Some(access_specifier), Some(doc_comment))?.map_data(|x| TopLevelDeclaration::DataStatement(x))),
-            CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, Some(template_declaration), Some(access_specifier), Some(doc_comment))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
-            CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, Some(template_declaration), Some(access_specifier), Some(doc_comment))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
-            CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, Some(template_declaration), Some(access_specifier), Some(doc_comment))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
-            CompilerToken::Enum => Ok(self.parse_enum_statement(Some(template_declaration), Some(access_specifier), Some(doc_comment))?.map_data(|x| TopLevelDeclaration::EnumStatement(x))),
+            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(Some(template_declaration), Some(access_specifier), Some(attributes))?.map_data(|x| TopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Type => Ok(self.parse_type_statement(Some(template_declaration), Some(access_specifier), Some(attributes))?.map_data(|x| TopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, Some(template_declaration), Some(access_specifier), Some(attributes))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+            CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, Some(template_declaration), Some(access_specifier), Some(attributes))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+            CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, Some(template_declaration), Some(access_specifier), Some(attributes))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+            CompilerToken::Enum => Ok(self.parse_enum_statement(Some(template_declaration), Some(access_specifier), Some(attributes))?.map_data(|x| TopLevelDeclaration::EnumStatement(x))),
             _ => Err(self.ctx.fail(format!("Expected data or struct declaration following template declaration and access specifier, got {}", statement_token))),
         }?)
     }
@@ -2273,17 +2282,17 @@ impl<'a> CompilerParserInstance<'a> {
     }
     fn parse_access_specifier_top_level_statement(mut self, access_specifier: DeclarationAccessSpecifier) -> anyhow::Result<ExactTopLevelDeclarationCase<'a>> {
         // discard access specifier token
-        let doc_comment = self.ctx.peek_doc_comment()?.cloned();
+        let attributes = self.ctx.peek_attributes()?;
         self.ctx.discard_next()?;
         let statement_token = self.ctx.peek()?;
         match statement_token {
-            CompilerToken::Input => self.parse_input_statement(Some(access_specifier), Some(doc_comment)),
-            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(None, Some(access_specifier), Some(doc_comment))?.map_data(|x| TopLevelDeclaration::DataStatement(x))),
-            CompilerToken::Type => Ok(self.parse_type_statement(None, Some(access_specifier), Some(doc_comment))?.map_data(|x| TopLevelDeclaration::DataStatement(x))),
-            CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, None, Some(access_specifier), Some(doc_comment))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
-            CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, None, Some(access_specifier), Some(doc_comment))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
-            CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, None, Some(access_specifier), Some(doc_comment))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
-            CompilerToken::Enum => Ok(self.parse_enum_statement(None, Some(access_specifier), Some(doc_comment))?.map_data(|x| TopLevelDeclaration::EnumStatement(x))),
+            CompilerToken::Input => self.parse_input_statement(Some(access_specifier), Some(attributes)),
+            CompilerToken::Constexpr => Ok(self.parse_constexpr_statement(None, Some(access_specifier), Some(attributes))?.map_data(|x| TopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Type => Ok(self.parse_type_statement(None, Some(access_specifier), Some(attributes))?.map_data(|x| TopLevelDeclaration::DataStatement(x))),
+            CompilerToken::Struct => Ok(self.parse_struct_statement(UserDefinedTypeKind::Struct, None, Some(access_specifier), Some(attributes))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+            CompilerToken::Class => Ok(self.parse_struct_statement(UserDefinedTypeKind::Class, None, Some(access_specifier), Some(attributes))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+            CompilerToken::Union => Ok(self.parse_struct_statement(UserDefinedTypeKind::Union, None, Some(access_specifier), Some(attributes))?.map_data(|x| TopLevelDeclaration::StructStatement(x))),
+            CompilerToken::Enum => Ok(self.parse_enum_statement(None, Some(access_specifier), Some(attributes))?.map_data(|x| TopLevelDeclaration::EnumStatement(x))),
             CompilerToken::Namespace => Ok(self.parse_namespace_statement(Some(access_specifier))?.map_data(|x| TopLevelDeclaration::NamespaceStatement(x))),
             _ => Err(self.ctx.fail(format!("Expected extern, data or struct declaration following access specifier, got {}", statement_token))),
         }
@@ -2958,7 +2967,7 @@ impl<'a> CompilerParserInstance<'a> {
 pub fn parse_source_file(file_name: &str, contents: &str) -> anyhow::Result<ModuleSourceFile> {
     let processed_input = CompilerParserInstance::preprocess_input_text(contents)?;
     let parser = CompilerParserInstance { ctx: CompilerLexerContext{ file_name, lex: CompilerToken::lexer(&processed_input.processed_source_code),
-        token_start_doc_lookup: &processed_input.token_start_doc_lookup, buffered_next_token: None } };
+        token_start_attribute_lookup: &processed_input.token_start_attribute_lookup, buffered_next_token: None } };
     parser.parse_source_file()
 }
 
@@ -2966,7 +2975,7 @@ pub fn parse_source_file(file_name: &str, contents: &str) -> anyhow::Result<Modu
 pub fn parse_expression(file_name: &str, contents: &str) -> anyhow::Result<Expression> {
     let processed_input = CompilerParserInstance::preprocess_input_text(contents)?;
     let parser = CompilerParserInstance { ctx: CompilerLexerContext{ file_name, lex: CompilerToken::lexer(&processed_input.processed_source_code),
-        token_start_doc_lookup: &processed_input.token_start_doc_lookup, buffered_next_token: None } };
+        token_start_attribute_lookup: &processed_input.token_start_attribute_lookup, buffered_next_token: None } };
     parser.parse_single_expression()
 }
 
@@ -2974,7 +2983,7 @@ pub fn parse_expression(file_name: &str, contents: &str) -> anyhow::Result<Expre
 pub fn parse_statement(file_name: &str, contents: &str) -> anyhow::Result<Statement> {
     let processed_input = CompilerParserInstance::preprocess_input_text(contents)?;
     let parser = CompilerParserInstance { ctx: CompilerLexerContext{ file_name, lex: CompilerToken::lexer(&processed_input.processed_source_code),
-        token_start_doc_lookup: &processed_input.token_start_doc_lookup, buffered_next_token: None } };
+        token_start_attribute_lookup: &processed_input.token_start_attribute_lookup, buffered_next_token: None } };
     parser.parse_single_statement()
 }
 

@@ -81,8 +81,7 @@ impl CodeGenerationContext {
         quote! { #crate_name::#mod_name::#short_type_name }
     }
     fn generate_doc_comment(type_definition: &BindingsTypeDefinition, doc_metadata: &str) -> Option<TokenStream> {
-        let documentation_attributes: Vec<TokenStream> = type_definition.function_declaration.as_ref().unwrap().metadata.get(doc_metadata).into_iter()
-            .flat_map(|x| x.lines())
+        let documentation_attributes: Vec<TokenStream> = type_definition.function_declaration.as_ref().unwrap().metadata.get(doc_metadata)?.iter()
             .filter(|x| !x.is_empty())
             .map(|doc_comment_line| quote! { #[doc = #doc_comment_line] })
             .collect();
@@ -189,7 +188,7 @@ impl CodeGenerationContext {
         } else { false }
     }
     fn generate_type_field_definition(&self, source_file_name: &str, field_name: &Ident, maybe_field_type_index: Option<usize>, is_prototype_field: bool, type_definition: &BindingsTypeDefinition) -> anyhow::Result<TokenStream> {
-        let field_doc_comment = Self::generate_doc_comment(type_definition, &format!("doc_{}", source_file_name));
+        let field_doc_comment = Self::generate_doc_comment(type_definition, &format!("{}$doc", source_file_name));
         Ok(if let Some(field_type_index) = maybe_field_type_index && !self.is_opaque_type_index(field_type_index) {
             let field_type = self.generate_type_reference(field_type_index)?;
             match self.bindings_type {
@@ -390,7 +389,7 @@ impl CodeGenerationContext {
                     }
                 }
             });
-            if type_definition.function_declaration.as_ref().unwrap().metadata.contains_key("attr_bitwise_copyable") {
+            if type_definition.function_declaration.as_ref().unwrap().metadata.contains_key("bitwise_copyable") {
                 all_type_implementations.push(quote! {
                     unsafe impl #parameter_declaration std::clone::CloneToUninit for #type_name #parameter_list {
                         unsafe fn clone_to_uninit(&self, dest: *mut u8) {
@@ -400,7 +399,7 @@ impl CodeGenerationContext {
                     }
                 });
             }
-            if type_definition.function_declaration.as_ref().unwrap().metadata.contains_key("attr_zero_constructible") {
+            if type_definition.function_declaration.as_ref().unwrap().metadata.contains_key("zero_constructible") {
                 all_type_implementations.push(quote! {
                     unsafe impl #parameter_declaration gospel_runtime::local_type_model::DefaultConstructAtUninit for #type_name #parameter_list {
                         unsafe fn default_construct_at(dest: *mut u8) {
@@ -430,7 +429,7 @@ impl CodeGenerationContext {
         })
     }
     fn generate_enum_constant_definition(&self, enum_definition: &BindingsTypeDefinition, enum_underlying_type: &Option<PrimitiveType>, source_constant_name: &str, constant_name: Ident, is_prototype_constant: bool) -> TokenStream {
-        let field_doc_comment = Self::generate_doc_comment(enum_definition, &format!("doc_{}", source_constant_name));
+        let field_doc_comment = Self::generate_doc_comment(enum_definition, &format!("{}$doc", source_constant_name));
         match self.bindings_type {
             ModuleBindingsType::External => {
                 if is_prototype_constant {

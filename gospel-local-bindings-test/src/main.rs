@@ -3,14 +3,15 @@
 #![feature(clone_to_uninit)]
 #![feature(ptr_as_ref_unchecked)]
 
+use std::alloc::Global;
 use std::path::PathBuf;
 use std::ptr::null;
 use std::str::FromStr;
-use gospel_runtime::local_type_model::{static_cast_checked, ImplicitPtrMetadata};
+use gospel_runtime::local_type_model::{allocate_default, static_cast_checked, ImplicitPtrMetadata};
 use gospel_runtime::vm_integration::{GospelVMTypeGraphBackend, GospelVMTypeUniverse};
 use gospel_typelib::compiled_target_triplet;
 use gospel_vm::vm::GospelVMOptions;
-use crate::gospel_bindings::{EClassCastFlags, UField, UObject};
+use crate::gospel_bindings::{EClassCastFlags, FIntVector, UField, UObject};
 
 include!(concat!(env!("OUT_DIR"), "/", "gospel_bindings.rs"));
 
@@ -46,6 +47,6 @@ fn main() -> anyhow::Result<()> {
 
     let class_cast_flags = EClassCastFlags::a_player_controller();
     assert_eq!(class_cast_flags, EClassCastFlags::sized_from_raw_discriminant(0x0000002000000000u64));
-
+    assert_eq!(*allocate_default::<FIntVector, Global>(Global).x(), 0);
     Ok({})
 }

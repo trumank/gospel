@@ -2092,8 +2092,8 @@ impl CompilerInstance {
         let (function_scope, function_closure) = Self::declare_function(scope, statement.name.as_str(), visibility,
             statement.value_type.clone(), statement.template_declaration.as_ref(), false, &statement.source_context)?;
 
-        if let Some(doc_comment) = &statement.doc_comment {
-            function_closure.borrow_mut().metadata.insert(String::from("doc"), doc_comment.clone());
+        for (root_attribute_name, root_attribute_value) in &statement.attributes {
+            function_closure.borrow_mut().metadata.insert(root_attribute_name.clone(), root_attribute_value.clone());
         }
         if let Some(module_codegen_data) = function_scope.module_codegen() {
             module_codegen_data.push_delayed_function_definition(&function_scope, Box::new(CompilerSimpleExpressionFunctionGenerator{
@@ -2112,18 +2112,15 @@ impl CompilerInstance {
         let (function_scope, function_closure) = Self::declare_function(scope, function_name, visibility,
             ExpressionValueType::Typename, statement.template_declaration.as_ref(), true, &source_context.line_context)?;
 
-        let mut constant_doc_comment_lookup: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for constant in &statement.constants {
-            if let Some(constant_name) = &constant.name && let Some(constant_doc_comment) = &constant.doc_comment {
-                constant_doc_comment_lookup.entry(constant_name.clone()).or_default().push(constant_doc_comment.clone());
+        for enum_constant in &statement.constants {
+            if let Some(constant_name) = &enum_constant.name {
+                for (constant_attribute_name, constant_attribute_value) in &enum_constant.attributes {
+                    function_closure.borrow_mut().metadata.insert(format!("{}${}", constant_name, constant_attribute_name), constant_attribute_value.clone());
+                }
             }
         }
-        if let Some(doc_comment) = &statement.doc_comment {
-            function_closure.borrow_mut().metadata.insert(String::from("doc"), doc_comment.clone());
-        }
-       for (constant_name, constant_doc_list) in constant_doc_comment_lookup {
-            let constant_doc = constant_doc_list.join("\n");
-            function_closure.borrow_mut().metadata.insert(format!("doc_{}", constant_name), constant_doc);
+        for (root_attribute_name, root_attribute_value) in &statement.attributes {
+            function_closure.borrow_mut().metadata.insert(root_attribute_name.clone(), root_attribute_value.clone());
         }
 
         let (allow_partial_types, generate_prototype_layouts) = scope.compiler().map(|x| (x.compiler_options.allow_partial_types, x.compiler_options.generate_prototype_layouts)).unwrap_or((false, false));
@@ -2256,21 +2253,16 @@ impl CompilerInstance {
             Some(DeclarationVisibility::Private)
         } else { None };
 
-        let mut member_doc_comment_lookup: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for declaration in statement.declarations.iter().flat_map(|x| x.iterate_recursive()) {
-            if let StructInnerDeclaration::MemberDeclaration(member) = declaration && 
-                let Some(constant_name) = &member.name && 
-                let Some(constant_doc_comment) = &member.doc_comment {
-                member_doc_comment_lookup.entry(constant_name.clone()).or_default().push(constant_doc_comment.clone());
+            if let StructInnerDeclaration::MemberDeclaration(member) = declaration && let Some(field_name) = &member.name {
+                for (field_attribute_name, field_attribute_value) in &member.attributes {
+                    function_closure.borrow_mut().metadata.insert(format!("{}${}", field_name, field_attribute_name), field_attribute_value.clone());
+                }
             }
         }
-        if let Some(doc_comment) = &statement.doc_comment {
-            function_closure.borrow_mut().metadata.insert(String::from("doc"), doc_comment.clone());
+        for (root_attribute_name, root_attribute_value) in &statement.attributes {
+            function_closure.borrow_mut().metadata.insert(root_attribute_name.clone(), root_attribute_value.clone());
         }
-        for (constant_name, constant_doc_list) in member_doc_comment_lookup {
-            let constant_doc = constant_doc_list.join("\n");
-            function_closure.borrow_mut().metadata.insert(format!("doc_{}", constant_name), constant_doc);
-        };
 
         let fragments = statement.declarations.iter().map(|struct_inner_declaration| {
             Self::pre_compile_type_layout_inner_declaration(&function_scope, struct_inner_declaration, visibility_override)
@@ -2421,7 +2413,7 @@ pub struct CompilerBlockDeclaration {
 #[derive(Debug, Clone)]
 pub struct CompilerFunctionDeclaration {
     pub reference: CompilerFunctionReference,
-    pub metadata: BTreeMap<String, String>,
+    pub metadata: BTreeMap<String, Vec<String>>,
 }
 
 trait CompilerFunctionCodeGenerator : Debug {
