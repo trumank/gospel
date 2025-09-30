@@ -234,17 +234,17 @@ impl CodeGenerationContext {
         Ok(match parameter_type {
             // TODO: This should be BoolValueTypeTag but due to current implementation of VM value conversion for type references it cannot be
             ExpressionValueType::Bool => (quote! {
-                #parameter_name : gospel_runtime::core_type_definitions::IntegralValueTypeTag
+                #parameter_name : gospel_runtime::core_type_definitions::IntegralValueTypeTag + 'static
             }, quote! {
                 gospel_typelib::type_model::TypeTemplateArgument::Integer(#parameter_name::get_raw_integral_value())
             }),
             ExpressionValueType::Integer(_) => (quote! {
-                #parameter_name : gospel_runtime::core_type_definitions::IntegralValueTypeTag
+                #parameter_name : gospel_runtime::core_type_definitions::IntegralValueTypeTag + 'static
             }, quote!{
                 gospel_typelib::type_model::TypeTemplateArgument::Integer(#parameter_name::get_raw_integral_value())
             }),
             ExpressionValueType::Typename => (quote!{
-                #parameter_name : gospel_runtime::core_type_definitions::StaticTypeTag + ?Sized
+                #parameter_name : gospel_runtime::core_type_definitions::StaticTypeTag + ?Sized + 'static
             }, quote!{
                 gospel_typelib::type_model::TypeTemplateArgument::Type(#parameter_name::store_type_descriptor_raw(type_graph, target_triplet, type_cache))
             }),
