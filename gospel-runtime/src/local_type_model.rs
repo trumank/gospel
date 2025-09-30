@@ -6,7 +6,7 @@ use std::clone::CloneToUninit;
 use std::ptr::{NonNull, Pointee};
 use std::sync::{Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, AtomicUsize, Ordering};
-use generic_statics::Zeroable;
+use generic_statics::{define_namespace, Namespace, Zeroable};
 use gospel_typelib::compiled_target_triplet;
 use gospel_typelib::target_triplet::TargetTriplet;
 use gospel_typelib::type_model::{ArrayType, IntegerSignedness, MutableTypeGraph, PointerType, PrimitiveType, Type};
@@ -100,6 +100,14 @@ pub trait ImplicitPtrMetadata : Pointee {
     fn static_align_of_val() -> usize {
         let null_ptr_with_metadata = ptr::from_raw_parts::<Self>(ptr::null::<()>(), Self::create_implicit_metadata());
         unsafe { mem::align_of_val_raw(null_ptr_with_metadata) }
+    }
+    /// Converts raw pointer of another type to the pointer to this type value
+    fn from_raw_ptr<T: Pointee<Metadata = ()>>(ptr: *const T) -> *const Self {
+        ptr::from_raw_parts::<Self>(ptr, Self::create_implicit_metadata())
+    }
+    /// Converts raw pointer of another type to the pointer to this type value
+    fn from_raw_ptr_mut<T: Pointee<Metadata = ()>>(ptr: *mut T) -> *mut Self {
+        ptr::from_raw_parts_mut::<Self>(ptr, Self::create_implicit_metadata())
     }
 }
 /// Default specialization for statically sized types which have no pointer metadata
@@ -210,6 +218,54 @@ pub fn clone_unsized_raw<T : ?Sized + ImplicitPtrMetadata + CloneToUninit, A : A
 pub fn clone_unsized<T : ?Sized + ImplicitPtrMetadata + CloneToUninit, A : Allocator>(src: &T, alloc: A) -> Box<T, A> {
     let owned_ptr = clone_unsized_raw::<T, A>(src, &alloc);
     unsafe { Box::<T, A>::from_non_null_in(owned_ptr, alloc) }
+}
+
+/// Attempts to cast a reference to value of From type to a reference to value of To type. Returns None if the cast is not possible
+pub fn static_cast<From: ?Sized + StaticTypeTag + 'static, To: ?Sized + ImplicitPtrMetadata + StaticTypeTag + 'static, TU: TypeUniverse + 'static>(src: &From) -> Option<&To> {
+    define_namespace!(CastDescriptor);
+    CastDescriptor::generic_static::<CachedThreadSafeStaticCastThisAdjust<From, To, TU>>().static_cast(src)
+}
+
+/// Attempts to cast a reference to value of From type to a reference to value of To type. Panics if the cast is not possible
+pub fn static_cast_checked<From: ?Sized + StaticTypeTag + 'static, To: ?Sized + ImplicitPtrMetadata + StaticTypeTag + 'static, TU: TypeUniverse + 'static>(src: &From) -> &To {
+    define_namespace!(CastDescriptor);
+    CastDescriptor::generic_static::<CachedThreadSafeStaticCastThisAdjust<From, To, TU>>().static_cast(src).unwrap()
+}
+
+/// Attempts to cast a mutable reference to value of From type to a reference to value of To type. Returns None if the cast is not possible
+pub fn static_cast_mut<From: ?Sized + StaticTypeTag + 'static, To: ?Sized + ImplicitPtrMetadata + StaticTypeTag + 'static, TU: TypeUniverse + 'static>(src: &mut From) -> Option<&mut To> {
+    define_namespace!(CastDescriptor);
+    CastDescriptor::generic_static::<CachedThreadSafeStaticCastThisAdjust<From, To, TU>>().static_cast_mut(src)
+}
+
+/// Attempts to cast a mutable reference to value of From type to a reference to value of To type. Panics if the cast is not possible
+pub fn static_cast_mut_checked<From: ?Sized + StaticTypeTag + 'static, To: ?Sized + ImplicitPtrMetadata + StaticTypeTag + 'static, TU: TypeUniverse + 'static>(src: &mut From) -> &mut To {
+    define_namespace!(CastDescriptor);
+    CastDescriptor::generic_static::<CachedThreadSafeStaticCastThisAdjust<From, To, TU>>().static_cast_mut(src).unwrap()
+}
+
+/// Attempts to cast a pointer to value of From type to a reference to value of To type. Returns None if the cast is not possible
+pub fn static_cast_ptr<From: ?Sized + StaticTypeTag + 'static, To: ?Sized + ImplicitPtrMetadata + StaticTypeTag + 'static, TU: TypeUniverse + 'static>(src: *const From) -> Option<*const To> {
+    define_namespace!(CastDescriptor);
+    CastDescriptor::generic_static::<CachedThreadSafeStaticCastThisAdjust<From, To, TU>>().static_cast_ptr(src)
+}
+
+/// Attempts to cast a pointer to value of From type to a reference to value of To type. Panics if the cast is not possible
+pub fn static_cast_ptr_checked<From: ?Sized + StaticTypeTag + 'static, To: ?Sized + ImplicitPtrMetadata + StaticTypeTag + 'static, TU: TypeUniverse + 'static>(src: *const From) -> *const To {
+    define_namespace!(CastDescriptor);
+    CastDescriptor::generic_static::<CachedThreadSafeStaticCastThisAdjust<From, To, TU>>().static_cast_ptr(src).unwrap()
+}
+
+/// Attempts to cast a pointer to value of From type to a reference to value of To type. Returns None if the cast is not possible
+pub fn static_cast_ptr_mut<From: ?Sized + StaticTypeTag + 'static, To: ?Sized + ImplicitPtrMetadata + StaticTypeTag + 'static, TU: TypeUniverse + 'static>(src: *mut From) -> Option<*mut To> {
+    define_namespace!(CastDescriptor);
+    CastDescriptor::generic_static::<CachedThreadSafeStaticCastThisAdjust<From, To, TU>>().static_cast_ptr_mut(src)
+}
+
+/// Attempts to cast a pointer to value of From type to a reference to value of To type. Panics if the cast is not possible
+pub fn static_cast_ptr_mut_checked<From: ?Sized + StaticTypeTag + 'static, To: ?Sized + ImplicitPtrMetadata + StaticTypeTag + 'static, TU: TypeUniverse + 'static>(src: *mut From) -> *mut To {
+    define_namespace!(CastDescriptor);
+    CastDescriptor::generic_static::<CachedThreadSafeStaticCastThisAdjust<From, To, TU>>().static_cast_ptr_mut(src).unwrap()
 }
 
 /// Represents a statically sized C or C++ array, which is a linear sequence of values of type T
@@ -417,7 +473,7 @@ impl<T : ?Sized + StaticTypeTag + ImplicitPtrMetadata, U : TypeUniverse> CachedT
 }
 
 #[derive(Debug, Default)]
-pub struct CachedThreadSafeStaticCastThisAdjust<From : ?Sized + StaticTypeTag, To: ?Sized + StaticTypeTag, U : TypeUniverse> {
+pub struct CachedThreadSafeStaticCastThisAdjust<From : ?Sized + StaticTypeTag, To: ?Sized + StaticTypeTag + ImplicitPtrMetadata, U : TypeUniverse> {
     has_value_cached: AtomicBool,
     result_cast_possible: AtomicBool,
     cast_this_adjust: AtomicIsize,
@@ -425,8 +481,8 @@ pub struct CachedThreadSafeStaticCastThisAdjust<From : ?Sized + StaticTypeTag, T
     _phantom_data_to: PhantomData<To>,
     _phantom_data_type_universe: PhantomData<U>,
 }
-unsafe impl<From : ?Sized + StaticTypeTag, To: ?Sized + StaticTypeTag, U : TypeUniverse> Zeroable for CachedThreadSafeStaticCastThisAdjust<From, To, U> {}
-impl<From : ?Sized + StaticTypeTag, To: ?Sized + StaticTypeTag, U : TypeUniverse> CachedThreadSafeStaticCastThisAdjust<From, To, U> {
+unsafe impl<From : ?Sized + StaticTypeTag, To: ?Sized + StaticTypeTag + ImplicitPtrMetadata, U : TypeUniverse> Zeroable for CachedThreadSafeStaticCastThisAdjust<From, To, U> {}
+impl<From : ?Sized + StaticTypeTag, To: ?Sized + StaticTypeTag + ImplicitPtrMetadata, U : TypeUniverse> CachedThreadSafeStaticCastThisAdjust<From, To, U> {
     pub fn get_static_cast_this_adjust(&self) -> Option<isize> {
         if !self.has_value_cached.load(Ordering::Acquire) {
             let from_type_index = From::store_type_descriptor_to_universe::<U>();
@@ -442,6 +498,26 @@ impl<From : ?Sized + StaticTypeTag, To: ?Sized + StaticTypeTag, U : TypeUniverse
         if self.result_cast_possible.load(Ordering::Relaxed) {
             Some(self.cast_this_adjust.load(Ordering::Relaxed))
         } else { None }
+    }
+    /// Attempts to cast a reference to type From to a reference to type To. Returns resulting reference on success, or None if cast is not possible
+    pub fn static_cast<'a>(&self, from: &'a From) -> Option<&'a To> {
+        let static_cast_adjust = self.get_static_cast_this_adjust()?;
+        Some(unsafe { To::from_raw_ptr((from as *const From as *const u8).byte_offset(static_cast_adjust)).as_ref_unchecked::<'a>() })
+    }
+    /// Attempts to cast a mutable reference to type From to a reference to type To. Returns resulting reference on success, or None if cast is not possible
+    pub fn static_cast_mut<'a>(&self, from: &'a mut From) -> Option<&'a mut To> {
+        let static_cast_adjust = self.get_static_cast_this_adjust()?;
+        Some(unsafe { To::from_raw_ptr_mut((from as *mut From as *mut u8).byte_offset(static_cast_adjust)).as_mut_unchecked::<'a>() })
+    }
+    /// Attempts to cast a pointer to type From to a pointer to type To. Returns resulting pointer on success, or None if cast is not possible
+    pub fn static_cast_ptr(&self, from: *const From) -> Option<*const To> {
+        let static_cast_adjust = self.get_static_cast_this_adjust()?;
+        Some(unsafe { To::from_raw_ptr((from as *const u8).byte_offset(static_cast_adjust)) })
+    }
+    /// Attempts to cast a mut pointer to type From to a pointer to type To. Returns resulting pointer on success, or None if cast is not possible
+    pub fn static_cast_ptr_mut(&self, from: *mut From) -> Option<*mut To> {
+        let static_cast_adjust = self.get_static_cast_this_adjust()?;
+        Some(unsafe { To::from_raw_ptr_mut((from as *mut u8).byte_offset(static_cast_adjust)) })
     }
 }
 
@@ -463,7 +539,8 @@ impl<T : ?Sized + StaticTypeTag, U : TypeUniverse> CachedThreadSafeFieldTypeAndO
             let type_index = T::store_type_descriptor_to_universe::<U>();
 
             // We want relaxed ordering here since they will be ordered by has_value_cached anyway
-            if let Some((field_type_index, field_offset_bytes)) = U::type_layout_cache().lock().unwrap().get_struct_field_type_index_and_offset_cached(U::type_graph(), type_index, field_name) {
+            let field_type_and_offset = U::type_layout_cache().lock().unwrap().get_struct_field_type_index_and_offset_cached(U::type_graph(), type_index, field_name);
+            if let Some((field_type_index, field_offset_bytes)) = field_type_and_offset {
                 let field_size_bytes = U::type_layout_cache().lock().unwrap().get_type_size_and_alignment_cached(U::type_graph(), field_type_index).0;
                 self.result_has_field.store(true, Ordering::Relaxed);
                 self.field_type_index.store(field_type_index, Ordering::Relaxed);
