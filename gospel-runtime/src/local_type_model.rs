@@ -36,7 +36,6 @@ pub struct PlatformLongInt(PlatformLongIntUnderlyingType);
 /// Represents an unsigned long int type with the bit width native to the running platform. Size can be either 4 or 8 depending on the platform
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
-#[cfg(platform_long_size="4")]
 pub struct PlatformUnsignedLongInt(PlatformUnsignedLongIntUnderlyingType);
 
 /// Represents a wide character type with the bit width native to the running platform. Size can be either 2 or 4 depending on the platform
