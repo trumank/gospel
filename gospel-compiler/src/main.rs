@@ -8,9 +8,11 @@ use std::rc::Rc;
 use std::str::FromStr;
 use anyhow::{anyhow};
 use clap::{Args, Parser, ValueEnum};
+use gospel_typelib::compiled_target_triplet;
+use gospel_typelib::target_triplet::TargetTriplet;
 use itertools::Itertools;
 use gospel_compiler::assembler::disassemble_function;
-use gospel_typelib::type_model::{ResolvedUDTMemberLayout, TargetTriplet, Type, TypeGraphLike, TypeLayoutCache, TypeTree};
+use gospel_typelib::type_model::{ResolvedUDTMemberLayout, Type, TypeGraphLike, TypeLayoutCache, TypeTree};
 use gospel_vm::module::{GospelContainer};
 use gospel_vm::reader::GospelContainerReader;
 use gospel_vm::vm::{GospelVMContainer, GospelVMOptions, GospelVMRunContext, GospelVMState, GospelVMTypeContainer, GospelVMValue};
@@ -84,9 +86,9 @@ impl CommandLineVMOptions {
     fn create_run_context(&self) -> anyhow::Result<GospelVMRunContext> {
         let target_triplet = if let Some(target_triplet_name) = &self.target {
             Some(TargetTriplet::parse(target_triplet_name.as_str())
-                .map_err(|x| anyhow!("Failed to parse provided target triplet: {}", x.to_string()))?)
+                .ok_or_else(|| anyhow!("Failed to parse provided target triplet: {}", target_triplet_name))?)
         } else if !self.no_default_target {
-            Some(TargetTriplet::current_target()
+            Some(compiled_target_triplet()
                 .ok_or_else(|| anyhow!("Current platform is not a valid target. Please specify target manually with --target "))?)
         } else { None };
 
