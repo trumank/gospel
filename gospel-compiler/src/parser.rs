@@ -1,5 +1,5 @@
 ﻿use std::collections::{BTreeMap, HashMap};
-use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ImportStatement, ModuleImportStatementType, ModuleSourceFile, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression, MemberFunctionDeclaration, FunctionParameterDeclaration, TopLevelDeclaration, EnumStatement, EnumConstantDeclaration, BoolConstantExpression, StaticCastExpression, CompilerBuiltinExpression, SwitchExpressionCase, SwitchExpressionDefaultCase, SwitchExpression, FunctionPointerExpression};
+use crate::ast::{ASTSourceContext, ArrayTypeExpression, AssignmentStatement, BinaryExpression, BinaryOperator, BlockDeclaration, BlockExpression, BlockStatement, ConditionalDeclaration, ConditionalExpression, ConditionalStatement, DataStatement, Expression, ExpressionValueType, InputStatement, DeclarationStatement, MemberAccessExpression, MemberDeclaration, ModuleCompositeImport, ImportStatement, ModuleImportStatementType, ModuleSourceFile, NamespaceStatement, PartialIdentifier, PartialIdentifierKind, Statement, StructInnerDeclaration, StructStatement, TemplateArgument, TemplateDeclaration, UnaryExpression, UnaryOperator, WhileLoopStatement, SimpleStatement, IdentifierExpression, IntegerConstantExpression, DeclarationAccessSpecifier, PrimitiveTypeExpression, CVQualifiedExpression, MemberFunctionDeclaration, FunctionParameterDeclaration, TopLevelDeclaration, EnumStatement, EnumConstantDeclaration, BoolConstantExpression, StaticCastExpression, CompilerBuiltinExpression, SwitchExpressionCase, SwitchExpressionDefaultCase, SwitchExpression, FunctionPointerExpression, ExpressionContext};
 use crate::lex_util::{get_line_number_and_offset_from_index, parse_integer_literal, ParsedIntegerLiteral};
 use anyhow::{anyhow, bail};
 use logos::{Lexer, Logos};
@@ -9,7 +9,7 @@ use fancy_regex::{Captures, Regex};
 use itertools::Itertools;
 use gospel_typelib::target_triplet::BitWidth;
 use crate::ast::ExpressionWithCondition;
-use gospel_typelib::type_model::{EnumKind, IntegerSignedness, IntegralType, PrimitiveType, UserDefinedTypeKind};
+use gospel_typelib::type_model::{CppAccessSpecifier, EnumKind, IntegerSignedness, IntegralType, PrimitiveType, UserDefinedType, UserDefinedTypeKind};
 
 #[derive(Logos, Debug, Clone, PartialEq, Display)]
 #[logos(skip r"[ \r\t\n\u{feff}]+")]
@@ -110,9 +110,9 @@ enum CompilerToken {
     #[token("module")]
     #[strum(to_string = "module")]
     Module,
-    #[token("public")]
-    #[strum(to_string = "public")]
-    Public,
+    #[token("visible")]
+    #[strum(to_string = "visible")]
+    Visible,
     #[token("internal")]
     #[strum(to_string = "internal")]
     Internal,
@@ -161,6 +161,15 @@ enum CompilerToken {
     #[token("short")]
     #[strum(to_string = "short")]
     PrimitiveModifierShort,
+    #[token("public")]
+    #[strum(to_string = "public")]
+    AccessSpecifierPublic,
+    #[token("protected")]
+    #[strum(to_string = "protected")]
+    AccessSpecifierProtected,
+    #[token("private")]
+    #[strum(to_string = "private")]
+    AccessSpecifierPrivate,
     #[token("static_cast")]
     #[strum(to_string = "static_cast")]
     StaticCast,
@@ -460,10 +469,23 @@ impl<'a, T : Clone> AmbiguousParsingResult<'a, T> {
             Ok(self.cases.pop().unwrap())
         }
     }
+    fn check_expression_context_generic<S : Fn(&T) -> ExpressionContext>(self, expression_context: ExpressionContext, context_getter: S) -> anyhow::Result<AmbiguousParsingResult<'a, T>> {
+        self.flat_map_result(|parser, expression| {
+            let current_expression_context = context_getter(&expression);
+            if current_expression_context != ExpressionContext::Unknown && expression_context != ExpressionContext::Unknown && current_expression_context != expression_context {
+                Err(anyhow!("Expected expression of concrete type {}, but expression results in type {}", expression_context, current_expression_context))
+            } else { Ok(AmbiguousParsingResult::unambiguous(parser, expression)) }
+        })
+    }
 }
 impl<'a, T : Clone + ToString> AmbiguousParsingResult<'a, T> {
     fn disambiguate(self) -> anyhow::Result<ExactParseCase<'a, T>> {
         self.disambiguate_generic(|x| x.to_string())
+    }
+}
+impl<'a> AmbiguousParsingResult<'a, Expression> {
+    fn check_expression_context(self, expression_context: ExpressionContext) -> anyhow::Result<AmbiguousParsingResult<'a, Expression>> {
+        self.check_expression_context_generic(expression_context, |expr| expr.infer_expression_context())
     }
 }
 
@@ -762,15 +784,15 @@ impl<'a> CompilerParserInstance<'a> {
         let result_expression = BoolConstantExpression{bool_value: literal_value, source_context};
         Ok(AmbiguousExpression::unambiguous(self, Expression::BoolConstantExpression(Box::new(result_expression))))
     }
-    fn parse_ambiguous_expression_list<T: Clone, S: Fn(&mut Self) -> anyhow::Result<(T, bool)>>(self, terminator_token: CompilerToken, prefix_parser: S) -> anyhow::Result<AmbiguousParsingResult<'a, Vec<(T, Option<Expression>)>>> {
-        self.parse_ambiguous_expression_list_extended(terminator_token, |mut parser| {
+    fn parse_ambiguous_expression_list<T: Clone, S: Fn(&mut Self) -> anyhow::Result<(T, bool)>>(self, terminator_token: CompilerToken, expression_context: ExpressionContext, prefix_parser: S) -> anyhow::Result<AmbiguousParsingResult<'a, Vec<(T, Option<Expression>)>>> {
+        self.parse_ambiguous_expression_list_extended(terminator_token, expression_context, |mut parser| {
             let data = prefix_parser(&mut parser)?;
             Ok(ExactParseCase::create(parser, data))
         }, |parser_case| {
             Ok(parser_case)
         }, |x| x.1.as_ref().unwrap().to_string())
     }
-    fn parse_ambiguous_expression_list_extended<T: Clone, R: Clone, PR: Fn(Self) -> anyhow::Result<ExactParseCase<'a, (T, bool)>>, PO: Fn(ExactParseCase<'a, (T, Option<Expression>)>) -> anyhow::Result<ExactParseCase<R>>, POS: Fn(&R) -> String>(mut self, terminator_token: CompilerToken, prefix_parser: PR, postfix_parser: PO, to_string: POS) -> anyhow::Result<AmbiguousParsingResult<'a, Vec<R>>> {
+    fn parse_ambiguous_expression_list_extended<T: Clone, R: Clone, PR: Fn(Self) -> anyhow::Result<ExactParseCase<'a, (T, bool)>>, PO: Fn(ExactParseCase<'a, (T, Option<Expression>)>) -> anyhow::Result<ExactParseCase<R>>, POS: Fn(&R) -> String>(mut self, terminator_token: CompilerToken, expression_context: ExpressionContext, prefix_parser: PR, postfix_parser: PO, to_string: POS) -> anyhow::Result<AmbiguousParsingResult<'a, Vec<R>>> {
         // Empty expression list is allowed and is not ambiguous
         if self.ctx.peek()? == terminator_token {
             self.ctx.discard_next()?;
@@ -821,7 +843,9 @@ impl<'a> CompilerParserInstance<'a> {
 
             // Parse the ambiguous argument and do some processing to remove expressions that cannot be valid under any circumstances (e.g. not followed by item separator or terminator token)
             // If there are no valid combinations, but we have existing cases, assume one of them is valid and this grammar take is not
-            let possible_arguments = Self::parse_complete_expression(prefix_parser).and_then(|x| x.flat_map_result(|forked_parser, expression| {
+            let possible_arguments = Self::parse_complete_expression(prefix_parser)
+            .and_then(|x| x.check_expression_context(expression_context))
+            .and_then(|x| x.flat_map_result(|forked_parser, expression| {
                 let mut postfix_expression_case = postfix_parser(ExactParseCase::create(forked_parser, (prefix_user_data.clone(), Some(expression))))?;
                 let separator_or_terminator_token = postfix_expression_case.parser.ctx.peek()?;
                 if separator_or_terminator_token != terminator_token && separator_or_terminator_token != CompilerToken::Separator {
@@ -863,7 +887,7 @@ impl<'a> CompilerParserInstance<'a> {
     fn parse_ambiguous_template_instantiation_expression<S: Fn(Vec<Expression>) -> Expression>(mut self, mapper: S) -> anyhow::Result<AmbiguousExpression<'a>> {
         let argument_list_enter_token = self.ctx.next()?;
         self.ctx.check_token(argument_list_enter_token, CompilerToken::LessOrArgumentListStart)?;
-        Ok(self.parse_ambiguous_expression_list(CompilerToken::MoreOrArgumentListEnd, |_| { Ok(((), true)) })?
+        Ok(self.parse_ambiguous_expression_list(CompilerToken::MoreOrArgumentListEnd, ExpressionContext::Unknown, |_| { Ok(((), true)) })?
             .map_data(|x| mapper(x.into_iter().map(|(_, expr)| expr.unwrap()).collect())))
     }
     fn parse_ambiguous_identifier_expression(mut self) -> anyhow::Result<AmbiguousExpression<'a>> {
@@ -913,6 +937,7 @@ impl<'a> CompilerParserInstance<'a> {
         let sub_expression_entry_token = self.ctx.next()?;
         self.ctx.check_token(sub_expression_entry_token, CompilerToken::SubExpressionStart)?;
         self.parse_complete_expression()?
+        .check_expression_context(ExpressionContext::Integral)?
         .flat_map_result(|mut parser, expression| {
             let sub_expression_exit_token = parser.ctx.next()?;
             parser.ctx.check_token(sub_expression_exit_token, CompilerToken::SubExpressionEnd)?;
@@ -929,7 +954,8 @@ impl<'a> CompilerParserInstance<'a> {
         let condition_enter_bracket_token = self.ctx.next()?;
         self.ctx.check_token(condition_enter_bracket_token, CompilerToken::SubExpressionStart)?;
 
-        Ok(Self::parse_complete_expression(self)
+        Self::parse_complete_expression(self)
+        ?.check_expression_context(ExpressionContext::Integral)
         ?.flat_map_result(|mut parser, condition_expr| {
             let condition_exit_bracket_token = parser.ctx.next()?;
             parser.ctx.check_token(condition_exit_bracket_token, CompilerToken::SubExpressionEnd)?;
@@ -940,10 +966,16 @@ impl<'a> CompilerParserInstance<'a> {
             parser.ctx.check_token(else_expression_token, CompilerToken::Else)?;
             Ok(Self::parse_expression_affinity_lowest(parser)?.map_data(|false_expr| (condition_expr.clone(), true_expr.clone(), false_expr)))
         })
-        ?.map_data(|(condition_expression, true_expression, false_expression)| {
-            let result_expression = ConditionalExpression{ condition_expression, true_expression, false_expression, source_context: source_context.clone() };
-            Expression::ConditionalExpression(Box::new(result_expression))
-        }))
+        ?.flat_map_result(|parser, (condition_expression, true_expression, false_expression)| {
+            let true_concrete_type = true_expression.infer_expression_context();
+            let false_concrete_type = false_expression.infer_expression_context();
+            if true_concrete_type != ExpressionContext::Unknown && false_concrete_type != ExpressionContext::Unknown && true_concrete_type != false_concrete_type {
+                Err(anyhow!("Conditional concrete type mismatch: got {} on the true side, and {} on the false side", true_concrete_type, false_concrete_type))
+            } else {
+                let result_expression = ConditionalExpression{ condition_expression, true_expression, false_expression, source_context: source_context.clone() };
+                Ok(AmbiguousParsingResult::unambiguous(parser, Expression::ConditionalExpression(Box::new(result_expression))))
+            }
+        })
     }
     fn parse_switch_expression(mut self) -> anyhow::Result<AmbiguousExpression<'a>> {
         let switch_expression_token = self.ctx.next()?;
@@ -1052,7 +1084,7 @@ impl<'a> CompilerParserInstance<'a> {
         let condition_enter_bracket_token = self.ctx.next()?;
         self.ctx.check_token(condition_enter_bracket_token, CompilerToken::SubExpressionStart)?;
 
-        self.parse_complete_expression()?.flat_map_result(|mut parser, condition_expression| {
+        self.parse_complete_expression()?.check_expression_context(ExpressionContext::Integral)?.flat_map_result(|mut parser, condition_expression| {
             let condition_exit_bracket_token = parser.ctx.next()?;
             parser.ctx.check_token(condition_exit_bracket_token, CompilerToken::SubExpressionEnd)?;
             Ok(parser.parse_statement()?.map_data(|then_statement| (condition_expression, then_statement)).to_parse_result())
@@ -1151,7 +1183,7 @@ impl<'a> CompilerParserInstance<'a> {
         if self.ctx.peek()? == CompilerToken::Assignment {
             self.ctx.discard_next()?;
 
-            self.parse_complete_expression()?.flat_map_result(|mut parser, initializer_expression| {
+            self.parse_complete_expression()?.check_expression_context(value_type.expression_context())?.flat_map_result(|mut parser, initializer_expression| {
                 let terminator_token = parser.ctx.next()?;
                 parser.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
 
@@ -1175,6 +1207,7 @@ impl<'a> CompilerParserInstance<'a> {
         self.ctx.check_token(condition_enter_bracket_token, CompilerToken::SubExpressionStart)?;
 
         self.parse_complete_expression()?
+        .check_expression_context(ExpressionContext::Integral)?
         .flat_map_result(|mut parser, condition_expression| {
             let condition_exit_bracket_token = parser.ctx.next()?;
             parser.ctx.check_token(condition_exit_bracket_token, CompilerToken::SubExpressionEnd)?;
@@ -1228,10 +1261,11 @@ impl<'a> CompilerParserInstance<'a> {
             _ => self.parse_assignment_statement(), // assume anything else is an assignment statement (because it starts with an expression)
         }
     }
-    fn parse_unary_expression(mut self, operator: UnaryOperator) -> anyhow::Result<AmbiguousExpression<'a>> {
+    fn parse_unary_expression(mut self, operator: UnaryOperator, inner_expression_context: ExpressionContext) -> anyhow::Result<AmbiguousExpression<'a>> {
         self.ctx.discard_next()?;
         let source_context = self.ctx.source_context();
         self.parse_expression_affinity_medium()?
+        .check_expression_context(inner_expression_context)?
         .flat_map_result(|parser, expression| {
             let result_expression = UnaryExpression{ operator, expression, source_context: source_context.clone() };
             Ok(AmbiguousExpression::unambiguous(parser, Expression::UnaryExpression(Box::new(result_expression))))
@@ -1243,14 +1277,15 @@ impl<'a> CompilerParserInstance<'a> {
         let source_context = self.ctx.source_context();
 
         self.parse_complete_expression()?
+        .check_expression_context(ExpressionContext::Integral)?
         .flat_map_result(|mut parser, length_expression| {
             let array_exit_expression = parser.ctx.next()?;
             parser.ctx.check_token(array_exit_expression, CompilerToken::ArraySubscriptEnd)?;
             let result_expression = ArrayTypeExpression { element_type_expression: element_type_expression.clone(), array_length_expression: length_expression, source_context: source_context.clone() };
-            Self::wrap_expression_with_possible_cv_qualifiers(AmbiguousExpression::unambiguous(parser, Expression::ArrayIndexExpression(Box::new(result_expression))))
+            Self::wrap_expression_with_possible_cv_qualifiers(AmbiguousExpression::unambiguous(parser, Expression::ArrayTypeExpression(Box::new(result_expression))))
         })
     }
-    fn parse_bracketed_unary_operator_expression(mut self, operator: UnaryOperator) -> anyhow::Result<AmbiguousExpression<'a>> {
+    fn parse_bracketed_unary_operator_expression(mut self, operator: UnaryOperator, inner_expression_context: ExpressionContext) -> anyhow::Result<AmbiguousExpression<'a>> {
         self.ctx.discard_next()?;
         let enter_bracket_token = self.ctx.next()?;
         let source_context = self.ctx.source_context();
@@ -1258,6 +1293,7 @@ impl<'a> CompilerParserInstance<'a> {
 
         // Bracketed operators are pre-delimited and as such have the highest priority
         self.parse_complete_expression()?
+            .check_expression_context(inner_expression_context)?
             .flat_map_result(|mut parser, expression| {
                 let exit_bracket_token = parser.ctx.next()?;
                 parser.ctx.check_token(exit_bracket_token, CompilerToken::SubExpressionEnd)?;
@@ -1375,8 +1411,8 @@ impl<'a> CompilerParserInstance<'a> {
             CompilerToken::BoolLiteralTrue => self.parse_bool_constant(true),
             CompilerToken::BoolLiteralFalse => self.parse_bool_constant(false),
             CompilerToken::Identifier(_) => self.parse_ambiguous_identifier_expression(),
-            CompilerToken::Sizeof => self.parse_bracketed_unary_operator_expression(UnaryOperator::StructSizeOf),
-            CompilerToken::Alignof => self.parse_bracketed_unary_operator_expression(UnaryOperator::StructAlignOf),
+            CompilerToken::Sizeof => self.parse_bracketed_unary_operator_expression(UnaryOperator::StructSizeOf, ExpressionContext::Typename),
+            CompilerToken::Alignof => self.parse_bracketed_unary_operator_expression(UnaryOperator::StructAlignOf, ExpressionContext::Typename),
             CompilerToken::SubExpressionStart => self.parse_sub_expression(),
             CompilerToken::ScopeStart => Ok(self.parse_ambiguous_block_expression()?),
             CompilerToken::Struct => self.parse_struct_declaration_expression(UserDefinedTypeKind::Struct),
@@ -1436,8 +1472,10 @@ impl<'a> CompilerParserInstance<'a> {
         while !unexplored_cases.is_empty() {
             let mut current_case = unexplored_cases.pop().unwrap();
 
-            // If this case is a member access expression, parse it
-            if let Ok(result) = current_case.parser.ctx.peek_or_eof() && result == Some(CompilerToken::ScopeDelimiter) {
+            // If this case is a typename and has a member access expression, parse it
+            let current_case_context = current_case.data.infer_expression_context();
+            if let Ok(result) = current_case.parser.ctx.peek_or_eof() && result == Some(CompilerToken::ScopeDelimiter) &&
+                (current_case_context == ExpressionContext::Typename || current_case_context == ExpressionContext::Unknown) {
                 let stashed_current_case = current_case.clone();
                 if let Ok(mut parsed_expression) = current_case.parser.parse_single_member_access_expression(current_case.data) {
                     // If we successfully parsed member access expression, add it to the unexplored list, since it could be a chain
@@ -1457,33 +1495,72 @@ impl<'a> CompilerParserInstance<'a> {
     }
     fn wrap_expression_with_possible_cv_qualifiers(ambiguous_expression: AmbiguousExpression<'a>) -> anyhow::Result<AmbiguousExpression<'a>> {
         ambiguous_expression.flat_map_result(|mut parser, expression| {
-            let source_context = parser.ctx.source_context();
-            let mut seen_const = false;
-            let mut seen_volatile = false;
-            loop {
-                let next_token = parser.ctx.peek_or_eof()?;
-                if next_token == Some(CompilerToken::Const) {
-                    if seen_const { return Err(parser.ctx.fail("Duplicate const modifier applied to type")); }
-                    parser.ctx.discard_next()?;
-                    seen_const = true;
-                } else if next_token == Some(CompilerToken::Volatile) {
-                    if seen_volatile { return Err(parser.ctx.fail("Duplicate volatile modifier applied to type")); }
-                    parser.ctx.discard_next()?;
-                    seen_volatile = true;
-                } else { break; }
+            let expression_context = expression.infer_expression_context();
+            if expression_context == ExpressionContext::Typename || expression_context == ExpressionContext::Unknown {
+                let source_context = parser.ctx.source_context();
+                let mut seen_const = false;
+                let mut seen_volatile = false;
+                loop {
+                    let next_token = parser.ctx.peek_or_eof()?;
+                    if next_token == Some(CompilerToken::Const) {
+                        if seen_const { return Err(parser.ctx.fail("Duplicate const modifier applied to type")); }
+                        parser.ctx.discard_next()?;
+                        seen_const = true;
+                    } else if next_token == Some(CompilerToken::Volatile) {
+                        if seen_volatile { return Err(parser.ctx.fail("Duplicate volatile modifier applied to type")); }
+                        parser.ctx.discard_next()?;
+                        seen_volatile = true;
+                    } else { break; }
+                }
+                if seen_const || seen_volatile {
+                    let result_expression = CVQualifiedExpression{base_expression: expression, constant: seen_const, volatile: seen_volatile, source_context};
+                    Ok(AmbiguousParsingResult::unambiguous(parser, Expression::CVQualifiedExpression(Box::new(result_expression))))
+                } else {
+                    Ok(AmbiguousParsingResult::unambiguous(parser, expression))
+                }
+            } else {
+                Ok(AmbiguousParsingResult::unambiguous(parser, expression))
             }
+        })
+    }
+    fn parse_cv_prefixed_expression(mut self) -> anyhow::Result<AmbiguousExpression<'a>> {
+        let source_context = self.ctx.source_context();
+        let (seen_const, seen_volatile) = if self.ctx.peek()? == CompilerToken::Const {
+            self.ctx.discard_next()?;
+            if self.ctx.peek()? == CompilerToken::Volatile {
+                self.ctx.discard_next()?;
+                (true, true)
+            } else { (true, false) }
+        } else if self.ctx.peek()? == CompilerToken::Volatile {
+            self.ctx.discard_next()?;
+            if self.ctx.peek()? == CompilerToken::Const {
+                self.ctx.discard_next()?;
+                (true, true)
+            } else { (false, true) }
+        } else { (false, false) };
+
+        self.parse_expression_affinity_higher()?
+        .check_expression_context(ExpressionContext::Typename)?
+        .flat_map_result(|parser, expression| {
             if seen_const || seen_volatile {
-                let result_expression = CVQualifiedExpression{base_expression: expression, constant: seen_const, volatile: seen_volatile, source_context};
+                let result_expression = CVQualifiedExpression{base_expression: expression, constant: seen_const, volatile: seen_volatile, source_context: source_context.clone()};
                 Ok(AmbiguousParsingResult::unambiguous(parser, Expression::CVQualifiedExpression(Box::new(result_expression))))
             } else {
                 Ok(AmbiguousParsingResult::unambiguous(parser, expression))
             }
         })
     }
-    fn parse_expression_affinity_high(self) -> anyhow::Result<AmbiguousExpression<'a>> {
-        Self::wrap_expression_with_possible_cv_qualifiers(self.parse_expression_affinity_higher()?)?
-        .flat_map_result(|mut parser, simple_expression| {
-            if parser.ctx.peek_or_eof()? == Some(CompilerToken::PointerOrMultiply) {
+    fn parse_expression_affinity_high(mut self) -> anyhow::Result<AmbiguousExpression<'a>> {
+        match self.ctx.peek()? {
+            CompilerToken::Const => self.parse_cv_prefixed_expression(),
+            CompilerToken::Volatile => self.parse_cv_prefixed_expression(),
+            _ => Self::wrap_expression_with_possible_cv_qualifiers(self.parse_expression_affinity_higher()?)
+        }?.flat_map_result(|mut parser, simple_expression| {
+            let expression_concrete_type = simple_expression.infer_expression_context();
+            if expression_concrete_type != ExpressionContext::Typename && expression_concrete_type != ExpressionContext::Unknown {
+                // This is not a typename or unknown expression context, so none of the postscript operators are valid here
+                Ok(AmbiguousExpression::unambiguous(parser, simple_expression))
+            } else if parser.ctx.peek_or_eof()? == Some(CompilerToken::PointerOrMultiply) {
                 // This could be a pointer unary operator, but this is ambiguous because it could also be interpreted as a start of multiplication binary operator
                 // So we need to pursue both options, and hopefully we will be able to disambiguate them later
                 ExactExpressionCase{ parser, data: simple_expression }.repeat(2).flat_map_result(|mut forked_parser, (expression, case_index)| {
@@ -1529,9 +1606,9 @@ impl<'a> CompilerParserInstance<'a> {
     fn parse_expression_affinity_medium(mut self) -> anyhow::Result<AmbiguousExpression<'a>> {
         let first_expression_token = self.ctx.peek()?;
         match first_expression_token {
-            CompilerToken::BitwiseInverse => self.parse_unary_expression(UnaryOperator::BitwiseInverse),
-            CompilerToken::NegateOrSubtract => self.parse_unary_expression(UnaryOperator::ArithmeticNegate),
-            CompilerToken::BoolNegate => self.parse_unary_expression(UnaryOperator::BoolNegate),
+            CompilerToken::BitwiseInverse => self.parse_unary_expression(UnaryOperator::BitwiseInverse, ExpressionContext::Integral),
+            CompilerToken::NegateOrSubtract => self.parse_unary_expression(UnaryOperator::ArithmeticNegate, ExpressionContext::Integral),
+            CompilerToken::BoolNegate => self.parse_unary_expression(UnaryOperator::BoolNegate, ExpressionContext::Integral),
             _ => self.parse_expression_affinity_high(),
         }
     }
@@ -1541,13 +1618,17 @@ impl<'a> CompilerParserInstance<'a> {
             // as such, the perceived ambiguity of function call expression here (A*(B) vs (A) * (B)) is not a problem, and sub-expression start here
             // always indicates a function pointer expression, and as such, we do not need to fork the parser to account for the possibility that it could be an associative group,
             // since in that case medium affinity expression would have not digested the multiplication operator
-            if parser.ctx.peek_or_eof()? == Some(CompilerToken::SubExpressionStart) {
+            let return_value_type_context = return_value_type.infer_expression_context();
+            if parser.ctx.peek_or_eof()? == Some(CompilerToken::SubExpressionStart) &&
+                (return_value_type_context == ExpressionContext::Typename || return_value_type_context == ExpressionContext::Unknown) {
                 parser.ctx.discard_next()?;
                 let source_context = parser.ctx.source_context();
                 if parser.ctx.peek()? != CompilerToken::PointerOrMultiply {
                     // Next token is not a pointer type, which means that this is a member function pointer
                     // Parse the next expression as receiver type, and make sure it is terminated with ::*). We use parse_complete_expression here because it is bracket delimited
-                    parser.parse_complete_expression()?.flat_map_result(|mut inner_parser, receiver_expression| {
+                    parser.parse_complete_expression()?
+                    .check_expression_context(ExpressionContext::Typename)?
+                    .flat_map_result(|mut inner_parser, receiver_expression| {
                         let scope_delimiter_token = inner_parser.ctx.next()?;
                         inner_parser.ctx.check_token(scope_delimiter_token, CompilerToken::ScopeDelimiter)?;
                         Ok(AmbiguousParsingResult::unambiguous(inner_parser, Some(receiver_expression)))
@@ -1570,7 +1651,7 @@ impl<'a> CompilerParserInstance<'a> {
                     let argument_list_start_token = inner_parser.ctx.next()?;
                     inner_parser.ctx.check_token(argument_list_start_token, CompilerToken::SubExpressionStart)?;
 
-                    Ok(inner_parser.parse_ambiguous_expression_list(CompilerToken::SubExpressionEnd, |_| Ok(((), true)))?
+                    Ok(inner_parser.parse_ambiguous_expression_list(CompilerToken::SubExpressionEnd, ExpressionContext::Typename, |_| Ok(((), true)))?
                     .map_data(|results| results.into_iter().map(|(_, expression)| expression.unwrap()).collect::<Vec<Expression>>()).map_data(|argument_types| {
                         let result_expression = FunctionPointerExpression{return_value_type: return_value_type.clone(),
                             receiver_type: receiver_type.clone(), argument_types, constant, source_context: source_context.clone()};
@@ -1656,7 +1737,7 @@ impl<'a> CompilerParserInstance<'a> {
         let template_argument_start_token = self.ctx.next()?;
         self.ctx.check_token(template_argument_start_token, CompilerToken::LessOrArgumentListStart)?;
 
-        Ok(self.parse_ambiguous_expression_list(CompilerToken::MoreOrArgumentListEnd, |parser| {
+        Ok(self.parse_ambiguous_expression_list(CompilerToken::MoreOrArgumentListEnd, ExpressionContext::Unknown, |parser| {
             let value_type = parser.parse_expression_value_type()?;
             let source_context = parser.ctx.source_context();
 
@@ -1731,7 +1812,7 @@ impl<'a> CompilerParserInstance<'a> {
 
         if self.ctx.peek_or_eof()? == Some(CompilerToken::Assignment) {
             self.ctx.discard_next()?;
-            Ok(self.parse_complete_expression()?.flat_map_result(|mut parser, expression| {
+            Ok(self.parse_complete_expression()?.check_expression_context(value_type.expression_context())?.flat_map_result(|mut parser, expression| {
                 // Should end with a statement terminator
                 let terminator_token = parser.ctx.next()?;
                 parser.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
@@ -1773,7 +1854,7 @@ impl<'a> CompilerParserInstance<'a> {
         let assignment_operator_token = self.ctx.next()?;
         self.ctx.check_token(assignment_operator_token, CompilerToken::Assignment)?;
 
-        let initializer = self.parse_complete_expression()?.flat_map_result(|mut parser, expression| {
+        let initializer = self.parse_complete_expression()?.check_expression_context(value_type.expression_context())?.flat_map_result(|mut parser, expression| {
             // Should end with a statement terminator to be considered valid
             let terminator_token = parser.ctx.next()?;
             parser.ctx.check_token(terminator_token, CompilerToken::Terminator)?;
@@ -1789,6 +1870,7 @@ impl<'a> CompilerParserInstance<'a> {
         self.ctx.check_token(condition_enter_bracket_token, CompilerToken::SubExpressionStart)?;
 
         Ok(self.parse_complete_expression()?
+            .check_expression_context(ExpressionContext::Integral)?
             .flat_map_result(|mut parser, expression| {
                 let condition_exit_bracket_token = parser.ctx.next()?;
                 parser.ctx.check_token(condition_exit_bracket_token, CompilerToken::SubExpressionEnd)?;
@@ -1808,7 +1890,7 @@ impl<'a> CompilerParserInstance<'a> {
                 StructInnerDeclaration::ConditionalDeclaration(Box::new(conditional_statement))
             }))
     }
-    fn parse_optional_struct_conditional_declaration(mut self, operator_token: CompilerToken) -> anyhow::Result<ExactParseCase<'a, Option<ExpressionWithCondition>>> {
+    fn parse_optional_struct_conditional_declaration(mut self, operator_token: CompilerToken, inner_expression_context: ExpressionContext) -> anyhow::Result<ExactParseCase<'a, Option<ExpressionWithCondition>>> {
         // Parse optional alignment expression
         if self.ctx.peek()? == operator_token {
             self.ctx.discard_next()?;
@@ -1816,6 +1898,7 @@ impl<'a> CompilerParserInstance<'a> {
             self.ctx.check_token(alignment_expression_open_bracket, CompilerToken::SubExpressionStart)?;
 
             Ok(self.parse_complete_expression()?
+                .check_expression_context(inner_expression_context)?
                 .flat_map_result(|mut parser, expression| {
                     let alignment_expression_close_bracket = parser.ctx.next()?;
                     parser.ctx.check_token(alignment_expression_close_bracket, CompilerToken::SubExpressionEnd)?;
@@ -1837,9 +1920,18 @@ impl<'a> CompilerParserInstance<'a> {
     fn parse_struct_member_declaration(mut self) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
         let attributes = self.ctx.peek_attributes()?;
         let source_context = self.ctx.source_context();
-        self.parse_optional_struct_conditional_declaration(CompilerToken::Alignas)?
+
+        let potential_access_specifier_token = self.ctx.peek()?;
+        let access_specifier: Option<CppAccessSpecifier> = match potential_access_specifier_token {
+            CompilerToken::AccessSpecifierPublic => { self.ctx.discard_next()?; Some(CppAccessSpecifier::Public) },
+            CompilerToken::AccessSpecifierProtected => { self.ctx.discard_next()?; Some(CppAccessSpecifier::Protected) },
+            CompilerToken::AccessSpecifierPrivate => { self.ctx.discard_next()?; Some(CppAccessSpecifier::Private) },
+            _ => None
+        };
+
+        self.parse_optional_struct_conditional_declaration(CompilerToken::Alignas, ExpressionContext::Unknown)?
             .map_result(|parser, alignment_expression| {
-                Ok(parser.parse_complete_expression()?.map_data(|x| (alignment_expression.clone(), x)))
+                Ok(parser.parse_complete_expression()?.check_expression_context(ExpressionContext::Typename)?.map_data(|x| (alignment_expression.clone(), x)))
             })?
             .flat_map_result(|mut parser, (alignment_expression, member_type_expression)| {
                 let name_token = parser.ctx.next()?;
@@ -1849,6 +1941,7 @@ impl<'a> CompilerParserInstance<'a> {
                 if parsed_next_token == CompilerToken::ArraySubscriptStart {
                     // This is an array field, parse the array size expression
                     Ok(parser.parse_complete_expression()?
+                        .check_expression_context(ExpressionContext::Integral)?
                         .flat_map_result(|mut inner_parser, expression| {
                             let array_terminator_token = inner_parser.ctx.next()?;
                             inner_parser.ctx.check_token(array_terminator_token, CompilerToken::ArraySubscriptEnd)?;
@@ -1860,12 +1953,13 @@ impl<'a> CompilerParserInstance<'a> {
                         })?.disambiguate()?
                         .map_data(|array_size_expression| {
                             let result_declaration = MemberDeclaration { source_context: source_context.clone(), alignment_expression: alignment_expression.clone(),
-                                member_type_expression, name, array_size_expression: Some(array_size_expression), bitfield_width_expression: None, attributes: attributes.clone() };
+                                member_type_expression, name, array_size_expression: Some(array_size_expression), bitfield_width_expression: None, attributes: attributes.clone(), access_specifier };
                             StructInnerDeclaration::MemberDeclaration(Box::new(result_declaration))
                         }).to_parse_result())
                 } else if parsed_next_token == CompilerToken::BaseClass {
                     // This is a bitfield, parse the bitfield width expression
                     Ok(parser.parse_complete_expression()?
+                        .check_expression_context(ExpressionContext::Integral)?
                         .flat_map_result(|mut inner_parser, expression| {
                             let statement_terminator_token = inner_parser.ctx.next()?;
                             inner_parser.ctx.check_token(statement_terminator_token, CompilerToken::Terminator)?;
@@ -1874,14 +1968,14 @@ impl<'a> CompilerParserInstance<'a> {
                         })?.disambiguate()?
                         .map_data(|bitfield_width_expression| {
                             let result_declaration = MemberDeclaration { source_context: source_context.clone(), alignment_expression: alignment_expression.clone(), member_type_expression, name,
-                                array_size_expression: None, bitfield_width_expression: Some(bitfield_width_expression), attributes: attributes.clone() };
+                                array_size_expression: None, bitfield_width_expression: Some(bitfield_width_expression), attributes: attributes.clone(), access_specifier };
                             StructInnerDeclaration::MemberDeclaration(Box::new(result_declaration))
                         }).to_parse_result())
                 } else {
                     // This is a normal member, not a bitfield or an array
                     parser.ctx.check_token(parsed_next_token, CompilerToken::Terminator)?;
                     let result_declaration = MemberDeclaration { source_context: source_context.clone(), alignment_expression: alignment_expression.clone(), member_type_expression, name,
-                        array_size_expression: None, bitfield_width_expression: None, attributes: attributes.clone() };
+                        array_size_expression: None, bitfield_width_expression: None, attributes: attributes.clone(), access_specifier };
                     Ok(ExactStructInnerDeclarationCase::create(parser, StructInnerDeclaration::MemberDeclaration(Box::new(result_declaration))).to_parse_result())
                 }
             })?.disambiguate()
@@ -1903,14 +1997,14 @@ impl<'a> CompilerParserInstance<'a> {
         Ok(ExactStructInnerDeclarationCase::create(current_parser, StructInnerDeclaration::BlockDeclaration(Box::new(result_statement))))
     }
     fn parse_regular_virtual_function_declaration(self, source_context: &ASTSourceContext, attributes: BTreeMap<String, Vec<String>>) -> anyhow::Result<ExactStructInnerDeclarationCase<'a>> {
-        self.parse_complete_expression()?.flat_map_result(|mut parser, return_value_type| {
+        self.parse_complete_expression()?.check_expression_context(ExpressionContext::Typename)?.flat_map_result(|mut parser, return_value_type| {
             let function_name_token = parser.ctx.next()?;
             let function_name = parser.ctx.check_identifier(function_name_token)?;
 
             let argument_list_start_token = parser.ctx.next()?;
             parser.ctx.check_token(argument_list_start_token, CompilerToken::SubExpressionStart)?;
 
-            Ok(parser.parse_ambiguous_expression_list_extended(CompilerToken::SubExpressionEnd, |parser| {
+            Ok(parser.parse_ambiguous_expression_list_extended(CompilerToken::SubExpressionEnd, ExpressionContext::Typename, |parser| {
                 let source_context = parser.ctx.source_context();
                 Ok(ExactParseCase::create(parser, (source_context, true)))
             }, |mut parser_case| {
@@ -1939,7 +2033,8 @@ impl<'a> CompilerParserInstance<'a> {
 
         let owner_struct_name_token = self.ctx.next()?;
         self.ctx.check_identifier(owner_struct_name_token)?;
-        let function_name = String::from("@destructor");
+        // TODO: Treat special names like destructor separately from normal names via a variant enum and special name enum
+        let function_name = String::from(UserDefinedType::DESTRUCTOR_FUNCTION_NAME);
 
         let argument_list_start_token = self.ctx.next()?;
         self.ctx.check_token(argument_list_start_token, CompilerToken::SubExpressionStart)?;
@@ -1983,8 +2078,8 @@ impl<'a> CompilerParserInstance<'a> {
         self.parse_template_declaration()?.flat_map_result(|mut parser, (template_declaration, doc_comment)| {
             let template_statement_token = parser.ctx.peek()?;
             let result_statement = match template_statement_token {
-                // access specifiers
-                CompilerToken::Public => parser.parse_templated_access_specifier_struct_inner_declaration(template_declaration, DeclarationAccessSpecifier::Public, doc_comment),
+                // gospel access specifiers
+                CompilerToken::Visible => parser.parse_templated_access_specifier_struct_inner_declaration(template_declaration, DeclarationAccessSpecifier::Visible, doc_comment),
                 CompilerToken::Internal => parser.parse_templated_access_specifier_struct_inner_declaration(template_declaration, DeclarationAccessSpecifier::Internal, doc_comment),
                 CompilerToken::Local => parser.parse_templated_access_specifier_struct_inner_declaration(template_declaration, DeclarationAccessSpecifier::Local, doc_comment),
                 // data and struct declarations
@@ -2023,8 +2118,8 @@ impl<'a> CompilerParserInstance<'a> {
         match statement_token {
             // template declaration
             CompilerToken::Template => self.parse_templated_struct_inner_declaration(),
-            // access specifiers
-            CompilerToken::Public => self.parse_access_specifier_struct_inner_declaration(DeclarationAccessSpecifier::Public),
+            // gospel access specifiers
+            CompilerToken::Visible => self.parse_access_specifier_struct_inner_declaration(DeclarationAccessSpecifier::Visible),
             CompilerToken::Internal => self.parse_access_specifier_struct_inner_declaration(DeclarationAccessSpecifier::Internal),
             CompilerToken::Local => self.parse_access_specifier_struct_inner_declaration(DeclarationAccessSpecifier::Local),
             // data, struct, conditional, scope and blank declarations
@@ -2037,7 +2132,7 @@ impl<'a> CompilerParserInstance<'a> {
             CompilerToken::ScopeStart => self.parse_struct_block_declaration(),
             CompilerToken::Virtual => self.parse_virtual_function_declaration(),
             CompilerToken::Terminator => self.parse_empty_struct_inner_declaration(),
-            // In all other cases assume it is a member declaration. Telling for sure is difficult because it can start with an arbitrary type expression
+            // In all other cases assume it is a member declaration. Telling for sure is difficult because it can start with an arbitrary type expression or access specifier
             _ => self.parse_struct_member_declaration(),
         }
     }
@@ -2049,6 +2144,7 @@ impl<'a> CompilerParserInstance<'a> {
         self.ctx.check_token(condition_enter_bracket_token, CompilerToken::SubExpressionStart)?;
 
         Ok(self.parse_complete_expression()?
+        .check_expression_context(ExpressionContext::Integral)?
         .flat_map_result(|mut parser, expression| {
             let condition_exit_bracket_token = parser.ctx.next()?;
             parser.ctx.check_token(condition_exit_bracket_token, CompilerToken::SubExpressionEnd)?;
@@ -2060,8 +2156,8 @@ impl<'a> CompilerParserInstance<'a> {
         let attributes = external_attributes.unwrap_or(self.ctx.peek_attributes()?);
         self.ctx.discard_next()?;
         let source_context = self.ctx.source_context();
-        let member_pack_expression_case = self.parse_optional_struct_conditional_declaration(CompilerToken::MemberPack)?;
-        let alignment_expression_case = member_pack_expression_case.parser.parse_optional_struct_conditional_declaration(CompilerToken::Alignas)?;
+        let member_pack_expression_case = self.parse_optional_struct_conditional_declaration(CompilerToken::MemberPack, ExpressionContext::Integral)?;
+        let alignment_expression_case = member_pack_expression_case.parser.parse_optional_struct_conditional_declaration(CompilerToken::Alignas, ExpressionContext::Unknown)?;
 
         ExactParseCase::create(alignment_expression_case.parser, (alignment_expression_case.data, member_pack_expression_case.data))
         .map_result(|mut parser, (alignment_expression, member_pack_expression)| {
@@ -2073,7 +2169,7 @@ impl<'a> CompilerParserInstance<'a> {
             if scope_enter_or_base_class_separator == CompilerToken::BaseClass && struct_kind == UserDefinedTypeKind::Union {
                 Err(parser.ctx.fail("Union types cannot have base classes"))
             } else if scope_enter_or_base_class_separator == CompilerToken::BaseClass {
-                Ok(parser.parse_ambiguous_expression_list_extended(CompilerToken::ScopeStart, |parser| {
+                Ok(parser.parse_ambiguous_expression_list_extended(CompilerToken::ScopeStart, ExpressionContext::Typename, |parser| {
                     let source_context = parser.ctx.source_context();
                     Ok(ExactParseCase::create(parser, (source_context, true)))
                 }, |mut parser_case| {
@@ -2167,7 +2263,7 @@ impl<'a> CompilerParserInstance<'a> {
             // Parse underlying type if next token is a base class separator
             let scope_enter_or_base_class_separator = parser.ctx.next()?;
             if scope_enter_or_base_class_separator == CompilerToken::BaseClass {
-                Ok(parser.parse_complete_expression()?.flat_map_result(|mut inner_parser, expression| {
+                Ok(parser.parse_complete_expression()?.check_expression_context(ExpressionContext::Typename)?.flat_map_result(|mut inner_parser, expression| {
                     let source_context = inner_parser.ctx.source_context();
                     if inner_parser.ctx.peek()? == CompilerToken::If {
                         let condition_expression = inner_parser.parse_postfix_conditional_expression()?;
@@ -2265,8 +2361,8 @@ impl<'a> CompilerParserInstance<'a> {
         self.parse_template_declaration()?.flat_map_result(|mut parser, (template_declaration, doc_comment)| {
             let template_statement_token = parser.ctx.peek()?;
             Ok(match template_statement_token {
-                // access specifiers
-                CompilerToken::Public => parser.parse_templated_access_specifier_top_level_statement(template_declaration, DeclarationAccessSpecifier::Public, doc_comment),
+                // gospel access specifiers
+                CompilerToken::Visible => parser.parse_templated_access_specifier_top_level_statement(template_declaration, DeclarationAccessSpecifier::Visible, doc_comment),
                 CompilerToken::Internal => parser.parse_templated_access_specifier_top_level_statement(template_declaration, DeclarationAccessSpecifier::Internal, doc_comment),
                 CompilerToken::Local => parser.parse_templated_access_specifier_top_level_statement(template_declaration, DeclarationAccessSpecifier::Local, doc_comment),
                 // data and struct declarations
@@ -2302,8 +2398,8 @@ impl<'a> CompilerParserInstance<'a> {
         match statement_token {
             // template declaration
             CompilerToken::Template => self.parse_templated_top_level_statement(),
-            // access specifiers
-            CompilerToken::Public => self.parse_access_specifier_top_level_statement(DeclarationAccessSpecifier::Public),
+            // gospel access specifiers
+            CompilerToken::Visible => self.parse_access_specifier_top_level_statement(DeclarationAccessSpecifier::Visible),
             CompilerToken::Internal => self.parse_access_specifier_top_level_statement(DeclarationAccessSpecifier::Internal),
             CompilerToken::Local => self.parse_access_specifier_top_level_statement(DeclarationAccessSpecifier::Local),
             // import, extern, data, struct, namespace or blank declarations
@@ -2488,7 +2584,7 @@ impl<'a> CompilerParserInstance<'a> {
     }
     fn access_specifier_to_source_text(access_specifier: DeclarationAccessSpecifier) -> &'static str {
         match access_specifier {
-            DeclarationAccessSpecifier::Public => "pub",
+            DeclarationAccessSpecifier::Visible => "pub",
             DeclarationAccessSpecifier::Internal => "internal",
             DeclarationAccessSpecifier::Local => "local",
         }
@@ -2684,7 +2780,7 @@ impl<'a> CompilerParserInstance<'a> {
     fn expression_to_source_text(expression: &Expression) -> String {
         match expression {
             Expression::UnaryExpression(expr) => Self::unary_expression_to_source_text(&**expr),
-            Expression::ArrayIndexExpression(expr) => Self::array_index_expression_to_source_text(&**expr),
+            Expression::ArrayTypeExpression(expr) => Self::array_index_expression_to_source_text(&**expr),
             Expression::IdentifierExpression(expr) => Self::identifier_expression_to_source_text(&**expr),
             Expression::IntegerConstantExpression(expr) => Self::integer_constant_expression_to_source_text(&**expr),
             Expression::BoolConstantExpression(expr) => Self::bool_constant_expression_to_source_text(&**expr),

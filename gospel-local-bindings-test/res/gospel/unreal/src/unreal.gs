@@ -39,25 +39,25 @@ struct TVector {
 
 type FVector = if (UE_VERSION >= 501) TVector<double> else TVector<float>;
 
-public struct FScriptElement {};
+visible struct FScriptElement {};
 
 [[zero_constructible]]
 template<typename InIndexType>
-public struct TSizedHeapAllocator {
+visible struct TSizedHeapAllocator {
     type IndexType = InIndexType;
-    FScriptElement* Data;
+    private FScriptElement* Data;
 };
 
 [[zero_constructible]]
 template<typename InElementType, unsigned int InNumInlineElements, typename InSecondaryAllocator>
-public struct TInlineAllocator {
+visible struct TInlineAllocator {
     InElementType InlineAllocation[InNumInlineElements];
     InSecondaryAllocator SecondaryAllocation;
 };
 
 [[zero_constructible]]
 template<typename InElementType, typename InAllocator = TSizedHeapAllocator<int32_t>>
-public struct TArray {
+visible struct TArray {
     type ElementType = InElementType;
     type IndexType = InAllocator::typename IndexType;
 
@@ -76,17 +76,17 @@ struct alignas(if (UE_VERSION >= 411 && UE_VERSION < 422) 8 else 4) FName {
     if (UE_VERSION < 422) {
         // Early versions (4.12-4.21): Contains union with uint64_t (8-byte aligned)
         // Union not fully defined due to Gospel limitations, but forces 8-byte alignment
-        int32_t ComparisonIndex;
-        uint32_t Number;
+        private int32_t ComparisonIndex;
+        private uint32_t Number;
     } else if (UE_VERSION < 423) {
         // UE 4.22: Transition version, no union, int32_t ComparisonIndex
-        int32_t ComparisonIndex;
-        uint32_t Number;
+        private int32_t ComparisonIndex;
+        private uint32_t Number;
     } else {
         // UE 4.23+: Modern version with FNameEntryId
-        FNameEntryId ComparisonIndex;
-        if (WITH_CASE_PRESERVING_NAME == 1) FNameEntryId DisplayIndex;
-        uint32_t Number;
+        private FNameEntryId ComparisonIndex;
+        if (WITH_CASE_PRESERVING_NAME == 1) private FNameEntryId DisplayIndex;
+        private uint32_t Number;
     }
 };
 
@@ -625,19 +625,29 @@ struct FUObjectArray {
     if (UE_VERSION >= 502) bool bShouldRecycleObjectIndices;
 };
 
+enum class EPropertyPointerType {
+	Direct = 0,
+	Container = 1,
+};
 
 type EObjectFlags = int32_t;
 type EClassFlags = int32_t;
 
 /// Core class in the Unreal Engine object system. All reflection-enabled types are derived from this class
 class UObject {
-    uint64_t VTable;
     /// Flags assigned to this object. Flags define the logical state of the object
     EObjectFlags ObjectFlags;
     int32_t InternalIndex;
     UClass* ClassPrivate;
     FName NamePrivate;
     UObject* OuterPrivate;
+
+    virtual ~UObject();
+	virtual void RegisterDependencies();
+	virtual void DeferredRegister(UClass* UClassStaticClass, const wchar_t* PackageName, const wchar_t* Name);
+	virtual FName GetFNameForStatID() const;
+	virtual bool CanBeClusterRoot() const;
+    virtual void ExportText_Internal(FString& ValueStr, const void* PropertyValue, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32_t PortFlags, UObject* ExportRootScope) const;
 };
 
 class UField : UObject {

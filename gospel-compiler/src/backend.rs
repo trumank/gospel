@@ -9,8 +9,8 @@ use itertools::{Itertools};
 use strum::Display;
 use gospel_typelib::target_triplet::BitWidth;
 use crate::ast::{BoolConstantExpression, CVQualifiedExpression, CompilerBuiltinExpression, EnumConstantDeclaration, EnumStatement, FunctionParameterDeclaration, FunctionPointerExpression, MemberFunctionDeclaration, StaticCastExpression, SwitchExpression};
-use gospel_typelib::type_model::{EnumKind, IntegerSignedness, IntegralType, PrimitiveType, UserDefinedTypeKind};
-use gospel_vm::bytecode::GospelOpcode;
+use gospel_typelib::type_model::{CppAccessSpecifier, EnumKind, IntegerSignedness, IntegralType, PrimitiveType, UserDefinedTypeKind};
+use gospel_vm::bytecode::{GospelOpcode, gospel_opcode_constants};
 use gospel_vm::module::GospelContainer;
 use gospel_vm::gospel::{GospelTargetProperty};
 use gospel_vm::writer::{GospelContainerBuilder, GospelContainerWriter, GospelJumpLabelFixup, GospelModuleVisitor, GospelSourceFunctionDefinition, GospelSourceObjectReference};
@@ -250,7 +250,7 @@ impl CompilerFunctionBuilder {
             Expression::BlockExpression(block_expression) => { self.compile_block_expression(scope, &*block_expression) }
             Expression::IntegerConstantExpression(constant_expression) => { self.compile_integer_constant_expression(scope, &*constant_expression) }
             Expression::BoolConstantExpression(constant_expression) => { self.compile_bool_constant_expression(scope, &**constant_expression) }
-            Expression::ArrayIndexExpression(array_index_expression) => { self.compile_array_type_expression(scope, &*array_index_expression) }
+            Expression::ArrayTypeExpression(array_index_expression) => { self.compile_array_type_expression(scope, &*array_index_expression) }
             Expression::MemberAccessExpression(member_access_expression) => { self.compile_member_access_expression(scope, &*member_access_expression) }
             Expression::StructDeclarationExpression(struct_declaration_expression) => { self.compile_struct_declaration_expression(scope, &*struct_declaration_expression) }
             Expression::CompilerBuiltinExpression(compiler_builtin_expression) => { self.compile_compiler_builtin_expression(scope, &*compiler_builtin_expression) }
@@ -1253,7 +1253,7 @@ impl CompilerFunctionBuilder {
             builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             let expression_type = builder.compile_expression(scope, expression)?;
             builder.coerce_to_expression_type(&expression_type, &ExpressionValueType::Typename, &source_context)?;
-            let base_class_flags = if is_prototype_pass { 1 << 2 } else { 0 };
+            let base_class_flags = if is_prototype_pass { gospel_opcode_constants::BASE_CLASS_FLAG_PROTOTYPE } else { 0 };
             builder.function_definition.add_udt_base_class_instruction(base_class_flags, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
             Ok({})
         })
@@ -1298,7 +1298,7 @@ impl CompilerFunctionBuilder {
             let instruction_encoding = CompilerFunctionBuilder::integral_type_instruction_encoding(&integral_value_type);
             self.function_definition.add_enum_constant_with_value_instruction(constant_declaration.name.as_ref(), 0, instruction_encoding, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         } else {
-            self.function_definition.add_type_member_instruction(GospelOpcode::TypeEnumAddConstant, constant_declaration.name.as_ref(), 0, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+            self.function_definition.add_enum_constant_instruction(GospelOpcode::TypeEnumAddConstant, constant_declaration.name.as_ref(), 0, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         }
 
         if let Some(jump_to_end_fixup) = possibly_jump_to_end_fixup {
@@ -1310,8 +1310,8 @@ impl CompilerFunctionBuilder {
     fn compile_enum_constant_prototype_declaration(&mut self, scope: &Rc<CompilerLexicalScope>, type_layout_slot_index: u32, constant_declaration: &EnumConstantDeclaration) -> CompilerResult<()> {
         let source_context = CompilerSourceContext{file_name: scope.file_or_module_name(), line_context: constant_declaration.source_context.clone()};
         self.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot_index, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
-        let constant_flags: u32 = 1 << 2;
-        self.function_definition.add_type_member_instruction(GospelOpcode::TypeEnumAddConstant, constant_declaration.name.as_ref(), constant_flags, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
+        let constant_flags: u32 = gospel_opcode_constants::ENUM_CONSTANT_FLAG_PROTOTYPE;
+        self.function_definition.add_enum_constant_instruction(GospelOpcode::TypeEnumAddConstant, constant_declaration.name.as_ref(), constant_flags, Self::get_line_number(&source_context)).with_source_context(&source_context)?;
         Ok({})
     }
     fn compile_generic_type_layout_finalization(&mut self, type_layout_slot_index: u32, type_layout_metadata_slot_index: Option<u32>, source_context: &CompilerSourceContext) -> CompilerResult<()> {
@@ -1605,6 +1605,7 @@ struct CompilerStructMemberFragment {
     source_context: CompilerSourceContext,
     scope: Rc<CompilerLexicalScope>,
     member_name: Option<String>,
+    access_specifier: Option<CppAccessSpecifier>,
     member_type_expression: Expression,
     alignment_expression: Option<ExpressionWithCondition>,
     array_size_expression: Option<Expression>,
@@ -1624,14 +1625,14 @@ impl CompilerStructMemberFragment {
 
         // Compile member type expression
         let member_type_expression_type = builder.compile_expression(&self.scope, &self.member_type_expression)?;
-        let member_flags = if is_prototype_pass { 1 << 2 } else { 0 } as u32;
+        let member_flags = if is_prototype_pass { gospel_opcode_constants::FIELD_FLAG_PROTOTYPE } else { 0 };
         builder.coerce_to_expression_type(&member_type_expression_type, &ExpressionValueType::Typename, &self.source_context)?;
 
         if let Some(bitfield_width_expression) = &self.bitfield_width_expression {
             // If there is a bitfield width expression, this is a bitfield member
             let bitfield_width_expression_type = builder.compile_expression(&self.scope, bitfield_width_expression)?;
             CompilerFunctionBuilder::coerce_to_integral_type(builder, &IntegralType {bit_width: BitWidth::Width64, signedness: IntegerSignedness::Unsigned}, &bitfield_width_expression_type, false, &self.source_context)?;
-            builder.function_definition.add_type_member_instruction(GospelOpcode::TypeUDTAddBitfield, self.member_name.as_ref(), member_flags, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            builder.function_definition.add_type_member_instruction(GospelOpcode::TypeUDTAddBitfield, self.member_name.as_ref(), member_flags, self.access_specifier, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         } else {
             // If array size expression is present, we need to convert the given member type to an array implicitly
             if let Some(array_size_expression) = &self.array_size_expression {
@@ -1655,7 +1656,7 @@ impl CompilerStructMemberFragment {
                     self.compile_member_alignment_statement(builder, alignment_expression)?;
                 }
             }
-            builder.function_definition.add_type_member_instruction(GospelOpcode::TypeUDTAddField, self.member_name.as_ref(), member_flags, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            builder.function_definition.add_type_member_instruction(GospelOpcode::TypeUDTAddField, self.member_name.as_ref(), member_flags, self.access_specifier, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         }
         Ok({})
     }
@@ -1664,13 +1665,13 @@ impl CompilerStructMemberFragment {
 
         // Simplified type of the expression is void, and simplified declarations are only allowed as prototypes
         builder.function_definition.add_string_instruction(GospelOpcode::TypePrimitiveCreate, PrimitiveType::Void.to_string().as_str(), CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
-        let member_flags = if is_prototype_pass { (1 << 2) as u32 } else { 0 };
+        let member_flags = if is_prototype_pass { gospel_opcode_constants::FIELD_FLAG_PROTOTYPE } else { 0 };
         if self.bitfield_width_expression.is_some() {
-            builder.function_definition.add_type_member_instruction(GospelOpcode::TypeUDTAddBitfield, self.member_name.as_ref(), member_flags,
+            builder.function_definition.add_type_member_instruction(GospelOpcode::TypeUDTAddBitfield, self.member_name.as_ref(), member_flags, self.access_specifier,
                                                                     CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         } else {
             builder.function_definition.add_int64_constant_instruction(-1i64 as u64, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
-            builder.function_definition.add_type_member_instruction(GospelOpcode::TypeUDTAddField, self.member_name.as_ref(), member_flags,
+            builder.function_definition.add_type_member_instruction(GospelOpcode::TypeUDTAddField, self.member_name.as_ref(), member_flags, self.access_specifier,
                                                                     CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         }
         Ok({})
@@ -1704,12 +1705,58 @@ struct CompilerStructVirtualFunctionFragment {
     is_override: bool,
 }
 impl CompilerStructVirtualFunctionFragment {
-    fn compile_full_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, is_prototype_pass: bool) -> CompilerResult<()> {
+    fn compile_prototype_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32) -> CompilerResult<()> {
         builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+
+        let function_flags = (if self.constant { gospel_opcode_constants::VIRTUAL_FUNCTION_FLAG_CONST } else { 0 }) | 
+            (if self.is_override { gospel_opcode_constants::VIRTUAL_FUNCTION_FLAG_OVERRIDE } else { 0 }) | 
+            gospel_opcode_constants::VIRTUAL_FUNCTION_FLAG_PROTOTYPE;
+        builder.function_definition.add_int_instruction(GospelOpcode::Int32Constant, function_flags, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+
+        builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, source_context| {
+            let return_value_expression_type = inner_builder.compile_expression(&self.scope, &self.return_type_expression)?;
+            inner_builder.coerce_to_expression_type(&return_value_expression_type, &ExpressionValueType::Typename, source_context)
+        }, |inner_builder, source_context| {
+            // Add unresolved_return_type flag to the function flags we have just pushed on the stack
+            let unresolved_return_type_flag = gospel_opcode_constants::VIRTUAL_FUNCTION_FLAG_UNRESOLVED_RETURN_TYPE;
+            inner_builder.function_definition.add_int_instruction(GospelOpcode::Int32Constant, unresolved_return_type_flag, CompilerFunctionBuilder::get_line_number(source_context)).with_source_context(source_context)?;
+            let instruction_encoding = CompilerFunctionBuilder::integral_type_instruction_encoding(&IntegralType{bit_width: BitWidth::Width32, signedness: IntegerSignedness::Unsigned});
+            inner_builder.function_definition.add_int_instruction(GospelOpcode::Or, instruction_encoding, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(source_context)?;
+
+            // Use void as a placeholder return value type if real type cannot be resolved
+            inner_builder.function_definition.add_string_instruction(GospelOpcode::TypePrimitiveCreate, PrimitiveType::Void.to_string().as_str(), CompilerFunctionBuilder::get_line_number(source_context)).with_source_context(source_context)?;
+            Ok({})
+        })?;
+
+        for argument_index in 0..self.parameters.len() {
+            builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, source_context| {
+                let argument_expression_type = inner_builder.compile_expression(&self.scope, &self.parameters[argument_index].parameter_type)?;
+                inner_builder.coerce_to_expression_type(&argument_expression_type, &ExpressionValueType::Typename, source_context)
+            }, |inner_builder, source_context| {
+                // Use void as a placeholder parameter type if real parameter type cannot be resolved
+                inner_builder.function_definition.add_string_instruction(GospelOpcode::TypePrimitiveCreate, PrimitiveType::Void.to_string().as_str(), CompilerFunctionBuilder::get_line_number(source_context)).with_source_context(source_context)?;
+                Ok({})
+            })?;
+
+            if let Some(argument_name) = &self.parameters[argument_index].parameter_name {
+                let argument_name_index = builder.function_definition.add_string_reference_internal(argument_name.as_str());
+                builder.function_definition.add_int_instruction(GospelOpcode::Int32Constant, argument_name_index, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            } else {
+                builder.function_definition.add_int_instruction(GospelOpcode::Int32Constant, -1i32 as u32, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+            }
+        }
+
+        builder.function_definition.add_udt_virtual_function_instruction(self.function_name.as_str(), self.parameters.len() as u32, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+        Ok({})
+    }
+    fn compile_full_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32) -> CompilerResult<()> {
+        builder.function_definition.add_slot_instruction(GospelOpcode::LoadSlot, type_layout_slot, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+
+        let function_flags = (if self.constant { gospel_opcode_constants::VIRTUAL_FUNCTION_FLAG_CONST } else { 0 }) | (if self.is_override { gospel_opcode_constants::VIRTUAL_FUNCTION_FLAG_OVERRIDE } else { 0 });
+        builder.function_definition.add_int_instruction(GospelOpcode::Int32Constant, function_flags, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
 
         let return_value_expression_type = builder.compile_expression(&self.scope, &self.return_type_expression)?;
         builder.coerce_to_expression_type(&return_value_expression_type, &ExpressionValueType::Typename, &self.source_context)?;
-        let function_flags = (if self.constant { 1 << 0 } else { 0 }) | (if self.is_override { 1 << 1 } else { 0 }) | (if is_prototype_pass { 1 << 2 } else { 0 });
 
         for argument_index in 0..self.parameters.len() {
             let argument_expression_type = builder.compile_expression(&self.scope, &self.parameters[argument_index].parameter_type)?;
@@ -1722,25 +1769,24 @@ impl CompilerStructVirtualFunctionFragment {
                 builder.function_definition.add_int_instruction(GospelOpcode::Int32Constant, -1i32 as u32, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
             }
         }
-        builder.function_definition.add_udt_virtual_function_instruction(self.function_name.as_str(), function_flags, (self.parameters.len() * 2) as u32, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
+
+        builder.function_definition.add_udt_virtual_function_instruction(self.function_name.as_str(), self.parameters.len() as u32, CompilerFunctionBuilder::get_line_number(&self.source_context)).with_source_context(&self.source_context)?;
         Ok({})
     }
 }
 impl CompilerStructFragmentGenerator for CompilerStructVirtualFunctionFragment {
     fn compile_fragment(&self, builder: &mut CompilerFunctionBuilder, type_layout_slot: u32, _type_layout_metadata_slot: u32, is_prototype_pass: bool, allow_partial_types: bool) -> CompilerResult<()> {
-        if is_prototype_pass || allow_partial_types {
+        if is_prototype_pass {
+            self.compile_prototype_fragment(builder, type_layout_slot)
+        } else if allow_partial_types {
             builder.compile_try_catch_wrapped_statement(&self.source_context, |inner_builder, _| {
-                self.compile_full_fragment(inner_builder, type_layout_slot, is_prototype_pass)
+                self.compile_full_fragment(inner_builder, type_layout_slot)
             }, |inner_builder, source_context| {
-                if !is_prototype_pass {
-                    inner_builder.compile_generic_type_mark_partial_statement(type_layout_slot, source_context)?;
-                }
-                // Simplified virtual function declarations are not feasible due to the fact that virtual functions can be overloaded and name alone is not enough to identify them,
-                // as well as the fact that virtual functions require precise type information to generate callable thunks for them
+                inner_builder.compile_generic_type_mark_partial_statement(type_layout_slot, source_context)?;
                 Ok({})
             })
         } else {
-            self.compile_full_fragment(builder, type_layout_slot, false)
+            self.compile_full_fragment(builder, type_layout_slot)
         }
     }
 }
@@ -1919,7 +1965,7 @@ impl CompilerInstance {
     }
     fn convert_access_specifier(value_type: DeclarationAccessSpecifier) -> DeclarationVisibility {
         match value_type {
-            DeclarationAccessSpecifier::Public => DeclarationVisibility::Public,
+            DeclarationAccessSpecifier::Visible => DeclarationVisibility::Public,
             DeclarationAccessSpecifier::Internal => DeclarationVisibility::ModuleInternal,
             DeclarationAccessSpecifier::Local => DeclarationVisibility::FileLocal,
         }
@@ -2198,6 +2244,7 @@ impl CompilerInstance {
             source_context,
             scope: scope.clone(),
             member_name: declaration.name.clone(),
+            access_specifier: declaration.access_specifier.clone(),
             member_type_expression: declaration.member_type_expression.clone(),
             alignment_expression: declaration.alignment_expression.clone(),
             array_size_expression: declaration.array_size_expression.clone(),
@@ -2257,6 +2304,11 @@ impl CompilerInstance {
             if let StructInnerDeclaration::MemberDeclaration(member) = declaration && let Some(field_name) = &member.name {
                 for (field_attribute_name, field_attribute_value) in &member.attributes {
                     function_closure.borrow_mut().metadata.insert(format!("{}${}", field_name, field_attribute_name), field_attribute_value.clone());
+                }
+            }
+            if let StructInnerDeclaration::FunctionDeclaration(function) = declaration {
+                for (function_attribute_name, function_attribute_value) in &function.attributes {
+                    function_closure.borrow_mut().metadata.insert(format!("{}${}", function_name, function_attribute_name), function_attribute_value.clone());
                 }
             }
         }

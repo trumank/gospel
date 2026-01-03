@@ -1,20 +1,21 @@
-use std::cell::RefCell;
 use crate::module_processor::{BindingsTypeDefinition, ResolvedBindingsModuleContext};
+use crate::ModuleBindingsType;
 use anyhow::{anyhow, bail};
-use gospel_typelib::type_model::{EnumType, PrimitiveType, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeMember};
+use convert_case::{Case, Casing};
+use gospel_compiler::ast::ExpressionValueType;
+use gospel_compiler::backend::CompilerFunctionSignature;
+use gospel_compiler::core_attributes::{is_trivially_constructible, is_trivially_copyable};
+use gospel_typelib::type_model::{EnumType, FunctionDeclaration, PrimitiveType, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeMember};
+use gospel_vm::vm::{GospelVMTypeContainer, GospelVMValue};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::env::temp_dir;
 use std::fs::write;
 use std::path::{absolute, PathBuf};
-use convert_case::{Case, Casing};
-use syn::{parse2, parse_str, File};
-use gospel_compiler::ast::ExpressionValueType;
-use gospel_compiler::backend::CompilerFunctionSignature;
-use gospel_vm::vm::{GospelVMTypeContainer, GospelVMValue};
+use syn::{parse_str, File};
 use uuid::Uuid;
-use crate::ModuleBindingsType;
 
 #[derive(Debug)]
 pub(crate) struct CodeGenerationContext {
@@ -33,6 +34,40 @@ struct TypeParameterTokens {
     static_type_implementation: TokenStream,
 }
 
+struct FunctionParameterTypeTokens {
+    declaration: TokenStream,
+    type_descriptor: TokenStream,
+    value_as_mut_u8_ptr: TokenStream,
+    value_parameter_passed_as_reference: bool,
+    references_allocator_type: bool,
+}
+
+#[derive(Default)]
+struct FunctionReturnValueTokens {
+    return_value_type: Option<TokenStream>,
+    return_value_static_type_tag: Option<TokenStream>,
+    before_return_value_statement: Option<TokenStream>,
+    return_value_storage_initializer: Option<TokenStream>,
+    return_expression: Option<TokenStream>,
+    needs_allocator_instance: bool,
+    return_value_through_storage: bool,
+}
+
+#[derive(Clone, Default)]
+struct FieldPrototypeData {
+    field_name: String,
+    field_type_index: Option<usize>,
+}
+
+#[derive(Clone, Default)]
+struct VirtualFunctionPrototypeData {
+    virtual_function: FunctionDeclaration,
+    unresolved_return_type: bool,
+    variable_argument_count: bool,
+    nameless_parameter_indices: HashSet<usize>,
+    unresolved_parameter_type_indices: HashSet<usize>,
+}
+
 impl CodeGenerationContext {
     fn generate_primitive_type(&self, primitive_type: &PrimitiveType) -> TokenStream {
         match primitive_type {
@@ -40,8 +75,8 @@ impl CodeGenerationContext {
             PrimitiveType::Char => quote!{ i8 },
             PrimitiveType::UnsignedChar => quote!{ u8 },
             PrimitiveType::WideChar => match self.bindings_type {
-                ModuleBindingsType::Local => quote! {gospel_runtime::local_type_model::PlatformWideChar },
-                ModuleBindingsType::External => quote! {gospel_runtime::external_type_model::ExternalWideChar },
+                ModuleBindingsType::Local => quote! { gospel_runtime::local_type_model::PlatformWideChar },
+                ModuleBindingsType::External => quote! { gospel_runtime::external_type_model::ExternalWideChar },
             },
             PrimitiveType::ShortInt => quote!{ i16 },
             PrimitiveType::UnsignedShortInt => quote!{ u16 },
@@ -51,7 +86,7 @@ impl CodeGenerationContext {
             PrimitiveType::Double => quote!{ f64 },
             PrimitiveType::Bool => quote!{ bool },
             PrimitiveType::LongInt => match self.bindings_type {
-                ModuleBindingsType::Local => quote! {gospel_runtime::local_type_model::PlatformLongInt },
+                ModuleBindingsType::Local => quote! { gospel_runtime::local_type_model::PlatformLongInt },
                 ModuleBindingsType::External => quote! { gospel_runtime::external_type_model::ExternalLongInt },
             },
             PrimitiveType::UnsignedLongInt => match self.bindings_type {
@@ -60,10 +95,63 @@ impl CodeGenerationContext {
             },
             PrimitiveType::LongLongInt => quote!{ i64 },
             PrimitiveType::UnsignedLongLongInt => quote!{ u64 },
-            PrimitiveType::Char8 => quote!{ u8 },
-            PrimitiveType::Char16 => quote!{ u16 },
-            PrimitiveType::Char32 => quote!{ u32 },
+            PrimitiveType::Char8 => quote!{ gospel_runtime::core_type_definitions::Char8 },
+            PrimitiveType::Char16 => quote!{ gospel_runtime::core_type_definitions::Char16 },
+            PrimitiveType::Char32 => quote!{ gospel_runtime::core_type_definitions::Char32 },
         }
+    }
+    fn cast_primitive_type_to_u64(&self, primitive_type: PrimitiveType, primitive_value: TokenStream) -> anyhow::Result<TokenStream> {
+        Ok(match primitive_type {
+            PrimitiveType::Void => bail!("Void type is sizeless"),
+            PrimitiveType::Char => quote!{ #primitive_value as u64 },
+            PrimitiveType::UnsignedChar => quote!{ #primitive_value as u64 },
+            PrimitiveType::WideChar => quote! { #primitive_value.0 as u64 },
+            PrimitiveType::ShortInt => quote!{ #primitive_value as u64 },
+            PrimitiveType::UnsignedShortInt => quote!{ #primitive_value as u64 },
+            PrimitiveType::Int => quote!{ #primitive_value as u64 },
+            PrimitiveType::UnsignedInt => quote!{ #primitive_value as u64 },
+            PrimitiveType::Float => quote!{ #primitive_value.to_bits() as u64 },
+            PrimitiveType::Double => quote!{ #primitive_value.to_bits() as u64 },
+            PrimitiveType::Bool => quote!{ #primitive_value as u64 },
+            PrimitiveType::LongInt => quote! { #primitive_value.0 as u64 },
+            PrimitiveType::UnsignedLongInt => quote! { #primitive_value.0 as u64 },
+            PrimitiveType::LongLongInt => quote!{ #primitive_value as u64 },
+            PrimitiveType::UnsignedLongLongInt => quote!{ #primitive_value as u64 },
+            PrimitiveType::Char8 => quote!{ #primitive_value.0 as u64 },
+            PrimitiveType::Char16 => quote!{ #primitive_value.0 as u64 },
+            PrimitiveType::Char32 => quote!{ #primitive_value.0 as u64 },
+        })
+    }
+    fn cast_u64_to_primitive_type(&self, primitive_type: PrimitiveType, u64_value: TokenStream) -> anyhow::Result<TokenStream> {
+        Ok(match primitive_type {
+            PrimitiveType::Void => bail!("Void type is sizeless"),
+            PrimitiveType::Char => quote!{ #u64_value as i8 },
+            PrimitiveType::UnsignedChar => quote!{ #u64_value as u8 },
+            PrimitiveType::WideChar => match self.bindings_type {
+                ModuleBindingsType::Local => quote! { gospel_runtime::local_type_model::PlatformWideChar(#u64_value as gospel_runtime::local_type_model::PlatformWideCharUnderlyingType) },
+                ModuleBindingsType::External => quote! { gospel_runtime::external_type_model::ExternalWideChar(#u64_value as u32) },
+            },
+            PrimitiveType::ShortInt => quote!{ #u64_value as i16 },
+            PrimitiveType::UnsignedShortInt => quote!{ #u64_value as u16 },
+            PrimitiveType::Int => quote!{ #u64_value as i32 },
+            PrimitiveType::UnsignedInt => quote!{ #u64_value as u32 },
+            PrimitiveType::Float => quote!{ f32::from_bits(#u64_value as u32) },
+            PrimitiveType::Double => quote!{ f64::from_bits(#u64_value as u64) },
+            PrimitiveType::Bool => quote!{ if #u64_value == 0 { false } else { true } },
+            PrimitiveType::LongInt => match self.bindings_type {
+                ModuleBindingsType::Local => quote! { gospel_runtime::local_type_model::PlatformLongInt(#u64_value as gospel_runtime::local_type_model::PlatformLongIntUnderlyingType) },
+                ModuleBindingsType::External => quote! { gospel_runtime::external_type_model::ExternalLongInt(#u64_value as i64) },
+            },
+            PrimitiveType::UnsignedLongInt => match self.bindings_type {
+                ModuleBindingsType::Local => quote! { gospel_runtime::local_type_model::PlatformUnsignedLongInt(#u64_value as gospel_runtime::local_type_model::PlatformUnsignedLongIntUnderlyingType) },
+                ModuleBindingsType::External => quote! { gospel_runtime::external_type_model::ExternalUnsignedLongInt(#u64_value as u64) },
+            },
+            PrimitiveType::LongLongInt => quote!{ #u64_value as i64 },
+            PrimitiveType::UnsignedLongLongInt => quote!{ #u64_value as u64 },
+            PrimitiveType::Char8 => quote!{ gospel_runtime::core_type_definitions::Char8(#u64_value as u8) },
+            PrimitiveType::Char16 => quote!{ gospel_runtime::core_type_definitions::Char16(#u64_value as u16) },
+            PrimitiveType::Char32 => quote!{ gospel_runtime::core_type_definitions::Char32(#u64_value as u32) },
+        })
     }
     fn generate_short_type_name(type_name: &str) -> String {
         if let Some(last_separator_index) = type_name.rfind('$') {
@@ -106,18 +194,18 @@ impl CodeGenerationContext {
     }
     fn generate_vm_value_as_type(&self, value: &GospelVMValue) -> anyhow::Result<TokenStream> {
         match value {
-            GospelVMValue::TypeReference(type_index) => Ok(self.generate_type_reference(*type_index)?),
+            GospelVMValue::TypeReference(type_index) => Ok(self.generate_type_name(*type_index)?),
             GospelVMValue::Primitive(primitive_value) => Ok(self.generate_primitive_value_as_type(*primitive_value)),
             _ => bail!("Unsupported type argument value type: {}", value)
         }
     }
-    fn generate_type_reference(&self, type_index: usize) -> anyhow::Result<TokenStream> {
+    fn generate_type_name(&self, type_index: usize) -> anyhow::Result<TokenStream> {
         let base_type_index = self.module_context.run_context.base_type_index(type_index);
         let type_definition = self.module_context.run_context.type_by_index(base_type_index);
 
         Ok(match type_definition {
             Type::Array(array_type) => {
-                let element_type = self.generate_type_reference(array_type.element_type_index)?;
+                let element_type = self.generate_type_name(array_type.element_type_index)?;
                 let array_length = self.generate_primitive_value_as_type(array_type.array_length as u64);
                 match self.bindings_type {
                     ModuleBindingsType::Local => quote! {gospel_runtime::local_type_model::StaticArray::<#element_type, #array_length>},
@@ -125,7 +213,7 @@ impl CodeGenerationContext {
                 }
             },
             Type::Pointer(pointer_type) => {
-                let pointee_type = self.generate_type_reference(pointer_type.pointee_type_index)?;
+                let pointee_type = self.generate_type_name(pointer_type.pointee_type_index)?;
                 if pointer_type.is_reference {
                     match self.bindings_type {
                         ModuleBindingsType::Local => quote! {gospel_runtime::local_type_model::CRef::<#pointee_type>},
@@ -133,13 +221,13 @@ impl CodeGenerationContext {
                     }
                 } else {
                     match self.bindings_type {
-                        ModuleBindingsType::Local => quote! {Option<gospel_runtime::local_type_model::CRef::<#pointee_type>>},
+                        ModuleBindingsType::Local => quote! {Option::<gospel_runtime::local_type_model::CRef::<#pointee_type>>},
                         ModuleBindingsType::External => quote! {gospel_runtime::external_type_model::Ptr::<M, #pointee_type>},
                     }
                 }
             }
             Type::CVQualified(cv_qualified_type) => {
-                self.generate_type_reference(cv_qualified_type.base_type_index)?
+                self.generate_type_name(cv_qualified_type.base_type_index)?
             }
             Type::Primitive(primitive_type) => {
                 self.generate_primitive_type(primitive_type)
@@ -165,20 +253,236 @@ impl CodeGenerationContext {
                 }
             }
             Type::Enum(enum_type) => {
-                // TODO: We could generate more accurate bindings based not just on the name of the type but also on the template parameters
                 if let Some(enum_name) = &enum_type.name && let Some(source_crate_name) = self.module_context.type_source_crate_lookup.get(enum_name) {
                     // Try to generate as an explicit enum definition within source crate first
                     let full_type_name = self.generate_type_qualified_name(source_crate_name, enum_name);
                     quote! { #full_type_name }
-                } else if let Some(underlying_primitive_type) = enum_type.underlying_type_no_target_no_constants() {
-                    // Fall back to the explicitly specified underlying type if it can be determined without looking up target platform or constants
-                    self.generate_primitive_type(&underlying_primitive_type)
+                } else if let Some(underlying_type) = self.calculate_enum_underlying_type(base_type_index)? {
+                    // Fall back to the underlying type if there is no mapping to the type source crate
+                    self.generate_primitive_type(&underlying_type)
                 } else {
-                    // If there is no code generated stub for this enum, and its type is also not known, return unit type
                     quote! { () }
                 }
             }
         })
+    }
+    fn calculate_bindings_type_size_if_possible(&self, type_index: usize) -> anyhow::Result<Option<usize>> {
+        let base_type_index = self.module_context.run_context.base_type_index(type_index);
+        let type_definition = self.module_context.run_context.type_by_index(base_type_index);
+        Ok(match type_definition {
+            Type::Array(_) => None,
+            Type::Pointer(_) => Some(self.module_context.run_context.target_triplet().unwrap().address_width()),
+            Type::CVQualified(cv_qualified_type) => self.calculate_bindings_type_size_if_possible(cv_qualified_type.base_type_index)?,
+            Type::Primitive(primitive_type) => if primitive_type.is_sizeless() { None } else { Some(primitive_type.size_and_alignment(self.module_context.run_context.target_triplet().unwrap())?) },
+            Type::Function(_) => bail!("Function type is sizeless"),
+            Type::UDT(_) => None,
+            Type::Enum(_) => if let Some(underlying_type) = self.calculate_enum_underlying_type(base_type_index)? { Some(underlying_type.size_and_alignment(self.module_context.run_context.target_triplet().unwrap())?) } else { None },
+        })
+    }
+    fn generate_bindings_type_cast_to_u64(&self, type_index: usize, value_name: TokenStream) -> anyhow::Result<TokenStream> {
+        let base_type_index = self.module_context.run_context.base_type_index(type_index);
+        let type_definition = self.module_context.run_context.type_by_index(base_type_index);
+        Ok(match type_definition {
+            Type::Array(_) => bail!("Arrays cannot be cast to u64"),
+            Type::Pointer(_) => bail!("Did not expect Pointer type here"),
+            Type::CVQualified(_) => bail!("Did not expect CVQualified type here"),
+            Type::Primitive(primitive_type) => self.cast_primitive_type_to_u64(*primitive_type, value_name)?,
+            Type::Function(_) => bail!("Function type is sizeless"),
+            Type::UDT(_) => bail!("UDTs cannot be cast to u64"),
+            Type::Enum(_) => {
+                let underlying_value_name = quote!{ #value_name.to_underlying_type() };
+                self.cast_primitive_type_to_u64(self.calculate_enum_underlying_type(base_type_index)?.ok_or_else(|| anyhow!("Enum underlying type not statically known"))?, underlying_value_name)?
+            },
+        })
+    }
+    fn generate_bindings_type_create_from_u64(&self, type_index: usize, u64_value_name: TokenStream) -> anyhow::Result<TokenStream> {
+        let base_type_index = self.module_context.run_context.base_type_index(type_index);
+        let type_definition = self.module_context.run_context.type_by_index(base_type_index);
+        Ok(match type_definition {
+            Type::Array(_) => bail!("Arrays cannot be created from u64"),
+            Type::Pointer(_) => bail!("Did not expect Pointer type here"),
+            Type::CVQualified(_) => bail!("Did not expect CVQualified type here"),
+            Type::Primitive(primitive_type) => self.cast_u64_to_primitive_type(*primitive_type, u64_value_name)?,
+            Type::Function(_) => bail!("Function type is sizeless"),
+            Type::UDT(_) => bail!("UDTs cannot be created from u64"),
+            Type::Enum(_) => self.cast_u64_to_primitive_type(self.calculate_enum_underlying_type(base_type_index)?.ok_or_else(|| anyhow!("Enum underlying type not statically known"))?, u64_value_name)?,
+        })
+    }
+    fn generate_function_parameter_name(optional_parameter_name: &Option<String>, parameter_index: usize) -> Ident {
+        let raw_parameter_name = if let Some(parameter_name) = optional_parameter_name {
+            Self::convert_field_name_to_snake_case(parameter_name)
+        } else { format!("param_{}", parameter_index) };
+        Ident::new(&raw_parameter_name, Span::call_site())
+    }
+    fn generate_function_parameter_type(&self, parameter_type_index: usize, parameter_name: &Ident) -> anyhow::Result<FunctionParameterTypeTokens> {
+        let base_type_index = self.module_context.run_context.base_type_index(parameter_type_index);
+        let type_definition = self.module_context.run_context.type_by_index(base_type_index);
+        let parameter_type_tag = self.generate_type_name(base_type_index)?;
+
+        if let Type::Pointer(pointer_type) = type_definition {
+            // Unwrap pointee type as CV qualified type if possible to determine whenever pointee type is a constant type
+            let (pointee_type_index, is_pointee_const) = if let Type::CVQualified(cv_qualified_pointee_type) = pointer_type.pointee_type(&self.module_context.run_context) {
+                (cv_qualified_pointee_type.base_type_index, cv_qualified_pointee_type.constant)
+            } else { (pointer_type.pointee_type_index, false) };
+
+            // Generate as Rust reference type whenever possible to make working with call sites easier, and if it is a pointer generate it as a raw pointer
+            let pointee_type_name = self.generate_type_name(pointee_type_index)?;
+            if pointer_type.is_reference {
+                if is_pointee_const {
+                    Ok(FunctionParameterTypeTokens{
+                        declaration: quote!{ #parameter_name: &#pointee_type_name },
+                        type_descriptor: quote!{ #parameter_type_tag },
+                        value_as_mut_u8_ptr: quote!{ #parameter_name as *const #pointee_type_name as *mut u8 },
+                        value_parameter_passed_as_reference: false,
+                        references_allocator_type: false,
+                    })
+                } else {
+                    Ok(FunctionParameterTypeTokens{
+                        declaration: quote!{ #parameter_name: &mut #pointee_type_name },
+                        type_descriptor: quote!{ #parameter_type_tag },
+                        value_as_mut_u8_ptr: quote!{ #parameter_name as *mut #pointee_type_name as *mut u8 },
+                        value_parameter_passed_as_reference: false,
+                        references_allocator_type: false,
+                    })
+                }
+            } else {
+                if is_pointee_const {
+                    Ok(FunctionParameterTypeTokens{
+                        declaration: quote!{ #parameter_name: *const #pointee_type_name },
+                        type_descriptor: quote!{ #parameter_type_tag },
+                        value_as_mut_u8_ptr: quote!{ #parameter_name as *mut u8 },
+                        value_parameter_passed_as_reference: false,
+                        references_allocator_type: false,
+                    })
+                } else {
+                    Ok(FunctionParameterTypeTokens{
+                        declaration: quote!{ #parameter_name: *mut #pointee_type_name },
+                        type_descriptor: quote!{ #parameter_type_tag },
+                        value_as_mut_u8_ptr: quote!{ #parameter_name as *mut u8 },
+                        value_parameter_passed_as_reference: false,
+                        references_allocator_type: false,
+                    })
+                }
+            }
+        } else if let Some(known_type_size_bytes) = self.calculate_bindings_type_size_if_possible(base_type_index)? {
+            // Bindings type static size is known (e.g. this is a primitive type or an enumeration type with a known underlying size), we can generate the parameter directly
+            if known_type_size_bytes <= size_of::<usize>() {
+                // Type is small enough to be passed by value directly
+                let type_value_as_u64 = self.generate_bindings_type_cast_to_u64(base_type_index, quote!{ #parameter_name })?;
+                Ok(FunctionParameterTypeTokens{
+                    declaration: quote!{ #parameter_name: #parameter_type_tag },
+                    type_descriptor: quote!{ #parameter_type_tag },
+                    value_as_mut_u8_ptr: quote!{ std::ptr::without_provenance_mut::<u8>(#type_value_as_u64 as usize) },
+                    value_parameter_passed_as_reference: false,
+                    references_allocator_type: false,
+                })
+            } else {
+                // Type is too big to be passed by value to the call thunk, so we pass it as a reference
+                Ok(FunctionParameterTypeTokens{
+                    declaration: quote!{ #parameter_name: mut #parameter_type_tag },
+                    type_descriptor: quote!{ #parameter_type_tag },
+                    value_as_mut_u8_ptr: quote!{ &mut #parameter_name as *mut #parameter_type_tag as *mut u8 },
+                    value_parameter_passed_as_reference: true,
+                    references_allocator_type: false,
+                })
+            }
+        } else {
+            // Static size is not known, but this argument is passed by value, so we have to wrap it in a box and pass it as a reference
+            Ok(FunctionParameterTypeTokens{
+                declaration: quote!{ #parameter_name: mut Box<#parameter_type_tag, A> },
+                type_descriptor: quote!{ #parameter_type_tag },
+                value_as_mut_u8_ptr: quote!{ parameter_name.as_mut() as *mut #parameter_type_tag as *mut u8 },
+                value_parameter_passed_as_reference: true,
+                references_allocator_type: true,
+            })
+        }
+    }
+    fn generate_function_return_value(&self, type_universe: &TokenStream, maybe_return_value_type_index: Option<usize>, source_function_name: &str) -> anyhow::Result<FunctionReturnValueTokens> {
+        if let Some(return_value_type_index) = maybe_return_value_type_index {
+            // Return value type is known statically. We can either return the value directly if the size is known, and it fits in a pointer, or return it as a box
+            let base_type_index = self.module_context.run_context.base_type_index(return_value_type_index);
+            let type_definition = self.module_context.run_context.type_by_index(base_type_index);
+
+            if type_definition != &Type::Primitive(PrimitiveType::Void) {
+                // This function returns a non-void type, see if we can calculate its size and fit it in a pointer
+                let return_value_type = self.generate_type_name(base_type_index)?;
+
+                if let Type::Pointer(pointer_type) = type_definition {
+                    // Type is a pointer, return by value and convert the pointer to the wrapped type while preserving the provenance
+                    let pointee_type_name = self.generate_type_name(pointer_type.pointee_type_index)?;
+                    let base_c_reference_type = quote! { gospel_runtime::local_type_model::CRef::<#pointee_type_name> };
+                    let pointer_return_value_type = if pointer_type.is_reference { base_c_reference_type.clone() } else { quote! { Option<#base_c_reference_type> } };
+                    let construct_return_value_expression = if pointer_type.is_reference { quote! { #base_c_reference_type::from_raw_ptr(return_value_direct) } } else {
+                        quote! { #base_c_reference_type::from_raw_ptr_nullable(return_value_direct) } };
+
+                    Ok(FunctionReturnValueTokens{
+                        return_value_type: Some(pointer_return_value_type),
+                        return_value_static_type_tag: Some(return_value_type),
+                        before_return_value_statement: None,
+                        return_value_storage_initializer: None,
+                        return_expression: Some(construct_return_value_expression),
+                        needs_allocator_instance: false,
+                        return_value_through_storage: false,
+                    })
+                } else if let Some(known_type_size_bytes) = self.calculate_bindings_type_size_if_possible(base_type_index)? {
+                    if known_type_size_bytes <= size_of::<usize>() {
+                        // Type is small enough to be marshalled as a pointer, in which case return value storage is not needed
+                        Ok(FunctionReturnValueTokens{
+                            return_value_type: Some(return_value_type.clone()),
+                            return_value_static_type_tag: Some(return_value_type),
+                            before_return_value_statement: None,
+                            return_value_storage_initializer: None,
+                            return_expression: Some(self.generate_bindings_type_create_from_u64(base_type_index, quote! { return_value_direct.addr() as u64 })?),
+                            needs_allocator_instance: false,
+                            return_value_through_storage: false,
+                        })
+                    } else {
+                        // Type has a known size in bindings, but is too big to be marshalled as a pointer. We can allocate static storage slot for it
+                        // on the stack directly, pass it to the function to write to, and then return
+                        Ok(FunctionReturnValueTokens{
+                            return_value_type: Some(return_value_type.clone()),
+                            return_value_static_type_tag: Some(return_value_type.clone()),
+                            before_return_value_statement: Some(quote! { let mut uninit_return_value = std::mem::MaybeUninit::<#return_value_type>::uninit(); }),
+                            return_value_storage_initializer: Some(quote! { uninit_return_value.as_mut_ptr() }),
+                            return_expression: Some(quote! { unsafe { uninit_return_value.assume_init() } }),
+                            needs_allocator_instance: false,
+                            return_value_through_storage: true,
+                        })
+                    }
+                } else {
+                    // Type does not have a known size, we have to construct a box to hold its value
+                    Ok(FunctionReturnValueTokens{
+                        return_value_type: Some(quote! { std::boxed::Box<#return_value_type, A> }),
+                        return_value_static_type_tag: Some(return_value_type.clone()),
+                        before_return_value_statement: None,
+                        return_value_storage_initializer: Some(quote! { gospel_runtime::local_type_model::allocate_uninitialized::<#return_value_type, A>(&alloc) }),
+                        return_expression: Some(quote! { unsafe { std::boxed::Box::<#return_value_type, A>::from_raw_in(#return_value_type::from_raw_ptr_mut(return_value_storage), alloc) } }),
+                        needs_allocator_instance: true,
+                        return_value_through_storage: true,
+                    })
+                }
+            } else {
+                // This function returns void, so return completely empty tokens struct
+                Ok(FunctionReturnValueTokens::default())
+            }
+        } else {
+            // Return value type is unknown statically. Unfortunately we do not know how to destruct dynamic values right now (e.g. there is no DynBox),
+            // so we will have to allocate the memory and then return the raw pointer to it to the user
+            // We also have to wrap it in an Option, since the function might end up not returning anything at all
+            let calc_type_size_and_alignment = quote! { let (type_size, type_alignment) = #type_universe::type_layout_cache().lock().unwrap().get_type_size_and_alignment_cached(#type_universe::type_graph(), return_type_index); };
+            let storage_allocate_expression = quote! { alloc.allocate(std::alloc::Layout::from_size_align(type_size, type_alignment).unwrap()).unwrap().as_ptr() as *mut u8 };
+            let make_dyn_mut_expression = quote! { gospel_runtime::local_type_model::DynMut::<#type_universe>::from_raw_parts(return_value_storage, return_type_index) };
+
+            Ok(FunctionReturnValueTokens{
+                return_value_type: Some(quote! { Option<gospel_runtime::local_type_model::DynMut<#type_universe>> }),
+                return_value_static_type_tag: None,
+                before_return_value_statement: Some(quote! { let maybe_return_type_index = call_descriptor.get_non_void_return_value_type(#source_function_name); }),
+                return_value_storage_initializer: Some(quote! { if let Some(return_type_index) = maybe_return_type_index { #calc_type_size_and_alignment; #storage_allocate_expression } else { std::ptr::null_mut() } }),
+                return_expression: Some(quote!{ if let Some(return_type_index) = maybe_return_type_index { Some(unsafe { #make_dyn_mut_expression }) } else { None } }),
+                needs_allocator_instance: true,
+                return_value_through_storage: true,
+            })
+        }
     }
     fn is_opaque_type_index(&self, type_index: usize) -> bool {
         let base_type_index = self.module_context.run_context.base_type_index(type_index);
@@ -190,7 +494,7 @@ impl CodeGenerationContext {
     fn generate_type_field_definition(&self, source_file_name: &str, field_name: &Ident, maybe_field_type_index: Option<usize>, is_prototype_field: bool, type_definition: &BindingsTypeDefinition) -> anyhow::Result<TokenStream> {
         let field_doc_comment = Self::generate_doc_comment(type_definition, &format!("{}$doc", source_file_name));
         Ok(if let Some(field_type_index) = maybe_field_type_index && !self.is_opaque_type_index(field_type_index) {
-            let field_type = self.generate_type_reference(field_type_index)?;
+            let field_type = self.generate_type_name(field_type_index)?;
             match self.bindings_type {
                 ModuleBindingsType::External => {
                     if is_prototype_field {
@@ -229,7 +533,146 @@ impl CodeGenerationContext {
             }
         })
     }
-    fn generate_parameter_declaration(parameter_name: &Ident, parameter_type: &ExpressionValueType) -> anyhow::Result<(TokenStream, TokenStream)> {
+    fn generate_type_virtual_function_definition(&self, virtual_function_prototype: &VirtualFunctionPrototypeData, is_prototype_virtual_function: bool, type_definition: &BindingsTypeDefinition) -> anyhow::Result<TokenStream> {
+        let mut parameter_declarations: Vec<TokenStream> = Vec::new();
+        let mut parameter_ptr_values: Vec<TokenStream> = Vec::new();
+        let mut parameter_pass_by_reference: Vec<TokenStream> = Vec::new();
+        let mut parameter_type_indices: Vec<TokenStream> = Vec::new();
+        let mut has_any_dynamic_parameters: bool = false;
+        let mut any_parameters_need_allocator_type: bool = false;
+        let mut any_parameters_need_allocator_instance: bool = false;
+
+        let function_name_string_sneak_case = Self::convert_field_name_to_snake_case(&virtual_function_prototype.virtual_function.name);
+        let virtual_function_name = &Ident::new(&function_name_string_sneak_case, Span::call_site());
+
+        let function_doc_comment = Self::generate_doc_comment(type_definition, &format!("{}$doc", &virtual_function_prototype.virtual_function.name));
+        let type_universe = self.generate_type_universe_full_name();
+
+        let return_value_tokens = self.generate_function_return_value(&type_universe, if virtual_function_prototype.unresolved_return_type { None } else {
+            Some(virtual_function_prototype.virtual_function.return_value_type_index)
+        }, &virtual_function_prototype.virtual_function.name)?;
+        any_parameters_need_allocator_instance |= return_value_tokens.needs_allocator_instance;
+
+        for parameter_index in 0..virtual_function_prototype.virtual_function.parameters.len() {
+            let parameter_name = Self::generate_function_parameter_name(&virtual_function_prototype.virtual_function.parameters[parameter_index].parameter_name, parameter_index);
+            if virtual_function_prototype.unresolved_parameter_type_indices.contains(&parameter_index) {
+                // This parameter does not have a known type, pass it as a reference with dynamic type
+                parameter_declarations.push(quote!{ #parameter_name: gospel_runtime::local_type_model::DynMut<#type_universe> });
+                parameter_ptr_values.push(quote!{ #parameter_name.as_raw_ptr() });
+                parameter_pass_by_reference.push(quote!{ true });
+                parameter_type_indices.push(quote!{ #parameter_name.type_index() });
+                has_any_dynamic_parameters = true;
+            } else {
+                // We have a known type for this parameter, so just generate it normally
+                let parameter_data = self.generate_function_parameter_type(virtual_function_prototype.virtual_function.parameters[parameter_index].parameter_type_index, &parameter_name)?;
+                let pass_by_reference = parameter_data.value_parameter_passed_as_reference;
+                let static_type_tag_class = parameter_data.type_descriptor;
+
+                parameter_declarations.push(parameter_data.declaration);
+                parameter_ptr_values.push(parameter_data.value_as_mut_u8_ptr);
+                parameter_pass_by_reference.push(quote!{ #pass_by_reference });
+                parameter_type_indices.push(quote!{ #static_type_tag_class::store_type_descriptor_to_universe::<#type_universe>() });
+                any_parameters_need_allocator_type |= parameter_data.references_allocator_type;
+            }
+        }
+
+        if virtual_function_prototype.variable_argument_count {
+            parameter_declarations.push(quote!{ extra_params: &Vec<gospel_runtime::local_type_model::DynMut<#type_universe>> });
+            has_any_dynamic_parameters = true;
+        }
+        if any_parameters_need_allocator_instance {
+            parameter_declarations.insert(0, quote! { alloc: A });
+            any_parameters_need_allocator_type = true;
+        }
+
+        let optional_allocator_generic_type = if any_parameters_need_allocator_type {
+            Some(quote!{ <A: std::alloc::Allocator> })
+        } else { None };
+        let (self_type_declaration, self_type_value_as_ptr) = if virtual_function_prototype.virtual_function.is_const_member_function {
+            (quote!{ &self }, quote!{ self as *const Self as *mut u8 })
+        } else { (quote!{ &mut self }, quote!{ self as *mut Self as *mut u8 }) };
+
+        let source_function_name = &virtual_function_prototype.virtual_function.name;
+        let return_value_declaration = return_value_tokens.return_value_type.map(|return_value_type| quote! { -> #return_value_type } );
+        let before_return_value_statement = return_value_tokens.before_return_value_statement;
+        let return_value_storage_initializer = return_value_tokens.return_value_storage_initializer.unwrap_or_else(|| quote! { std::ptr::null_mut() });
+        let return_value_statement = return_value_tokens.return_expression;
+        let return_value_through_storage = return_value_tokens.return_value_through_storage;
+
+        let return_value_type_index_expression = return_value_tokens.return_value_static_type_tag.map(|rv_static_type_tag|
+            quote! { Some(#rv_static_type_tag::store_type_descriptor_to_universe::<#type_universe>()) }).unwrap_or_else(|| quote! { None });
+
+        let call_descriptor_parameter_typecheck = if has_any_dynamic_parameters {
+            if virtual_function_prototype.variable_argument_count {
+                // For variable argument count we have to allocate a dynamically sized parameter type vector
+                let num_known_parameter_types = parameter_type_indices.len();
+                quote! {
+                    let dynamic_parameter_types: Vec<usize> = Vec::with_capacity(#num_known_parameter_types + extra_params.len());
+                    dynamic_parameter_types.extend_from_slice([#(#parameter_type_indices),*]);
+                    for dynamic_parameter in &extra_params {
+                        dynamic_parameter_types.push(dynamic_parameter.type_index());
+                    }
+                    call_descriptor.validate_parameter_types(#source_function_name, return_value_type_index_expression, dynamic_parameter_types.into_iter());
+                }
+            } else {
+                quote! { call_descriptor.validate_parameter_types(#source_function_name, #return_value_type_index_expression, [#(#parameter_type_indices),*].into_iter()); }
+            }
+        } else {
+            quote! {
+                if !call_descriptor.has_validated_parameter_types() {
+                    call_descriptor.validate_parameter_types(#source_function_name, #return_value_type_index_expression, [#(#parameter_type_indices),*].into_iter());
+                    call_descriptor.mark_parameter_types_validated();
+                }
+            }
+        };
+
+        let call_descriptor_invoke_call = if virtual_function_prototype.variable_argument_count {
+            // For variable argument count we have to allocate a dynamically sized argument values container
+            let num_known_parameters = parameter_ptr_values.len();
+            quote! {
+                    let dynamic_parameter_values: Vec<*mut u8> = Vec::with_capacity(#num_known_parameters + extra_params.len());
+                    dynamic_parameter_values.extend_from_slice([#(#parameter_ptr_values),*]);
+                    for dynamic_parameter in &extra_params {
+                        dynamic_parameter_values.push(dynamic_parameter.as_raw_ptr());
+                    }
+                    (call_descriptor.get_call_thunk())(#self_type_value_as_ptr, return_value_storage, dynamic_parameter_values.as_ptr())
+                }
+        } else { quote!{ (call_descriptor.get_call_thunk())(#self_type_value_as_ptr, return_value_storage, [#(#parameter_ptr_values),*].as_ptr()) } };
+
+        let check_function_available_fragment = if is_prototype_virtual_function {
+            let check_existence_function_name = &Ident::new(&format!("check_available_{}", &function_name_string_sneak_case), Span::call_site());
+            Some(quote! {
+                pub fn #check_existence_function_name() {
+                    use generic_statics::{define_namespace, Namespace};
+                    define_namespace!(CheckExistenceType);
+                    let check_function_exists = CheckExistenceType::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeCheckFunctionExists<Self, #type_universe>>();
+                    check_function_exists.does_virtual_function_exist(#source_function_name)
+                }
+            })
+        } else { None };
+
+        let result_function_definition = quote! {
+            #function_doc_comment
+            pub fn #virtual_function_name #optional_allocator_generic_type (#self_type_declaration, #(#parameter_declarations),*) #return_value_declaration {
+                use generic_statics::{define_namespace, Namespace};
+                use gospel_runtime::core_type_definitions::StaticTypeTag;
+                use gospel_runtime::local_type_model::ImplicitPtrMetadata;
+                define_namespace!(CallDescriptor);
+                let call_descriptor = CallDescriptor::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeMethodCallDescriptor<Self, #type_universe>>();
+                #call_descriptor_parameter_typecheck
+                if !call_descriptor.has_prepared_call_thunk() {
+                    call_descriptor.prepare_virtual_function_call_thunk(#source_function_name, #return_value_through_storage, &[#(#parameter_pass_by_reference),*]);
+                }
+                #before_return_value_statement
+                let return_value_storage: *mut u8 = #return_value_storage_initializer;
+                let return_value_direct: *mut u8 = unsafe { #call_descriptor_invoke_call };
+                #return_value_statement
+            }
+            #check_function_available_fragment
+        };
+        Ok(result_function_definition)
+    }
+    fn generate_type_parameter_declaration(parameter_name: &Ident, parameter_type: &ExpressionValueType) -> anyhow::Result<(TokenStream, TokenStream)> {
         Ok(match parameter_type {
             // TODO: This should be BoolValueTypeTag but due to current implementation of VM value conversion for type references it cannot be
             ExpressionValueType::Bool => (quote! {
@@ -257,7 +700,7 @@ impl CodeGenerationContext {
 
         for implicit_parameter in &function_signature.implicit_parameters {
             let parameter_name = Ident::new(implicit_parameter.parameter_declaration.upgrade().unwrap().name.as_str(), Span::call_site());
-            let (parameter_declaration, parameter_call_argument) = Self::generate_parameter_declaration(&parameter_name, &implicit_parameter.parameter_type)?;
+            let (parameter_declaration, parameter_call_argument) = Self::generate_type_parameter_declaration(&parameter_name, &implicit_parameter.parameter_type)?;
             parameter_declarations.push(parameter_declaration);
             parameter_list.push(parameter_name);
             parameter_call_arguments.push(parameter_call_argument);
@@ -265,7 +708,7 @@ impl CodeGenerationContext {
         if let Some(explicit_parameters) = function_signature.explicit_parameters.as_ref() {
             for explicit_parameter in explicit_parameters {
                 let parameter_name = Ident::new(explicit_parameter.parameter_declaration.upgrade().unwrap().name.as_str(), Span::call_site());
-                let (parameter_declaration, parameter_call_argument) = Self::generate_parameter_declaration(&parameter_name, &explicit_parameter.parameter_type)?;
+                let (parameter_declaration, parameter_call_argument) = Self::generate_type_parameter_declaration(&parameter_name, &explicit_parameter.parameter_type)?;
                 parameter_declarations.push(parameter_declaration);
                 parameter_list.push(parameter_name);
                 parameter_call_arguments.push(parameter_call_argument);
@@ -315,51 +758,138 @@ impl CodeGenerationContext {
             static_type_implementation,
         })
     }
+    fn collect_udt_field_prototypes(&self, type_container: &GospelVMTypeContainer, generated_field_names: &HashSet<String>) -> Vec<FieldPrototypeData> {
+        let mut result_prototypes = type_container.member_prototypes.as_ref().unwrap().iter()
+            .fold(HashMap::<String, HashSet<usize>>::new(), |mut field_type_map, member_prototype| {
+                if let UserDefinedTypeMember::Field(field) = &member_prototype.member_declaration {
+                    if let Some(field_name) = &field.name && !generated_field_names.contains(field_name) &&
+                        field.member_type(&self.module_context.run_context) != &Type::Primitive(PrimitiveType::Void) {
+                        field_type_map.entry(field_name.clone()).or_default().insert(field.member_type_index);
+                    }
+                }
+                field_type_map
+            })
+            .into_iter()
+            .map(|(field_name, field_type_indices)| FieldPrototypeData{field_name, field_type_index: field_type_indices.into_iter().next() })
+            .collect::<Vec<FieldPrototypeData>>();
+        result_prototypes.sort_by(|a, b| a.field_name.cmp(&b.field_name));
+        result_prototypes
+    }
+    fn collect_udt_virtual_function_prototypes(&self, type_container: &GospelVMTypeContainer, generated_function_names: &HashSet<String>) -> Vec<VirtualFunctionPrototypeData> {
+        let mut result_prototypes = type_container.member_prototypes.as_ref().unwrap().iter()
+            .fold(HashMap::<String, VirtualFunctionPrototypeData>::new(), |mut virtual_function_map, member_prototype| {
+                if let UserDefinedTypeMember::VirtualFunction(virtual_function) = &member_prototype.member_declaration &&
+                    !virtual_function.is_virtual_function_override && !generated_function_names.contains(&virtual_function.name) {
+                    if let Some(other_function_data) = virtual_function_map.get_mut(&virtual_function.name) {
+
+                        // If our return type is unresolved, the entire prototype return type becomes unresolved
+                        if member_prototype.unresolved_return_type {
+                            other_function_data.virtual_function.return_value_type_index = virtual_function.return_value_type_index;
+                            other_function_data.unresolved_return_type = true;
+                        }
+
+                        // If current prototype has more parameters than we do, trim the extra parameters and mark the argument count as variable
+                        if other_function_data.virtual_function.parameters.len() > virtual_function.parameters.len() {
+                            other_function_data.virtual_function.parameters.truncate(virtual_function.parameters.len());
+                            other_function_data.variable_argument_count = true;
+                        } else if other_function_data.virtual_function.parameters.len() < virtual_function.parameters.len() {
+                            // If this function has more arguments than the prototype, mark the prototype argument count as variable
+                            other_function_data.variable_argument_count = true;
+                        }
+
+                        // Reset const status of the function if the prototype is const but this function is not. Function is only const if all prototypes of it are const
+                        if other_function_data.virtual_function.is_const_member_function && !virtual_function.is_const_member_function {
+                            other_function_data.virtual_function.is_const_member_function = false;
+                        }
+
+                        // Walk the parameters and make sure they are consistent between the function and the prototype
+                        for parameter_index in 0..other_function_data.virtual_function.parameters.len() {
+                            let new_function_parameter = other_function_data.virtual_function.parameters[parameter_index].clone();
+                            let current_function_parameter = &virtual_function.parameters[parameter_index];
+
+                            if new_function_parameter.parameter_type_index != current_function_parameter.parameter_type_index {
+                                // Parameter type is different between the prototype and the function, so parameter type is not known
+                                other_function_data.unresolved_parameter_type_indices.insert(parameter_index);
+                            } else if self.module_context.run_context.type_by_index(new_function_parameter.parameter_type_index) == &Type::Primitive(PrimitiveType::Void) {
+                                // This parameter has type void, which is not valid and indicates a parameter with unresolved type, so mark it as such
+                                other_function_data.unresolved_parameter_type_indices.insert(parameter_index);
+                            }
+
+                            if !other_function_data.nameless_parameter_indices.contains(&parameter_index) {
+                                if new_function_parameter.parameter_name.is_none() && current_function_parameter.parameter_name.is_some() {
+                                    // Function has the parameter name, but the prototype does not, so take the parameter name
+                                    other_function_data.virtual_function.parameters[parameter_index].parameter_name = current_function_parameter.parameter_name.clone();
+                                } else if new_function_parameter.parameter_name.is_some() && current_function_parameter.parameter_name.is_some() {
+                                    if new_function_parameter.parameter_name != current_function_parameter.parameter_name {
+                                        // Function and prototype both have parameter names that are different, as such this parameter becomes unnamed
+                                        other_function_data.nameless_parameter_indices.insert(parameter_index);
+                                        other_function_data.virtual_function.parameters[parameter_index].parameter_name = None;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        virtual_function_map.insert(virtual_function.name.clone(), VirtualFunctionPrototypeData{
+                            virtual_function: virtual_function.clone(),
+                            unresolved_return_type: member_prototype.unresolved_return_type,
+                            ..VirtualFunctionPrototypeData::default()
+                        });
+                    }
+                }
+                virtual_function_map
+            })
+            .into_iter()
+            .map(|(_, function_data)| function_data)
+            .collect::<Vec<VirtualFunctionPrototypeData>>();
+
+        result_prototypes.sort_by(|a, b| a.virtual_function.name.cmp(&b.virtual_function.name));
+        result_prototypes
+    }
     fn generate_udt_definition(&self, user_defined_type: &UserDefinedType, type_container: &GospelVMTypeContainer, type_definition: &BindingsTypeDefinition) -> anyhow::Result<TokenStream> {
         let full_type_name = user_defined_type.name.clone().unwrap();
         let type_doc_comment = Self::generate_doc_comment(type_definition, "doc");
+
         let mut generated_field_names: HashSet<String> = HashSet::new();
         let mut generated_fields: Vec<TokenStream> = Vec::new();
 
-        // Generate non-prototype members first
+        // Generate exact fields definitions first
         for udt_member in &user_defined_type.members {
             if let UserDefinedTypeMember::Field(field) = udt_member && let Some(field_name) = field.name.as_ref() && !field_name.contains("@") {
                 let field_tokens = self.generate_type_field_definition(field_name, &Ident::new(&Self::convert_field_name_to_snake_case(field_name), Span::call_site()),
                     Some(field.member_type_index), false, type_definition)?;
-                generated_field_names.insert(field_name.clone());
                 generated_fields.push(field_tokens);
+                generated_field_names.insert(field_name.clone());
             }
         }
 
-        // Sort prototype members by name to have consistent generated code layout
-        let mut sorted_prototypes = type_container.member_prototypes.as_ref()
-            .map(|x| x.iter().cloned().collect::<Vec<UserDefinedTypeMember>>())
-            .unwrap_or(Vec::default());
-        sorted_prototypes.sort_by(|a, b| a.name().cmp(&b.name()));
+        // Generate field prototypes for the rest of the fields
+        let field_prototypes = self.collect_udt_field_prototypes(type_container, &generated_field_names);
+        for field_prototype in &field_prototypes {
+            let field_tokens = self.generate_type_field_definition(&field_prototype.field_name,
+                &Ident::new(&Self::convert_field_name_to_snake_case(&field_prototype.field_name), Span::call_site()),
+                field_prototype.field_type_index, true, type_definition)?;
+            generated_fields.push(field_tokens);
+        }
 
-        // Prototype fields can have multiple definitions with conflicting types. We want to generate such fields only once and with opaque type
-        let mut prototype_field_type_tracking: HashMap<String, usize> = HashMap::new();
-        let mut prototype_fields_with_conflicting_types: HashSet<String> = HashSet::new();
-        for prototype_udt_member in &sorted_prototypes {
-            if let UserDefinedTypeMember::Field(field) = prototype_udt_member && let Some(field_name) = field.name.as_ref() && !generated_field_names.contains(field_name) {
-                if let Some(existing_field_type_index) = prototype_field_type_tracking.get(field_name) {
-                    if *existing_field_type_index != field.member_type_index {
-                        prototype_fields_with_conflicting_types.insert(field_name.clone());
-                    }
-                } else {
-                    prototype_field_type_tracking.insert(field_name.clone(), field.member_type_index);
-                }
+        let mut generated_virtual_function_names: HashSet<String> = HashSet::new();
+        let mut generated_virtual_functions: Vec<TokenStream> = Vec::new();
+
+        // Generate exact virtual functions first
+        for udt_member in &user_defined_type.members {
+            if let UserDefinedTypeMember::VirtualFunction(virtual_function) = udt_member && !virtual_function.is_virtual_function_override && !virtual_function.name.contains("@") {
+                let function_prototype_data = VirtualFunctionPrototypeData{virtual_function: virtual_function.clone(), ..VirtualFunctionPrototypeData::default()};
+                let virtual_function_tokens = self.generate_type_virtual_function_definition(&function_prototype_data, false, type_definition)?;
+                generated_virtual_functions.push(virtual_function_tokens);
+                generated_virtual_function_names.insert(function_prototype_data.virtual_function.name.clone());
             }
         }
 
-        // Generate optional prototype members now if non-prototype version has not been generated
-        for prototype_udt_member in &sorted_prototypes {
-            if let UserDefinedTypeMember::Field(field) = prototype_udt_member &&
-                let Some(field_name) = field.name.as_ref() && !generated_field_names.contains(field_name) {
-                let field_type = if prototype_fields_with_conflicting_types.contains(field_name) { None } else { Some(field.member_type_index) };
-                let field_tokens = self.generate_type_field_definition(field_name, &Ident::new(&Self::convert_field_name_to_snake_case(field_name), Span::call_site()), field_type, true, type_definition)?;
-                generated_field_names.insert(field_name.clone());
-                generated_fields.push(field_tokens);
+        // Generate virtual function prototypes now
+        let virtual_function_prototypes = self.collect_udt_virtual_function_prototypes(type_container, &generated_virtual_function_names);
+        for virtual_function_prototype in &virtual_function_prototypes {
+            if !virtual_function_prototype.virtual_function.name.contains("@") {
+                let virtual_function_tokens = self.generate_type_virtual_function_definition(&virtual_function_prototype, true, type_definition)?;
+                generated_virtual_functions.push(virtual_function_tokens);
             }
         }
 
@@ -389,7 +919,7 @@ impl CodeGenerationContext {
                     }
                 }
             });
-            if type_definition.function_declaration.as_ref().unwrap().metadata.contains_key("bitwise_copyable") {
+            if is_trivially_copyable(type_definition.function_declaration.as_ref().unwrap()) {
                 all_type_implementations.push(quote! {
                     unsafe impl #parameter_declaration std::clone::CloneToUninit for #type_name #parameter_list {
                         unsafe fn clone_to_uninit(&self, dest: *mut u8) {
@@ -399,7 +929,7 @@ impl CodeGenerationContext {
                     }
                 });
             }
-            if type_definition.function_declaration.as_ref().unwrap().metadata.contains_key("zero_constructible") {
+            if is_trivially_constructible(type_definition.function_declaration.as_ref().unwrap()) {
                 all_type_implementations.push(quote! {
                     unsafe impl #parameter_declaration gospel_runtime::local_type_model::DefaultConstructAtUninit for #type_name #parameter_list {
                         unsafe fn default_construct_at(dest: *mut u8) {
@@ -425,6 +955,7 @@ impl CodeGenerationContext {
             #(#all_type_implementations)*
             impl #parameter_declaration #type_name #parameter_list {
                 #(#generated_fields)*
+                #(#generated_virtual_functions)*
             }
         })
     }
@@ -725,10 +1256,10 @@ impl CodeGenerationContext {
                 #(#type_definitions)*
             }
         };
-        let parsed_file = parse2::<File>(result_file_token_stream.clone()).map_err(|x| {
+        let parsed_file = parse_str::<File>(&result_file_token_stream.clone().to_string()).map_err(|x| {
             let contents_dump_location = absolute(temp_dir().join(PathBuf::from(format!("bindings_source_text_{}.rs", Uuid::new_v4())))).unwrap();
             write(&contents_dump_location, result_file_token_stream.to_string()).unwrap();
-            anyhow!("Failed to parse generated file: {} (contents dumped to {})", x, contents_dump_location.display())
+            anyhow!("Failed to parse generated file ({}:{}): {} (contents dumped to {})", x.span().start().line, x.span().start().column, x, contents_dump_location.display())
         })?;
         Ok(prettyplease::unparse(&parsed_file))
     }

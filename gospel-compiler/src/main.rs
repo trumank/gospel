@@ -29,6 +29,7 @@ pub mod parser;
 mod lex_util;
 pub mod backend;
 pub mod module_definition;
+pub mod core_attributes;
 
 #[derive(Parser, Debug)]
 struct ActionAssembleModule {

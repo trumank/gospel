@@ -17,6 +17,12 @@ process-memory = { version = "0.5.0", optional = true }
 gospel-vm = { version = "0.1.0", path = "../gospel-vm", optional = true }
 gospel-compiler = { version = "0.1.0", path = "../gospel-compiler", optional = true }
 generic-statics = "0.1.0"
+region = { version = "3.0.2", optional = true }
+iced-x86 = { version = "1.21.0", optional = true, features = ["default", "code_asm"] }
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3.9", optional = true, features = ["basetsd", "ntstatus", "libloaderapi", "errhandlingapi", "winerror"] }
+backtrace = { version = "0.3.76", optional = true }
 
 [build-dependencies]
 gospel-typelib = { version = "0.1.0", path = "../gospel-typelib" }
@@ -25,7 +31,7 @@ gospel-typelib = { version = "0.1.0", path = "../gospel-typelib" }
 external = []
 minidump = ["external", "dep:minidump"]
 process = ["external", "dep:process-memory"]
-local = []
+local = ["dep:region", "dep:iced-x86", "dep:winapi", "dep:backtrace"]
 vm = ["dep:gospel-vm"]
 compiler = ["vm", "dep:gospel-compiler"]
 all_local = ["local", "compiler"]

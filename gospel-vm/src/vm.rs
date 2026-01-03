@@ -9,14 +9,14 @@ use std::str::FromStr;
 use anyhow::{anyhow, bail};
 use itertools::Itertools;
 use strum::Display;
-use crate::bytecode::{GospelInstruction, GospelOpcode};
+use crate::bytecode::{GospelInstruction, GospelOpcode, gospel_opcode_constants};
 use crate::module::GospelContainer;
 use crate::gospel::{GospelFunctionDefinition, GospelObjectIndex, GospelTargetProperty};
 use crate::writer::{GospelSourceObjectReference};
 use serde::{Deserialize, Serialize, Serializer};
 use serde::ser::SerializeStruct;
 use gospel_typelib::map_integral_value;
-use gospel_typelib::type_model::{ArrayType, CVQualifiedType, FunctionType, PointerType, PrimitiveType, ResolvedUDTMemberLayout, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeBitfield, UserDefinedTypeField, UserDefinedTypeKind, UserDefinedTypeMember, FunctionDeclaration, FunctionParameterDeclaration, TypeLayoutCache, EnumType, EnumKind, EnumConstant, IntegralType, IntegerSignedness};
+use gospel_typelib::type_model::{ArrayType, CVQualifiedType, FunctionType, PointerType, PrimitiveType, ResolvedUDTMemberLayout, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeBitfield, UserDefinedTypeField, UserDefinedTypeKind, UserDefinedTypeMember, FunctionDeclaration, FunctionParameterDeclaration, TypeLayoutCache, EnumType, EnumKind, EnumConstant, IntegralType, IntegerSignedness, CppAccessSpecifier, CppTypeTraits};
 use gospel_typelib::target_triplet::{TargetTriplet, BitWidth};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,6 +110,12 @@ impl GospelVMOptions {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GospelVMMemberPrototype {
+    pub member_declaration: UserDefinedTypeMember,
+    pub unresolved_return_type: bool,
+}
+
 /// Wrapper for Types that also contains metadata maintained by the VM
 #[derive(Debug, Clone)]
 pub struct GospelVMTypeContainer {
@@ -118,7 +124,7 @@ pub struct GospelVMTypeContainer {
     /// All base classes that this UDT type could potentially derive from. None if not an UDT type
     pub base_class_prototypes: Option<HashSet<usize>>,
     /// Prototypes of all members that could be potentially defined on this UDT type. None if not an UDT type
-    pub member_prototypes: Option<HashSet<UserDefinedTypeMember>>,
+    pub member_prototypes: Option<HashSet<GospelVMMemberPrototype>>,
     /// Names of all enum constants that could be potentially defined on this enumeration type. None if not an enumeration type
     pub enum_constant_prototypes: Option<HashSet<String>>,
     /// Additional metadata associated with the type by the VM code
@@ -238,7 +244,7 @@ impl GospelVMRunContext {
             let void_type_index = self.store_type(Type::Primitive(PrimitiveType::Void));
             if let Type::UDT(user_defined_type) = &mut self.types[type_index].wrapped_type {
                 user_defined_type.members.push(UserDefinedTypeMember::Field(UserDefinedTypeField{
-                    name: Some(String::from("@__gospel_partial_type_marker")), user_alignment: None, member_type_index: void_type_index,
+                    name: Some(String::from("@__gospel_partial_type_marker")), user_alignment: None, member_type_index: void_type_index, cpp_access_specifier: None,
                 }));
             }
         }
@@ -499,7 +505,7 @@ impl<'a> GospelVMExecutionState<'a> {
         Ok({})
     }
     fn immediate_value_checked(&self, inst: &GospelInstruction, index: usize) -> GospelVMResult<u32> {
-        inst.immediate_operand_at(index).ok_or_else(|| vm_error!(Some(self), "Invalid instruction encoding: Missing immediate operand #{}", index))
+        inst.immediate_operand_at(index).ok_or_else(|| vm_error!(Some(self), "Invalid instruction {} encoding: Missing immediate operand #{}", inst.opcode().to_string(), index))
     }
     fn get_referenced_string_checked(&self, index: usize) -> GospelVMResult<&'a str> {
         if index >= self.referenced_strings.len() {
@@ -968,7 +974,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     state.validate_type_index_user_defined_type(base_class_type_index, run_context)?;
 
                     let field_flags = state.immediate_value_checked(instruction, 0)?;
-                    let is_base_class_prototype = field_flags & (1 << 2) != 0;
+                    let is_base_class_prototype = field_flags & gospel_opcode_constants::BASE_CLASS_FLAG_PROTOTYPE != 0;
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
@@ -988,12 +994,36 @@ impl<'a> GospelVMExecutionState<'a> {
                         user_defined_type.base_class_indices.push(base_class_type_index);
                     }
                 }
+                GospelOpcode::TypeUDTMaskCppTypeTraits => {
+                    let type_traits_bitmask = state.immediate_value_checked(instruction, 0)?;
+                    let masked_type_traits = CppTypeTraits{
+                        trivially_constructible: type_traits_bitmask & gospel_opcode_constants::CPP_TYPE_TRAITS_MASK_TRIVIALLY_CONSTRUCTIBLE == 0,
+                        trivially_destructible: type_traits_bitmask & gospel_opcode_constants::CPP_TYPE_TRAITS_MASK_TRIVIALLY_DESTRUCTIBLE == 0,
+                        trivially_copy_constructible: type_traits_bitmask & gospel_opcode_constants::CPP_TYPE_TRAITS_MASK_TRIVIALLY_COPY_CONSTRUCTIBLE == 0,
+                        trivially_move_constructible: type_traits_bitmask & gospel_opcode_constants::CPP_TYPE_TRAITS_MASK_TRIVIALLY_MOVE_CONSTRUCTIBLE == 0,
+                        trivially_copy_assignable: type_traits_bitmask & gospel_opcode_constants::CPP_TYPE_TRAITS_MASK_TRIVIALLY_COPY_ASSIGNABLE == 0,
+                        trivially_move_assignable: type_traits_bitmask & gospel_opcode_constants::CPP_TYPE_TRAITS_MASK_TRIVIALLY_MOVE_ASSIGNABLE == 0,
+                    };
+
+                    let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+                    state.validate_type_index_user_defined_type(type_index, run_context)?;
+                    state.validate_type_not_finalized(type_index, run_context)?;
+
+                    if let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
+                        user_defined_type.cpp_type_traits &= masked_type_traits;
+                    }
+                }
                 GospelOpcode::TypeUDTAddField => {
                     let field_name_index = state.immediate_value_checked(instruction, 0)? as i32;
                     let field_name = if field_name_index == -1 { None } else { Some(state.get_referenced_string_checked(field_name_index as usize)?.to_string()) };
 
                     let field_flags = state.immediate_value_checked(instruction, 1)?;
-                    let is_field_prototype = field_flags & (1 << 2) != 0;
+                    let is_field_prototype = field_flags & gospel_opcode_constants::FIELD_FLAG_PROTOTYPE != 0;
+
+                    let field_access_specifier_index = state.immediate_value_checked(instruction, 2)? as i32;
+                    let field_access_specifier = if field_access_specifier_index == -1 { None } else {
+                        Some(CppAccessSpecifier::from_str(state.get_referenced_string_checked(field_access_specifier_index as usize)?)
+                            .map_err(|x| vm_error!(Some(&state), "Unknown field cpp access specifier name: {}", x.to_string()))?) };
 
                     let raw_user_alignment = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))? as i64;
                     let user_alignment = if raw_user_alignment == -1 { None } else { Some(raw_user_alignment as usize) };
@@ -1003,9 +1033,9 @@ impl<'a> GospelVMExecutionState<'a> {
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
                     state.validate_type_not_finalized(type_index, run_context)?;
 
-                    let result_field = UserDefinedTypeMember::Field(UserDefinedTypeField{name: field_name.clone(), user_alignment, member_type_index: field_type_index});
+                    let result_field = UserDefinedTypeMember::Field(UserDefinedTypeField{name: field_name.clone(), user_alignment, member_type_index: field_type_index, cpp_access_specifier: field_access_specifier});
                     if let Some(prototype_members) = run_context.types[type_index].member_prototypes.as_mut() {
-                        prototype_members.insert(result_field.clone());
+                        prototype_members.insert(GospelVMMemberPrototype{member_declaration: result_field.clone(), unresolved_return_type: false});
                     }
                     // Add field to the actual UDT only if this is not a field prototype
                     if !is_field_prototype && let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
@@ -1020,7 +1050,12 @@ impl<'a> GospelVMExecutionState<'a> {
                     let field_name = if field_name_index == -1 { None } else { Some(state.get_referenced_string_checked(field_name_index as usize)?.to_string()) };
 
                     let bitfield_flags = state.immediate_value_checked(instruction, 1)?;
-                    let is_bitfield_prototype = bitfield_flags & (1 << 2) != 0;
+                    let is_bitfield_prototype = bitfield_flags & gospel_opcode_constants::FIELD_FLAG_PROTOTYPE != 0;
+
+                    let field_access_specifier_index = state.immediate_value_checked(instruction, 2)? as i32;
+                    let field_access_specifier = if field_access_specifier_index == -1 { None } else {
+                        Some(CppAccessSpecifier::from_str(state.get_referenced_string_checked(field_access_specifier_index as usize)?)
+                            .map_err(|x| vm_error!(Some(&state), "Unknown field cpp access specifier name: {}", x.to_string()))?) };
 
                     let bitfield_width = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))? as usize;
 
@@ -1036,9 +1071,9 @@ impl<'a> GospelVMExecutionState<'a> {
                     state.validate_type_index_user_defined_type(type_index, run_context)?;
                     state.validate_type_not_finalized(type_index, run_context)?;
 
-                    let result_bitfield = UserDefinedTypeMember::Bitfield(UserDefinedTypeBitfield{name: field_name.clone(), primitive_type: primitive_field_type, bitfield_width});
+                    let result_bitfield = UserDefinedTypeMember::Bitfield(UserDefinedTypeBitfield{name: field_name.clone(), primitive_type: primitive_field_type, bitfield_width, cpp_access_specifier: field_access_specifier});
                     if let Some(prototype_members) = run_context.types[type_index].member_prototypes.as_mut() {
-                        prototype_members.insert(result_bitfield.clone());
+                        prototype_members.insert(GospelVMMemberPrototype{member_declaration: result_bitfield.clone(), unresolved_return_type: false});
                     }
                     // Add bitfield to the actual UDT only if this is not a bitfield prototype
                     if !is_bitfield_prototype && let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
@@ -1052,12 +1087,7 @@ impl<'a> GospelVMExecutionState<'a> {
                     let function_name_index = state.immediate_value_checked(instruction, 0)? as i32;
                     let function_name = state.get_referenced_string_checked(function_name_index as usize)?;
 
-                    let function_flags = state.immediate_value_checked(instruction, 1)?;
-                    let is_const_member_function = function_flags & (1 << 0) != 0;
-                    let is_function_override = function_flags & (1 << 1) != 0;
-                    let is_function_prototype = function_flags & (1 << 2) != 0;
-
-                    let number_of_parameter_stack_values = state.immediate_value_checked(instruction, 2)? as usize;
+                    let number_of_parameter_stack_values = state.immediate_value_checked(instruction, 1)? as usize;
                     if number_of_parameter_stack_values % 2 != 0 {
                         vm_bail!(Some(state), "Invalid number of parameter stack values for TypeUDTAddVirtualFunction; expected even number of stack parameters (pairs of parameter type and name index)");
                     }
@@ -1072,6 +1102,13 @@ impl<'a> GospelVMExecutionState<'a> {
                     }
 
                     let return_value_type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
+
+                    let function_flags = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_primitive_checked(x))? as u32;
+                    let is_const_member_function = function_flags & gospel_opcode_constants::VIRTUAL_FUNCTION_FLAG_CONST != 0;
+                    let is_function_override = function_flags & gospel_opcode_constants::VIRTUAL_FUNCTION_FLAG_OVERRIDE != 0;
+                    let is_function_prototype = function_flags & gospel_opcode_constants::VIRTUAL_FUNCTION_FLAG_PROTOTYPE != 0;
+                    let unresolved_return_type = function_flags & gospel_opcode_constants::VIRTUAL_FUNCTION_FLAG_UNRESOLVED_RETURN_TYPE != 0;
+
                     let new_function_declaration = FunctionDeclaration{name: function_name.to_string(), return_value_type_index, parameters, is_const_member_function, is_virtual_function_override: is_function_override};
 
                     let type_index = state.pop_stack_check_underflow().and_then(|x| state.unwrap_value_as_type_index_checked(x))?;
@@ -1079,21 +1116,15 @@ impl<'a> GospelVMExecutionState<'a> {
                     state.validate_type_not_finalized(type_index, run_context)?;
 
                     if let Some(prototype_members) = run_context.types[type_index].member_prototypes.as_mut() {
-                        prototype_members.insert(UserDefinedTypeMember::VirtualFunction(new_function_declaration.clone()));
+                        prototype_members.insert(GospelVMMemberPrototype{member_declaration: UserDefinedTypeMember::VirtualFunction(new_function_declaration.clone()), unresolved_return_type});
                     }
                     // Add virtual function to the UDT only if this is not a function prototype
                     if !is_function_prototype && let Type::UDT(user_defined_type) = &mut run_context.types[type_index].wrapped_type {
                         if user_defined_type.kind == UserDefinedTypeKind::Union {
                             vm_bail!(Some(state), "Union types cannot have virtual functions");
                         }
-                        if user_defined_type.members.iter().any(|x| !matches!(x, UserDefinedTypeMember::VirtualFunction(_)) && x.name() == Some(function_name)) {
+                        if user_defined_type.members.iter().any(|x| x.name() == Some(function_name)) {
                             vm_bail!(Some(state), "Type #{} already contains a member named {}", type_index, function_name);
-                        }
-                        if user_defined_type.members.iter().any(|x| {
-                            if let UserDefinedTypeMember::VirtualFunction(function) = x && x.name() == Some(function_name) &&
-                                function.function_signature() == new_function_declaration.function_signature() { true } else { false }
-                        }) {
-                            vm_bail!(Some(state), "Type #{} already contains a function named {} with identical signature", type_index, function_name);
                         }
                         user_defined_type.members.push(UserDefinedTypeMember::VirtualFunction(new_function_declaration))
                     }
@@ -1160,8 +1191,8 @@ impl<'a> GospelVMExecutionState<'a> {
                     let constant_name_index = state.immediate_value_checked(instruction, 0)? as i32;
                     let constant_name = if constant_name_index == -1 { None } else { Some(state.get_referenced_string_checked(constant_name_index as usize)?.to_string()) };
 
-                    let constant_flags_index = state.immediate_value_checked(instruction, 1)? as usize;
-                    let is_constant_prototype = constant_flags_index & (1 << 2) != 0;
+                    let constant_flags = state.immediate_value_checked(instruction, 1)?;
+                    let is_constant_prototype = constant_flags & gospel_opcode_constants::ENUM_CONSTANT_FLAG_PROTOTYPE != 0;
 
                     let instruction_encoding = state.immediate_value_checked(instruction, 2)? as u8;
                     let integral_value_type = Self::decode_integral_value_type(instruction_encoding);
@@ -1181,8 +1212,8 @@ impl<'a> GospelVMExecutionState<'a> {
                     let constant_name_index = state.immediate_value_checked(instruction, 0)? as i32;
                     let constant_name = if constant_name_index == -1 { None } else { Some(state.get_referenced_string_checked(constant_name_index as usize)?.to_string()) };
 
-                    let constant_flags_index = state.immediate_value_checked(instruction, 1)? as usize;
-                    let is_constant_prototype = constant_flags_index & (1 << 2) != 0;
+                    let constant_flags = state.immediate_value_checked(instruction, 1)?;
+                    let is_constant_prototype = constant_flags & gospel_opcode_constants::ENUM_CONSTANT_FLAG_PROTOTYPE != 0;
 
                     if constant_name.is_some() && let Some(constant_prototypes) = &mut run_context.types[type_index].enum_constant_prototypes {
                         constant_prototypes.insert(constant_name.as_ref().unwrap().clone());

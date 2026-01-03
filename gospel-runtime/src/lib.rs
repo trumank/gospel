@@ -21,13 +21,15 @@ pub mod minidump;
 pub mod local_type_model;
 #[cfg(feature = "vm")]
 pub mod vm_integration;
+#[cfg(feature = "local")]
+mod code_generation;
 
 #[macro_export]
 macro_rules! gsb_codegen_implement_external_udt_field {
     ($field_name:ident, $source_file_name:literal, required, {$(#[$field_attributes:meta])*}, $field_type:ty) => {
         $(#[$field_attributes])*
         pub fn $field_name<M : gospel_runtime::external_memory::Memory + gospel_runtime::external_type_model::TypeNamespace>(self: &gospel_runtime::external_type_model::Ref<M, Self>) -> gospel_runtime::external_type_model::Ref<M, $field_type> {
-            use gospel_runtime::core_type_definitions::StaticTypeTag;
+            use  gospel_runtime::core_type_definitions::StaticTypeTag;
             use std::ops::Deref;
             use std::ops::Add;
             let static_type_index = Self::store_type_descriptor_to_namespace(self.inner_ptr.memory.deref());

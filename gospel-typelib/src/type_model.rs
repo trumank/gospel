@@ -1,6 +1,7 @@
 ﻿use std::cell::Cell;
 use std::cmp::{max, min};
 use std::collections::HashMap;
+use std::ops::{BitAnd, BitAndAssign};
 use std::sync::Arc;
 use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -122,7 +123,8 @@ pub fn fork_type_graph<'a, T : TypeGraphLike>(graph: &'a T, type_index: usize, r
                 members.push(match member {
                     UserDefinedTypeMember::Field(field) => {
                         let member_type_index = fork_type_graph(graph, field.member_type_index, result, type_lookup);
-                        UserDefinedTypeMember::Field(UserDefinedTypeField{name: field.name.clone(), user_alignment: field.user_alignment, member_type_index})
+                        UserDefinedTypeMember::Field(UserDefinedTypeField{name: field.name.clone(), user_alignment: field.user_alignment, member_type_index,
+                            cpp_access_specifier: field.cpp_access_specifier})
                     },
                     UserDefinedTypeMember::Bitfield(bitfield) => UserDefinedTypeMember::Bitfield(bitfield.clone()),
                     UserDefinedTypeMember::VirtualFunction(function_declaration) => {
@@ -138,7 +140,8 @@ pub fn fork_type_graph<'a, T : TypeGraphLike>(graph: &'a T, type_index: usize, r
                 });
             }
             Type::UDT(UserDefinedType{kind: user_defined_type.kind.clone(), name: user_defined_type.name.clone(),
-                user_alignment: user_defined_type.user_alignment, member_pack_alignment: user_defined_type.member_pack_alignment, base_class_indices, members})
+                user_alignment: user_defined_type.user_alignment, member_pack_alignment: user_defined_type.member_pack_alignment, base_class_indices, members,
+                cpp_type_traits: user_defined_type.cpp_type_traits.clone()})
         }
         Type::Enum(enum_type) => Type::Enum(enum_type.clone()),
     };
@@ -500,6 +503,10 @@ impl PrimitiveType {
     pub fn size_and_alignment(self, target_triplet: &TargetTriplet) -> anyhow::Result<usize> {
         Ok(self.bit_width(target_triplet).ok_or_else(|| anyhow!("Void type is sizeless"))?.value_in_bytes())
     }
+    /// Calculates the C++ specific type traits of this primitive type
+    pub fn cpp_type_traits(&self) -> anyhow::Result<CppTypeTraits> {
+        Ok(if self.is_sizeless() { CppTypeTraits::sizeless_type_traits() } else { CppTypeTraits::trivial_type_traits() })
+    }
 }
 
 /// Represents a statically sized array type. Size of the array type is the size of the element type multiplied by the array length
@@ -520,6 +527,23 @@ impl ArrayType {
         let (element_size, element_alignment) = Type::size_and_alignment(self.element_type_index, type_graph, layout_cache)?;
         Ok((element_size * self.array_length, element_alignment))
     }
+    /// Calculates the C++ specific type traits of the array type
+    pub fn cpp_type_traits(&self, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<CppTypeTraits> {
+        let element_type_traits = Type::cpp_type_traits(self.element_type_index, type_graph, layout_cache)?;
+        Ok(CppTypeTraits{
+            // Arrays do not have trivial copy and move constructors and assignment operators
+            trivially_copy_constructible: false,
+            trivially_move_constructible: false,
+            trivially_copy_assignable: false,
+            trivially_move_assignable: false,
+            ..element_type_traits
+        })
+    }
+    /// Converts this type to a string for debugging
+    pub fn to_type_string(&self, type_graph: &dyn TypeGraphLike) -> String {
+        let element_type_string = Type::type_string(self.element_type_index, type_graph);
+        format!("({})[{}]", element_type_string, self.array_length)
+    }
 }
 
 /// Represents an intrinsic pointer type with a known pointee type
@@ -539,6 +563,29 @@ impl PointerType {
     pub fn size_and_alignment(&self, target_triplet: &TargetTriplet) -> usize {
         target_triplet.address_width()
     }
+    /// Calculates the C++ specific type traits of this pointer type
+    pub fn cpp_type_traits(&self) -> anyhow::Result<CppTypeTraits> {
+        Ok(if self.is_reference {
+            // References are not trivially constructible
+            CppTypeTraits{trivially_constructible: false, ..CppTypeTraits::trivial_type_traits()}
+        } else {
+            CppTypeTraits::trivial_type_traits()
+        })
+    }
+    /// Converts this type to a string for debugging
+    pub fn to_type_string(&self, type_graph: &dyn TypeGraphLike) -> String {
+        let pointee_type_string = Type::type_string(self.pointee_type_index, type_graph);
+        if self.is_reference { format!("{}&", pointee_type_string) } else { format!("{}*", pointee_type_string) }
+    }
+}
+
+/// Represents an access specifier in C++
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default, Hash, Serialize, Deserialize, Display, EnumString)]
+pub enum CppAccessSpecifier {
+    #[default]
+    Public,
+    Protected,
+    Private,
 }
 
 /// Represents a field in a user defined type
@@ -550,6 +597,8 @@ pub struct UserDefinedTypeField {
     pub user_alignment: Option<usize>,
     /// Index of the type for this member
     pub member_type_index: usize,
+    /// C++ access specifier for this field, if present
+    pub cpp_access_specifier: Option<CppAccessSpecifier>,
 }
 impl UserDefinedTypeField {
     /// Returns the type of this member
@@ -567,6 +616,8 @@ pub struct UserDefinedTypeBitfield {
     pub primitive_type: PrimitiveType,
     /// Width of this bitfield. Bitfield width cannot exceed the width of the primitive type
     pub bitfield_width: usize,
+    /// C++ access specifier for this bitfield, if present
+    pub cpp_access_specifier: Option<CppAccessSpecifier>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -677,6 +728,8 @@ pub struct ResolvedUDTLayout {
     pub virtual_function_lookup: HashMap<FunctionSignature, ResolvedUDTVirtualFunctionLocation>,
     pub base_class_offsets: Vec<usize>,
     pub member_layouts: Vec<ResolvedUDTMemberLayout>,
+    pub resolved_cpp_type_traits: CppTypeTraits,
+    pub cpp_has_non_public_fields: bool,
 }
 
 /// Represents a kind of the user defined type, which could be a struct, class, or a union
@@ -686,6 +739,16 @@ pub enum UserDefinedTypeKind {
     Struct,
     Class,
     Union,
+}
+impl UserDefinedTypeKind {
+    /// Returns the default access specifier for members of this UDT
+    pub fn default_access_specifier(self) -> CppAccessSpecifier {
+        match self {
+            UserDefinedTypeKind::Union => CppAccessSpecifier::Public,
+            UserDefinedTypeKind::Struct => CppAccessSpecifier::Public,
+            UserDefinedTypeKind::Class => CppAccessSpecifier::Private,
+        }
+    }
 }
 
 /// Represents a user defined struct, class or union type, with optional base classes and fields defined in it
@@ -703,6 +766,8 @@ pub struct UserDefinedType {
     pub base_class_indices: Vec<usize>,
     /// All members defined in this UDT
     pub members: Vec<UserDefinedTypeMember>,
+    /// C++ specific type traits. Note that these traits are overrides on this UDT and do not include implicit traits derived from parent classes and members
+    pub cpp_type_traits: CppTypeTraits,
 }
 pub struct MemberLayoutMapContext<'a, 'b> {
     pub owner_udt: &'a UserDefinedType,
@@ -711,6 +776,8 @@ pub struct MemberLayoutMapContext<'a, 'b> {
     pub member_index: usize,
 }
 impl UserDefinedType {
+    /// Name of the destructor function that UDT might declare explicitly as virtual
+    pub const DESTRUCTOR_FUNCTION_NAME: &'static str = "@destructor";
 
     /// Returns true if this user defined type is a child of the given base class (this will not check if this is the same type!)
     pub fn is_child_of(&self, base_class_index: usize, type_graph: &dyn TypeGraphLike) -> bool {
@@ -800,6 +867,8 @@ impl UserDefinedType {
         let mut vtable_layout: Option<ResolvedUDTVtableLayout> = None;
         let mut vtable_function_start_offset: usize = 0;
         let mut virtual_function_lookup: HashMap<FunctionSignature, ResolvedUDTVirtualFunctionLocation> = HashMap::new();
+        let mut resolved_cpp_type_traits: CppTypeTraits = self.cpp_type_traits.clone();
+        let mut cpp_has_non_public_fields = false;
 
         let calculate_member_offset = |member_size: usize, member_alignment: usize| -> usize {
             let capped_member_alignment = self.member_pack_alignment.map(|pack_alignment| min(member_alignment, pack_alignment)).unwrap_or(member_alignment);
@@ -865,6 +934,10 @@ impl UserDefinedType {
                 let base_class_offset = calculate_member_offset(base_class_size, base_class_alignment);
                 base_class_offsets.push(base_class_offset);
 
+                // Type traits from base class limit which type traits child class is allowed to exhibit
+                resolved_cpp_type_traits &= base_class.resolved_cpp_type_traits.clone();
+                cpp_has_non_public_fields |= base_class.cpp_has_non_public_fields;
+
                 // Add virtual functions defined in this base class to the lookup and adjust their vtable offset by the offset of the base class within this class
                 for (virtual_function_signature, base_class_virtual_function_location) in &base_class.virtual_function_lookup {
                     if !virtual_function_lookup.contains_key(virtual_function_signature) {
@@ -897,6 +970,19 @@ impl UserDefinedType {
                         let result_location = ResolvedUDTVirtualFunctionLocation{ vtable_offset: vtable_layout.as_ref().unwrap().offset, offset: virtual_function_offset };
                         virtual_function_lookup.insert(function_signature, result_location.clone());
                         member_layouts.push(ResolvedUDTMemberLayout::VirtualFunction(result_location));
+
+                        // Virtual function table makes the type non-trivial, but keeps the trivial destructor (unless this virtual function is a destructor,
+                        // in which case it marks the type as non-trivial because it can be overridden by the children even if the default implementation is trivial)
+                        let is_virtual_destructor_function = virtual_function.name == UserDefinedType::DESTRUCTOR_FUNCTION_NAME;
+                        let virtual_function_table_traits = CppTypeTraits{
+                            trivially_constructible: false,
+                            trivially_destructible: !is_virtual_destructor_function,
+                            trivially_copy_constructible: false,
+                            trivially_move_constructible: false,
+                            trivially_copy_assignable: false,
+                            trivially_move_assignable: false
+                        };
+                        resolved_cpp_type_traits &= virtual_function_table_traits;
                     } else {
                         // This is an override of a function that does not exist.
                         bail!("Base function for virtual function override {} does not exist", virtual_function.name);
@@ -910,16 +996,34 @@ impl UserDefinedType {
                         let member_name = member.name().unwrap_or("<unnamed member>");
                         anyhow!("Failed to calculate member {} size: {}", member_name, error)
                     })?;
+                let mut member_type_traits = Type::cpp_type_traits(field.member_type_index, type_graph, layout_cache)
+                    .map_err(|error| {
+                        let member_name = member.name().unwrap_or("<unnamed member>");
+                        anyhow!("Failed to calculate member {} size: {}", member_name, error)
+                    })?;
                 let member_alignment = max(1, max(member_type_alignment, field.user_alignment.unwrap_or(0)));
+                let member_access_specifier = field.cpp_access_specifier.unwrap_or(self.kind.default_access_specifier());
 
                 let member_offset = calculate_member_offset(member_size, member_alignment);
                 let result_layout = ResolvedUDTFieldLayout{ offset: member_offset, alignment: member_alignment, size: member_size };
                 member_layouts.push(ResolvedUDTMemberLayout::Field(result_layout));
 
+                // Unions ignore their fields not being move constructible/assignable when determining whenever the union itself is
+                if self.kind == UserDefinedTypeKind::Union {
+                    member_type_traits.trivially_move_constructible = true;
+                    member_type_traits.trivially_move_assignable = true;
+                }
+
+                // Type traits from class fields limit which type traits child class is allowed to exhibit
+                resolved_cpp_type_traits &= member_type_traits;
+                cpp_has_non_public_fields |= member_access_specifier != CppAccessSpecifier::Public;
+
             } else if let UserDefinedTypeMember::Bitfield(bitfield) = member {
+                let maximum_bitfield_width = bitfield.primitive_type.size_and_alignment(&layout_cache.target_triplet)? * 8;
+                let member_access_specifier = bitfield.cpp_access_specifier.unwrap_or(self.kind.default_access_specifier());
+
                 // If this is a bitfield, and the previous member has the same type and alignment as this one, and is also a bitfield, and has enough space to fit this bitfield in it,
                 // copy the offset and other data from the previous field but update the bitfield location to point to this bitfield
-                let maximum_bitfield_width = bitfield.primitive_type.size_and_alignment(&layout_cache.target_triplet)? * 8;
                 if member_index > 0 &&
                     let ResolvedUDTMemberLayout::Bitfield(previous_bitfield) = &member_layouts[member_index - 1] &&
                     let bitfield_start_offset = previous_bitfield.bitfield_offset + previous_bitfield.bitfield_width &&
@@ -934,17 +1038,42 @@ impl UserDefinedType {
                     let result_layout = ResolvedUDTBitfieldLayout{ offset: member_offset, size: member_size_and_alignment, bitfield_offset: 0, bitfield_width: min(bitfield.bitfield_width, maximum_bitfield_width) };
                     member_layouts.push(ResolvedUDTMemberLayout::Bitfield(result_layout));
                 }
+
+                // Bitfields do not affect the type traits of this class because bitfields are always trivial
+                cpp_has_non_public_fields |= member_access_specifier != CppAccessSpecifier::Public;
             }
+        }
+
+        // If this is
+
+        // If user defined type is not trivially destructible, it is also not trivially constructible (or trivially copy/move constructible)
+        if !resolved_cpp_type_traits.trivially_destructible {
+            resolved_cpp_type_traits.trivially_constructible = false;
+            resolved_cpp_type_traits.trivially_copy_constructible = false;
+            resolved_cpp_type_traits.trivially_move_constructible = false;
         }
 
         // Struct size cannot be zero, it has to be at least 1 byte even for empty structs
         if current_size.get() == 0 {
             current_size.set(1);
         }
+
         // Align the size to the class alignment now
         let unaligned_size = current_size.get();
         current_size.set(align_value(current_size.get(), current_alignment.get()));
-        Ok(ResolvedUDTLayout{alignment: current_alignment.get(), unaligned_size, size: current_size.get(), vtable: vtable_layout, virtual_function_lookup, base_class_offsets, member_layouts})
+
+        Ok(ResolvedUDTLayout{alignment: current_alignment.get(), unaligned_size, size: current_size.get(), vtable: vtable_layout,
+            virtual_function_lookup, base_class_offsets, member_layouts, resolved_cpp_type_traits, cpp_has_non_public_fields})
+    }
+    /// Converts this type to a string for debugging
+    pub fn to_type_string(&self) -> String {
+        let class_name = match self.kind {
+            UserDefinedTypeKind::Class => "class",
+            UserDefinedTypeKind::Struct => "struct",
+            UserDefinedTypeKind::Union => "union",
+        };
+        let type_name = self.name.clone().unwrap_or_else(|| "<unnamed-type>".into());
+        format!("{} {}", class_name, type_name)
     }
 }
 
@@ -1047,9 +1176,9 @@ impl EnumType {
         }
     }
     /// Returns the size and alignment of this enum type
-    pub fn size_and_alignment(&self, target_triplet: &TargetTriplet) -> anyhow::Result<(usize, usize)> {
+    pub fn size_and_alignment(&self, target_triplet: &TargetTriplet) -> anyhow::Result<usize> {
         let size_and_alignment = self.underlying_type(target_triplet)?.size_and_alignment(target_triplet)?;
-        Ok((size_and_alignment, size_and_alignment))
+        Ok(size_and_alignment)
     }
     /// Calculates the value of the constant using the underlying type of the enum for the given target triplet
     pub fn constant_value(&self, constant: &EnumConstant, target_triplet: &TargetTriplet) -> anyhow::Result<u64> {
@@ -1065,6 +1194,18 @@ impl EnumType {
             }
         }
         Ok(IntegralType::cast_integral_value(constant.raw_value, &constant.integral_type, &underlying_integral_type))
+    }
+    /// Converts this type to a string for debugging
+    pub fn to_type_string(&self) -> String {
+        let base_enum_word = match self.kind {
+            EnumKind::Scoped => "enum class",
+            EnumKind::Unscoped => "enum"
+        };
+        let enum_name = self.name.clone().unwrap_or_else(|| "<unnamed-enum>".into());
+        let enum_underlying_type = if let Some(underlying_type) = self.underlying_type {
+            format!(" : {}", underlying_type.to_string())
+        } else { String::new() };
+        format!("{} {}{}", base_enum_word, enum_name, enum_underlying_type)
     }
 }
 
@@ -1091,6 +1232,29 @@ impl CVQualifiedType {
     pub fn is_sizeless(&self, type_graph: &dyn TypeGraphLike) -> bool {
         self.base_type(type_graph).is_sizeless(type_graph)
     }
+    /// Calculates the C++ specific type traits of this CV qualified type
+    pub fn cpp_type_traits(&self, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<CppTypeTraits> {
+        let base_type_traits = Type::cpp_type_traits(self.base_type_index, type_graph, layout_cache)?;
+        Ok(if self.constant {
+            // Constant qualified types are not copy or move assignable
+            CppTypeTraits{
+                trivially_copy_assignable: false,
+                trivially_move_assignable: false,
+                ..base_type_traits
+            }
+        } else { base_type_traits })
+    }
+    /// Converts this type to a string for debugging
+    pub fn to_type_string(&self, type_graph: &dyn TypeGraphLike) -> String {
+        let base_type_string = Type::type_string(self.base_type_index, type_graph);
+        if self.constant && self.volatile {
+            format!("{} const volatile", base_type_string)
+        } else if self.constant {
+            format!("{} const", base_type_string)
+        } else if self.volatile {
+            format!("{} volatile", base_type_string)
+        } else { base_type_string }
+    }
 }
 
 /// Represents a type of the function signature. Function type does not have a size, and must be wrapped in a pointer type
@@ -1115,6 +1279,65 @@ impl FunctionType {
     /// Returns the argument types for this function type
     pub fn argument_types<'a>(&self, type_graph: &'a dyn TypeGraphLike) -> Vec<&'a Type> {
         self.argument_type_indices.iter().map(|x| type_graph.type_by_index(*x)).collect()
+    }
+    /// Converts this type to a string for debugging
+    pub fn to_type_string(&self, type_graph: &dyn TypeGraphLike) -> String {
+        let argument_list = self.argument_type_indices.iter()
+            .map(|x| Type::type_string(*x, type_graph))
+            .collect::<Vec<String>>().join(", ");
+        let return_type = Type::type_string(self.return_value_type_index, type_graph);
+        if let Some(this_type_index) = self.this_type_index {
+            let this_type = Type::type_string(this_type_index, type_graph);
+            format!("{}({})({})", return_type, this_type, argument_list)
+        } else { format!("{}({})", return_type, argument_list) }
+    }
+}
+
+/// Describes C++ specific type traits. These are part of the type ABI as they affect the way
+/// the type is passed as a parameter to the functions or returned from them
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CppTypeTraits {
+    pub trivially_constructible: bool,
+    pub trivially_destructible: bool,
+    pub trivially_copy_constructible: bool,
+    pub trivially_move_constructible: bool,
+    pub trivially_copy_assignable: bool,
+    pub trivially_move_assignable: bool,
+}
+impl CppTypeTraits {
+    /// Returns type traits of a fully trivial type. Trivial type has a trivial constructor, destructor, copy and move constructors and assignment operators
+    pub fn trivial_type_traits() -> Self {
+        Self{trivially_constructible: true, trivially_destructible: true, trivially_copy_constructible: true, trivially_move_constructible: true, trivially_copy_assignable: true, trivially_move_assignable: true}
+    }
+    /// Returns type traits of an unsized type. Unsized types have all of their members marked as non-trivial
+    pub fn sizeless_type_traits() -> Self {
+        Self{trivially_constructible: false, trivially_destructible: false, trivially_copy_constructible: false, trivially_move_constructible: false, trivially_copy_assignable: false, trivially_move_assignable: false}
+    }
+}
+/// Applies AND operator between two type traits. Trivial properties only hold if they are held for all subitems of the given type, e.g. base classes and members
+impl BitAnd for CppTypeTraits {
+    type Output = CppTypeTraits;
+    fn bitand(self, rhs: Self) -> Self::Output {
+        Self{
+            trivially_constructible: self.trivially_constructible & rhs.trivially_constructible,
+            trivially_destructible: self.trivially_destructible & rhs.trivially_destructible,
+            trivially_copy_constructible: self.trivially_copy_constructible & rhs.trivially_copy_constructible,
+            trivially_move_constructible: self.trivially_move_constructible & rhs.trivially_move_constructible,
+            trivially_copy_assignable: self.trivially_copy_assignable & rhs.trivially_copy_assignable,
+            trivially_move_assignable: self.trivially_move_assignable & rhs.trivially_move_assignable,
+        }
+    }
+}
+/// Shortcut syntax for AND operator application to type traits
+impl BitAndAssign for CppTypeTraits {
+    fn bitand_assign(&mut self, rhs: Self) {
+        *self = self.clone() & rhs;
+    }
+}
+/// By default, C++ types are trivial, e.g. all of their properties are trivial
+impl Default for CppTypeTraits {
+    fn default() -> Self {
+        CppTypeTraits::trivial_type_traits()
     }
 }
 
@@ -1142,7 +1365,7 @@ impl Type {
             Type::CVQualified(cv_qualified_type) => cv_qualified_type.size_and_alignment(type_graph, layout_cache)?,
             Type::Function(_) => { bail!("Function type is sizeless") },
             Type::UDT(udt_type) => udt_type.size_and_alignment(type_index, type_graph, layout_cache)?,
-            Type::Enum(enum_type) => enum_type.size_and_alignment(&layout_cache.target_triplet)?,
+            Type::Enum(enum_type) => { let size_and_alignment = enum_type.size_and_alignment(&layout_cache.target_triplet)?; (size_and_alignment, size_and_alignment) },
         };
         layout_cache.type_cache.insert(type_index, (size, alignment));
         Ok((size, alignment))
@@ -1154,6 +1377,30 @@ impl Type {
             Type::CVQualified(cv_qualified_type) => cv_qualified_type.is_sizeless(type_graph),
             Type::Function(_) => true,
             _ => false,
+        }
+    }
+    /// Calculates the C++ specific type traits for this type
+    pub fn cpp_type_traits(type_index: usize, type_graph: &dyn TypeGraphLike, layout_cache: &mut TypeLayoutCache) -> anyhow::Result<CppTypeTraits> {
+        Ok(match type_graph.type_by_index(type_index) {
+            Type::Primitive(primitive_type) => primitive_type.cpp_type_traits()?,
+            Type::Array(array_type) => array_type.cpp_type_traits(type_graph, layout_cache)?,
+            Type::Pointer(pointer_type) => pointer_type.cpp_type_traits()?,
+            Type::CVQualified(cv_qualified_type) => cv_qualified_type.cpp_type_traits(type_graph, layout_cache)?,
+            Type::Function(_) => CppTypeTraits::sizeless_type_traits(), // Function types are sizeless
+            Type::UDT(udt_type) => udt_type.layout(type_index, type_graph, layout_cache)?.resolved_cpp_type_traits.clone(),
+            Type::Enum(_) => CppTypeTraits::trivial_type_traits(), // enums are trivial types
+        })
+    }
+    /// Converts this type to a string for debugging
+    pub fn type_string(type_index: usize, type_graph: &dyn TypeGraphLike) -> String {
+        match type_graph.type_by_index(type_index) {
+            Type::Primitive(primitive_type) => primitive_type.to_string(),
+            Type::Array(array_type) => array_type.to_type_string(type_graph),
+            Type::Pointer(pointer_type) => pointer_type.to_type_string(type_graph),
+            Type::CVQualified(cv_qualified_type) => cv_qualified_type.to_type_string(type_graph),
+            Type::Function(function_type) => function_type.to_type_string(type_graph),
+            Type::UDT(udt_type) => udt_type.to_type_string(),
+            Type::Enum(enum_type) => enum_type.to_type_string(),
         }
     }
 }

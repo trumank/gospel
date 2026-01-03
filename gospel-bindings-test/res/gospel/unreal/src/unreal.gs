@@ -38,22 +38,22 @@ struct TVector {
 
 type FVector = if (UE_VERSION >= 501) TVector<double> else TVector<float>;
 
-public struct FScriptElement {};
+visible struct FScriptElement {};
 
 template<typename InIndexType>
-public struct TSizedHeapAllocator {
+visible struct TSizedHeapAllocator {
     type IndexType = InIndexType;
     FScriptElement* Data;
 };
 
 template<typename InElementType, unsigned int InNumInlineElements, typename InSecondaryAllocator>
-public struct TInlineAllocator {
+visible struct TInlineAllocator {
     InElementType InlineAllocation[InNumInlineElements];
     InSecondaryAllocator SecondaryAllocation;
 };
 
 template<typename InElementType, typename InAllocator = TSizedHeapAllocator<int32_t>>
-public struct TArray {
+visible struct TArray {
     type ElementType = InElementType;
     type IndexType = InAllocator::typename IndexType;
 

@@ -3,7 +3,7 @@ use std::fmt::{Display, Formatter};
 use std::iter::{empty, once};
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
-use gospel_typelib::type_model::{EnumKind, PrimitiveType, UserDefinedTypeKind, IntegralType};
+use gospel_typelib::type_model::{EnumKind, PrimitiveType, UserDefinedTypeKind, IntegralType, CppAccessSpecifier};
 
 /// Describes value type of the expression in the source grammar
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, EnumString)]
@@ -20,6 +20,27 @@ impl Default for ExpressionValueType {
         ExpressionValueType::Integer(IntegralType::default())
     }
 }
+impl ExpressionValueType {
+    /// Returns the expression context of this value type
+    pub fn expression_context(&self) -> ExpressionContext {
+        match self {
+            ExpressionValueType::Any => ExpressionContext::Unknown,
+            ExpressionValueType::Integer(_) => ExpressionContext::Integral,
+            ExpressionValueType::Typename => ExpressionContext::Typename,
+            ExpressionValueType::Bool => ExpressionContext::Integral,
+            ExpressionValueType::Closure => ExpressionContext::Unknown,
+            ExpressionValueType::MetaStruct => ExpressionContext::Unknown,
+        }
+    }
+}
+
+/// Expression context allows resolving ambiguous source text in cases where syntax rules are not sufficient
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Display)]
+pub enum ExpressionContext {
+    Unknown,
+    Typename,
+    Integral,
+}
 
 /// Describes a source level access specifier
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Display)]
@@ -29,7 +50,7 @@ pub enum DeclarationAccessSpecifier {
     /// Visible to other declarations within the same module
     Internal,
     /// Visible to other declarations across all modules
-    Public,
+    Visible,
 }
 
 /// Represents a type of partial identifier
@@ -75,6 +96,20 @@ pub struct ConditionalExpression {
     #[serde(default)]
     pub source_context: ASTSourceContext,
 }
+impl ConditionalExpression {
+    /// Attempts to infer the context that is materialized as a result of this expression evaluation
+    pub fn infer_expression_context(&self) -> ExpressionContext {
+        let true_expression_context = self.true_expression.infer_expression_context();
+        let false_expression_context = self.false_expression.infer_expression_context();
+        if true_expression_context == false_expression_context || false_expression_context == ExpressionContext::Unknown {
+            true_expression_context
+        } else if true_expression_context == ExpressionContext::Unknown {
+            false_expression_context
+        } else {
+            ExpressionContext::Unknown
+        }
+    }
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BinaryOperator {
@@ -106,6 +141,31 @@ pub struct BinaryExpression {
     #[serde(default)]
     pub source_context: ASTSourceContext,
 }
+impl BinaryExpression {
+    /// Attempts to infer the context that is materialized as a result of this expression evaluation
+    pub fn infer_expression_context(&self) -> ExpressionContext {
+        match self.operator {
+            BinaryOperator::BitwiseOr => ExpressionContext::Integral,
+            BinaryOperator::BitwiseAnd => ExpressionContext::Integral,
+            BinaryOperator::BitwiseXor => ExpressionContext::Integral,
+            BinaryOperator::BitwiseShiftLeft => ExpressionContext::Integral,
+            BinaryOperator::BitwiseShiftRight => ExpressionContext::Integral,
+            BinaryOperator::ArithmeticAdd => ExpressionContext::Integral,
+            BinaryOperator::ArithmeticSubtract => ExpressionContext::Integral,
+            BinaryOperator::ArithmeticMultiply => ExpressionContext::Integral,
+            BinaryOperator::ArithmeticDivide => ExpressionContext::Integral,
+            BinaryOperator::ArithmeticRemainder => ExpressionContext::Integral,
+            BinaryOperator::LogicalLess => ExpressionContext::Integral,
+            BinaryOperator::LogicalMore => ExpressionContext::Integral,
+            BinaryOperator::LogicalLessEquals => ExpressionContext::Integral,
+            BinaryOperator::LogicalMoreEquals => ExpressionContext::Integral,
+            BinaryOperator::ShortCircuitAnd => ExpressionContext::Integral,
+            BinaryOperator::ShortCircuitOr => ExpressionContext::Integral,
+            BinaryOperator::Equals => ExpressionContext::Integral,
+            BinaryOperator::NotEquals => ExpressionContext::Integral,
+        }
+    }
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnaryOperator {
@@ -124,6 +184,20 @@ pub struct UnaryExpression {
     pub expression: Expression,
     #[serde(default)]
     pub source_context: ASTSourceContext,
+}
+impl UnaryExpression {
+    /// Attempts to infer the context that is materialized as a result of this expression evaluation
+    pub fn infer_expression_context(&self) -> ExpressionContext {
+        match self.operator {
+            UnaryOperator::CreatePointerType => ExpressionContext::Typename,
+            UnaryOperator::CreateReferenceType => ExpressionContext::Typename,
+            UnaryOperator::StructSizeOf => ExpressionContext::Integral,
+            UnaryOperator::StructAlignOf => ExpressionContext::Integral,
+            UnaryOperator::BitwiseInverse => ExpressionContext::Integral,
+            UnaryOperator::ArithmeticNegate => ExpressionContext::Integral,
+            UnaryOperator::BoolNegate => ExpressionContext::Integral,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -283,6 +357,32 @@ pub struct SwitchExpression {
     #[serde(default)]
     pub source_context: ASTSourceContext,
 }
+impl SwitchExpression {
+    /// Attempts to infer the context that is materialized as a result of this expression evaluation
+    pub fn infer_expression_context(&self) -> ExpressionContext {
+        let mut current_expression_context: Option<ExpressionContext> = None;
+
+        if let Some(default_case) = &self.default_case {
+            let default_case_expression_context = default_case.result_expression.infer_expression_context();
+            if default_case_expression_context != ExpressionContext::Unknown {
+                current_expression_context = Some(default_case_expression_context);
+            }
+        }
+        for switch_case in &self.switch_cases {
+            let case_expression_context = switch_case.result_expression.infer_expression_context();
+            if case_expression_context != ExpressionContext::Unknown {
+                if let Some(existing_expression_context) = current_expression_context {
+                    if existing_expression_context != case_expression_context {
+                        return ExpressionContext::Unknown
+                    }
+                } else {
+                    current_expression_context = Some(case_expression_context);
+                }
+            }
+        }
+        current_expression_context.unwrap_or(ExpressionContext::Unknown)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionPointerExpression {
@@ -304,7 +404,7 @@ pub enum Expression {
     StructDeclarationExpression(Box<StructStatement>),
     BlockExpression(Box<BlockExpression>),
     UnaryExpression(Box<UnaryExpression>),
-    ArrayIndexExpression(Box<ArrayTypeExpression>),
+    ArrayTypeExpression(Box<ArrayTypeExpression>),
     MemberAccessExpression(Box<MemberAccessExpression>),
     BinaryExpression(Box<BinaryExpression>),
     CompilerBuiltinExpression(Box<CompilerBuiltinExpression>),
@@ -313,6 +413,29 @@ pub enum Expression {
     StaticCastExpression(Box<StaticCastExpression>),
     SwitchExpression(Box<SwitchExpression>),
     FunctionPointerExpression(Box<FunctionPointerExpression>),
+}
+impl Expression {
+    /// Attempts to infer the context that is materialized as a result of this expression evaluation
+    pub fn infer_expression_context(&self) -> ExpressionContext {
+        match self {
+            Expression::IntegerConstantExpression(_) => ExpressionContext::Integral,
+            Expression::BoolConstantExpression(_) => ExpressionContext::Integral,
+            Expression::IdentifierExpression(_) => ExpressionContext::Unknown,
+            Expression::ConditionalExpression(conditional_expr) => conditional_expr.infer_expression_context(),
+            Expression::StructDeclarationExpression(_) => ExpressionContext::Typename,
+            Expression::BlockExpression(block_expr) => block_expr.return_value_expression.infer_expression_context(),
+            Expression::UnaryExpression(unary_expr) => unary_expr.infer_expression_context(),
+            Expression::ArrayTypeExpression(_) => ExpressionContext::Typename,
+            Expression::MemberAccessExpression(member_access_expr) => member_access_expr.member_type.expression_context(),
+            Expression::BinaryExpression(binary_expr) => binary_expr.infer_expression_context(),
+            Expression::CompilerBuiltinExpression(_) => ExpressionContext::Unknown,
+            Expression::PrimitiveTypeExpression(_) => ExpressionContext::Typename,
+            Expression::CVQualifiedExpression(_) => ExpressionContext::Typename,
+            Expression::StaticCastExpression(_) => ExpressionContext::Integral,
+            Expression::SwitchExpression(switch_expr) => switch_expr.infer_expression_context(),
+            Expression::FunctionPointerExpression(_) => ExpressionContext::Typename,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -379,6 +502,7 @@ pub struct DataStatement {
 /// Represents a member declaration inside the struct definition
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberDeclaration {
+    pub access_specifier: Option<CppAccessSpecifier>,
     pub alignment_expression: Option<ExpressionWithCondition>,
     pub member_type_expression: Expression,
     pub name: Option<String>,

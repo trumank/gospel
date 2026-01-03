@@ -12,7 +12,7 @@ gospel-typelib = { version = "0.1.0", path = "../gospel-typelib" }
 gospel-vm = { version = "0.1.0", path = "../gospel-vm" }
 gospel-compiler = { version = "0.1.0", path = "../gospel-compiler" }
 anyhow = "1.0.93"
-proc-macro2 = "1.0.101"
+proc-macro2 = { version = "1.0.101", features = ["default", "span-locations"] }
 quote = "1.0.40"
 syn = { version = "2.0.106", features = ["full"] }
 prettyplease = "0.2.37"

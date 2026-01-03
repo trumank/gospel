@@ -1,16 +1,19 @@
-﻿use std::alloc::{Allocator, Layout};
-use std::marker::{PhantomData};
-use std::ops::{Deref, DerefMut, Index, IndexMut};
-use std::{mem, ptr};
-use std::clone::CloneToUninit;
-use std::ptr::{NonNull, Pointee};
-use std::sync::{Mutex, RwLock};
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, AtomicUsize, Ordering};
+﻿use crate::core_type_definitions::{implement_enum_underlying_type, implement_primitive_type_tag, EnumUnderlyingType, IntegralValueTypeTag, StaticTypeLayoutCache, StaticTypeTag};
+use crate::code_generation::{generate_virtual_function_call_thunk, CodeChunkReference};
 use generic_statics::{define_namespace, Namespace, Zeroable};
 use gospel_typelib::compiled_target_triplet;
 use gospel_typelib::target_triplet::TargetTriplet;
-use gospel_typelib::type_model::{ArrayType, IntegerSignedness, MutableTypeGraph, PointerType, PrimitiveType, Type};
-use crate::core_type_definitions::{implement_enum_underlying_type, implement_primitive_type_tag, EnumUnderlyingType, IntegralValueTypeTag, StaticTypeLayoutCache, StaticTypeTag};
+use gospel_typelib::type_model::{ArrayType, FunctionSignature, IntegerSignedness, MutableTypeGraph, PointerType, PrimitiveType, ResolvedUDTVirtualFunctionLocation, Type, UserDefinedTypeMember};
+use std::alloc::{Allocator, Layout};
+use std::clone::CloneToUninit;
+use std::marker::PhantomData;
+use std::ops::{Deref, DerefMut, Index, IndexMut};
+use std::ptr::{null_mut, slice_from_raw_parts, slice_from_raw_parts_mut, NonNull, Pointee};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Mutex, RwLock};
+use std::{mem, ptr};
+
+pub use crate::code_generation::enable_dynamic_code_backtraces;
 
 // Underlying type definitions for long int, unsigned long int and wide char depending on target platform
 #[cfg(platform_long_size="4")]
@@ -83,6 +86,10 @@ impl<T : ?Sized> CRef<T> {
     pub fn from_raw_ptr(ptr: *const T) -> Self {
         Self{raw_ptr: NonNull::new(ptr as *mut ()).unwrap(), phantom_data: PhantomData::default()}
     }
+    /// Creates an optional reference from a raw pointer
+    pub fn from_raw_ptr_nullable(ptr: *const T) -> Option<Self> {
+        if ptr.is_null() { None } else { Some(Self{raw_ptr: NonNull::new(ptr as *mut ()).unwrap(), phantom_data: PhantomData::default()}) }
+    }
 }
 
 /// Implement this on DSTs that can have their metadata implicitly derived
@@ -107,6 +114,14 @@ pub trait ImplicitPtrMetadata : Pointee {
     /// Converts raw pointer of another type to the pointer to this type value
     fn from_raw_ptr_mut<T: Pointee<Metadata = ()>>(ptr: *mut T) -> *mut Self {
         ptr::from_raw_parts_mut::<Self>(ptr, Self::create_implicit_metadata())
+    }
+    /// Creates a null pointer to the object of this type
+    fn null_ptr() -> *const Self {
+        Self::from_raw_ptr(ptr::null::<u8>())
+    }
+    /// Creates a null pointer to the object of this type
+    fn null_mut_ptr() -> *mut Self {
+        Self::from_raw_ptr_mut(ptr::null_mut::<u8>())
     }
 }
 /// Default specialization for statically sized types which have no pointer metadata
@@ -355,6 +370,30 @@ impl<'a, TU : TypeUniverse> DynRef<'a, TU> {
         let adjusted_this_ptr = ptr::from_raw_parts::<T>(adjusted_raw_this_ptr, T::create_implicit_metadata());
         Some(unsafe { adjusted_this_ptr.as_ref_unchecked::<'a>() })
     }
+    /// Retrieves the pointer to the raw value data from the reference
+    pub fn as_raw_ptr(&self) -> *const u8 {
+        self.opaque_value.as_ptr()
+    }
+    /// Returns the index of the type from the owning type universe that describes the value pointed to by this reference
+    pub fn type_index(&self) -> usize {
+        self.type_index
+    }
+    /// Constructs a dynamic reference from the given memory location and type index.
+    /// Safety: raw_ptr must point to a value of type described by type_index. Pointer must be valid for the lifetime of the returned DynMut object and have correct provenance
+    pub unsafe fn from_raw_parts(raw_ptr: *const u8, type_index: usize) -> Self {
+        let (type_size, _) = TU::type_layout_cache().lock().unwrap().get_type_size_and_alignment_cached(TU::type_graph(), type_index);
+        Self{opaque_value: unsafe { &*slice_from_raw_parts(raw_ptr, type_size) }, type_index, type_universe_phantom_data: PhantomData::default()}
+    }
+}
+/// Dynamic references can be constructed from normal references to tagged types
+impl<'a, TU : TypeUniverse, T : StaticTypeTag + ImplicitPtrMetadata> From<&'a T> for DynRef<'a, TU> {
+    fn from(value: &'a T) -> Self {
+        Self{
+            opaque_value: unsafe { &*slice_from_raw_parts(value as *const T as *const u8, T::static_size_of_val()) },
+            type_index: T::store_type_descriptor_to_universe::<TU>(),
+            type_universe_phantom_data: PhantomData::default(),
+        }
+    }
 }
 
 /// Represents a mutable reference to a value of opaque type with the given lifetime and the specified type index in the given type universe
@@ -369,10 +408,33 @@ impl<'a, TU : TypeUniverse> DynMut<'a, TU> {
         let to_type_index = T::store_type_descriptor_to_universe::<TU>();
         let this_pointer_adjust = TU::type_layout_cache().lock().unwrap().get_static_cast_pointer_adjust(TU::type_graph(), self.type_index, to_type_index)?;
 
-
         let adjusted_raw_this_ptr = unsafe { self.opaque_value.as_mut_ptr().byte_offset(this_pointer_adjust as isize) };
         let adjusted_this_ptr = ptr::from_raw_parts_mut::<T>(adjusted_raw_this_ptr, T::create_implicit_metadata());
         Some(unsafe { adjusted_this_ptr.as_mut_unchecked::<'a>() })
+    }
+    /// Retrieves the pointer to the raw value data from the mutable reference
+    pub fn as_raw_ptr(&mut self) -> *mut u8 {
+        self.opaque_value.as_mut_ptr()
+    }
+    /// Returns the index of the type from the owning type universe that describes the value pointed to by this reference
+    pub fn type_index(&self) -> usize {
+        self.type_index
+    }
+    /// Constructs a dynamic mutable reference from the given memory location and type index.
+    /// Safety: raw_ptr must point to a value of type described by type_index. Pointer must be valid for the lifetime of the returned DynMut object and have correct provenance
+    pub unsafe fn from_raw_parts(raw_ptr: *mut u8, type_index: usize) -> Self {
+        let (type_size, _) = TU::type_layout_cache().lock().unwrap().get_type_size_and_alignment_cached(TU::type_graph(), type_index);
+        Self{opaque_value: unsafe { &mut *slice_from_raw_parts_mut(raw_ptr, type_size) }, type_index, type_universe_phantom_data: PhantomData::default()}
+    }
+}
+/// Dynamic mutable references can be constructed from normal references to tagged types
+impl<'a, TU : TypeUniverse, T : StaticTypeTag + ImplicitPtrMetadata> From<&'a mut T> for DynMut<'a, TU> {
+    fn from(value: &'a mut T) -> Self {
+        Self{
+            opaque_value: unsafe { &mut *slice_from_raw_parts_mut(value as *mut T as *mut u8, T::static_size_of_val()) },
+            type_index: T::store_type_descriptor_to_universe::<TU>(),
+            type_universe_phantom_data: PhantomData::default(),
+        }
     }
 }
 
@@ -614,5 +676,170 @@ impl<T : ?Sized + StaticTypeTag, U : TypeUniverse> CachedThreadSafeEnumConstant<
         if self.result_has_constant.load(Ordering::Relaxed) {
             Some(self.constant_value.load(Ordering::Relaxed))
         } else { None }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct CachedThreadSafeCheckFunctionExists<T : ?Sized + StaticTypeTag, U : TypeUniverse> {
+    has_value_cached: AtomicBool,
+    result_function_exists: AtomicBool,
+    _phantom_udt_type: PhantomData<T>,
+    _phantom_type_universe: PhantomData<U>,
+}
+unsafe impl<T : ?Sized + StaticTypeTag, U : TypeUniverse> Zeroable for CachedThreadSafeCheckFunctionExists<T, U> {}
+impl<T : ?Sized + StaticTypeTag, U : TypeUniverse> CachedThreadSafeCheckFunctionExists<T, U> {
+    /// Returns true if virtual function with the given name exists on the UDT in question
+    pub fn does_virtual_function_exist(&self, function_name: &'static str) -> bool {
+        // If there is no value cached, we have to calculate the value here and then release the has_value_cached to make the results visible to other threads
+        if !self.has_value_cached.load(Ordering::Acquire) {
+            let readable_type_graph = U::type_graph().read().unwrap();
+            let type_index = readable_type_graph.base_type_index(T::store_type_descriptor_to_universe::<U>());
+
+            let result_function_exists = if let Type::UDT(user_defined_type) = readable_type_graph.type_by_index(type_index) {
+                user_defined_type.find_map_member_layout(type_index, function_name, &|context| {
+                    if let UserDefinedTypeMember::VirtualFunction(_) = &context.owner_udt.members[context.member_index] { Some(()) } else { None }
+                }, readable_type_graph.deref(), &mut U::type_layout_cache().lock().unwrap().layout_cache).unwrap().is_some()
+            } else { false };
+            self.result_function_exists.store(result_function_exists, Ordering::Relaxed);
+            self.has_value_cached.store(true, Ordering::Release);
+        }
+        // At this point cached data will always be valid (ensured by Acquire memory semantics)
+        self.result_function_exists.load(Ordering::Relaxed)
+    }
+}
+
+pub(crate) struct CachedFunctionDescriptorData {
+    pub(crate) function_name: String,
+    pub(crate) function_signature: FunctionSignature,
+    pub(crate) function_location: ResolvedUDTVirtualFunctionLocation,
+}
+pub(crate) type FunctionCallThunkPrototype = unsafe extern "C" fn(*mut u8, *mut u8, *const *mut u8) -> *mut u8;
+
+struct CachedFunctionCallThunkData {
+    call_thunk: FunctionCallThunkPrototype,
+    // Not actually dead, needed to keep weak pointers alive
+    #[allow(dead_code)]
+    chunk_reference: CodeChunkReference,
+}
+
+#[derive(Debug, Default)]
+pub struct CachedThreadSafeMethodCallDescriptor<T : ?Sized + StaticTypeTag, U : TypeUniverse> {
+    has_function_data_cached: AtomicBool,
+    function_data: AtomicPtr<CachedFunctionDescriptorData>,
+    has_validated_parameter_types: AtomicBool,
+    call_thunk_data: AtomicPtr<CachedFunctionCallThunkData>,
+    has_call_thunk_generated: AtomicBool,
+    _phantom_udt_type: PhantomData<T>,
+    _phantom_type_universe: PhantomData<U>,
+}
+impl<T : ?Sized + StaticTypeTag, U : TypeUniverse> Drop for CachedThreadSafeMethodCallDescriptor<T, U> {
+    fn drop(&mut self) {
+        let function_data_ptr = self.function_data.load(Ordering::Acquire);
+        if function_data_ptr != null_mut() {
+            drop(unsafe { Box::from_raw(function_data_ptr) });
+        }
+        let call_thunk_data_ptr = self.call_thunk_data.load(Ordering::Acquire);
+        if call_thunk_data_ptr != null_mut() {
+            drop(unsafe { Box::from_raw(call_thunk_data_ptr) });
+        }
+    }
+}
+unsafe impl<T : ?Sized + StaticTypeTag, U : TypeUniverse> Zeroable for CachedThreadSafeMethodCallDescriptor<T, U> {}
+impl<T : ?Sized + StaticTypeTag, U : TypeUniverse> CachedThreadSafeMethodCallDescriptor<T, U> {
+    fn get_cached_function_data(&self, function_name: &'static str) -> &CachedFunctionDescriptorData {
+        if !self.has_function_data_cached.load(Ordering::Acquire) {
+            let readable_type_graph = U::type_graph().read().unwrap();
+            let type_index = readable_type_graph.base_type_index(T::store_type_descriptor_to_universe::<U>());
+
+            let result_function_data = if let Type::UDT(user_defined_type) = readable_type_graph.type_by_index(type_index) {
+                user_defined_type.find_map_member_layout(type_index, function_name, &|context| {
+                    if let UserDefinedTypeMember::VirtualFunction(virtual_function_decl) = &context.owner_udt.members[context.member_index] {
+                        let complete_function_name = if let Some(udt_name) = &user_defined_type.name {
+                            format!("{}::{}", udt_name.replace('$', "::"), function_name)
+                        } else { format!("<unnamed-udt>::{}", function_name) };
+                        let function_signature = virtual_function_decl.function_signature();
+                        let function_location = context.owner_layout.virtual_function_lookup.get(&function_signature).unwrap().clone();
+
+                        Some(CachedFunctionDescriptorData{function_name: complete_function_name, function_signature, function_location})
+                    } else { None }
+                }, readable_type_graph.deref(), &mut U::type_layout_cache().lock().unwrap().layout_cache).unwrap()
+            } else { None }.unwrap_or_else(|| panic!("Virtual function named {} does not exist on owner UDT", function_name));
+
+            // LEAK: This can be leaked when multiple threads attempt to concurrently cache function data for the same function. However, since this class is global data,
+            // and exists for the lifetime of the module, it is fine in this case
+            self.function_data.store(Box::into_raw(Box::new(result_function_data)), Ordering::Relaxed);
+            self.has_function_data_cached.store(true, Ordering::Release);
+        }
+        // At this point cached data will always be valid (ensured by Acquire memory semantics)
+        let function_data_ptr = self.function_data.load(Ordering::Relaxed);
+        unsafe { function_data_ptr.as_ref() }.unwrap()
+    }
+    /// Returns true if parameter types have been validated for this function (only used to avoid excessive validation on fully prototyped functions)
+    pub fn has_validated_parameter_types(&self) -> bool {
+        self.has_validated_parameter_types.load(Ordering::Acquire)
+    }
+    /// Marks function parameter types as validated, so that has_validated_parameter_types returns true afterward
+    pub fn mark_parameter_types_validated(&self) {
+        self.has_validated_parameter_types.store(true, Ordering::Release);
+    }
+    /// Validates that provided parameter types match the function signature
+    pub fn validate_parameter_types(&self, function_name: &'static str, prototyped_return_value_type: Option<usize>, mut parameter_types: impl Iterator<Item = usize>) {
+        let cached_function_data = self.get_cached_function_data(function_name);
+
+        // Note that these checks are extremely strict as we expect generated types to match function signature types exactly
+        if let Some(return_value_type) = prototyped_return_value_type {
+            let this_adjust = U::type_layout_cache().lock().unwrap().get_static_cast_pointer_adjust(U::type_graph(), cached_function_data.function_signature.return_value_type_index, return_value_type);
+            assert_eq!(this_adjust, Some(0), "Function {} return type mismatch: Expected Type {}, got Type {}",
+                       function_name, Type::type_string(cached_function_data.function_signature.return_value_type_index, U::type_graph().read().unwrap().deref()),
+                       Type::type_string(return_value_type, U::type_graph().read().unwrap().deref()));
+        }
+
+        let mut current_num_parameter_types = 0;
+        for expected_parameter_type in &cached_function_data.function_signature.parameter_type_indices {
+            let actual_parameter_type = parameter_types.next().unwrap_or_else(|| panic!("Function {} parameter count mismatch: Expected {}, got {}",
+                function_name, cached_function_data.function_signature.parameter_type_indices.len(), current_num_parameter_types));
+            current_num_parameter_types += 1;
+
+            let this_adjust = U::type_layout_cache().lock().unwrap().get_static_cast_pointer_adjust(U::type_graph(), *expected_parameter_type, actual_parameter_type);
+            assert_eq!(this_adjust, Some(0), "Function {} parameter type mismatch for parameter #{}: Expected Type {}, got Type {}",
+                       function_name, current_num_parameter_types, Type::type_string(*expected_parameter_type,
+                       U::type_graph().read().unwrap().deref()), Type::type_string(actual_parameter_type, U::type_graph().read().unwrap().deref()));
+        }
+
+        let extra_parameter_count = parameter_types.count();
+        if extra_parameter_count != 0 {
+            current_num_parameter_types += extra_parameter_count;
+            panic!("Function {} parameter count mismatch: Expected {}, got {}", function_name, cached_function_data.function_signature.parameter_type_indices.len(), current_num_parameter_types)
+        }
+    }
+    /// Returns type index of the function return value type, or None if function returns void
+    pub fn get_non_void_return_value_type(&self, function_name: &'static str) -> Option<usize> {
+        let cached_function_data = self.get_cached_function_data(function_name);
+        let return_type_index = cached_function_data.function_signature.return_value_type_index;
+        let result_type_definition = U::type_graph().read().unwrap().type_by_index(return_type_index).clone();
+        if result_type_definition != Type::Primitive(PrimitiveType::Void) { Some(return_type_index) } else { None }
+    }
+    /// Returns true if call thunk has been generated already
+    pub fn has_prepared_call_thunk(&self) -> bool {
+        self.has_call_thunk_generated.load(Ordering::Acquire)
+    }
+    /// Returns call thunk that was previously generated. Will panic if thunk is not generated
+    pub fn get_call_thunk(&self) -> FunctionCallThunkPrototype {
+        let call_thunk_data_ptr = self.call_thunk_data.load(Ordering::Acquire);
+        unsafe { call_thunk_data_ptr.as_ref() }.unwrap().call_thunk
+    }
+    /// Prepares the virtual function call thunk to be available
+    pub fn prepare_virtual_function_call_thunk(&self, function_name: &'static str, write_return_value_to_return_value_storage: bool, by_value_parameter_passed_as_pointer: &[bool]) {
+        if !self.has_call_thunk_generated.load(Ordering::Acquire) {
+            let cached_function_data = self.get_cached_function_data(function_name);
+            let call_thunk_reference = generate_virtual_function_call_thunk::<U>(cached_function_data, write_return_value_to_return_value_storage, by_value_parameter_passed_as_pointer).unwrap();
+
+            let call_thunk_data = Box::new(CachedFunctionCallThunkData{
+                call_thunk: unsafe { mem::transmute::<*const u8, FunctionCallThunkPrototype>(call_thunk_reference.text_start_addr) },
+                chunk_reference: call_thunk_reference,
+            });
+            self.call_thunk_data.store(Box::into_raw(call_thunk_data), Ordering::Release);
+            self.has_call_thunk_generated.store(true, Ordering::Release);
+        }
     }
 }

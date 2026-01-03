@@ -141,12 +141,14 @@ pub enum GospelOpcode {
     TypeUDTSetUserAlignment = 0x78, // ; [pop stack] [pop stack] ->
     #[strum(props(immediate_count = "1", stack_in_count = "2"))]
     TypeUDTAddBaseClass = 0x79, // <imm>; [pop stack] [pop stack] ->
-    #[strum(props(immediate_count = "2", stack_in_count = "3"))]
-    TypeUDTAddField = 0x7B, // <imm> <imm>; [pop stack] [pop stack] [pop stack] ->
-    #[strum(props(immediate_count = "2", stack_in_count = "3"))]
-    TypeUDTAddBitfield = 0x7C, // <imm> <imm>; [pop stack] [pop stack] [pop stack] ->
-    #[strum(props(immediate_count = "3", stack_in_count = "2", stack_variable_input_count_immediate = "2"))]
-    TypeUDTAddVirtualFunction = 0x7D, // <imm> <imm> <imm>; [pop stack] x <imm1> [pop stack] [pop stack] ->
+    #[strum(props(immediate_count = "1", stack_in_count = "1"))]
+    TypeUDTMaskCppTypeTraits = 0x7A, // <imm>; [pop stack] ->
+    #[strum(props(immediate_count = "3", stack_in_count = "3"))]
+    TypeUDTAddField = 0x7B, // <imm> <imm> <imm>; [pop stack] [pop stack] [pop stack] ->
+    #[strum(props(immediate_count = "3", stack_in_count = "3"))]
+    TypeUDTAddBitfield = 0x7C, // <imm> <imm> <imm>; [pop stack] [pop stack] [pop stack] ->
+    #[strum(props(immediate_count = "2", stack_in_count = "3", stack_variable_input_count_immediate = "2"))]
+    TypeUDTAddVirtualFunction = 0x7D, // <imm> <imm>; [pop stack] x <imm1> [pop stack] [pop stack] [pop stack] ->
     #[strum(props(stack_in_count = "2"))]
     TypeUDTAttachMetadata = 0x7E, // ; [pop stack] [pop stack] ->
     #[strum(props(stack_in_count = "1"))]
@@ -279,4 +281,26 @@ impl GospelInstruction {
         }
         Ok(Self{opcode, instruction_encoding, immediate_operands: result_immediate_operands })
     }
+}
+
+/// All constants that can be passed to Gospel Opcodes
+pub mod gospel_opcode_constants {
+    // TypeUDTAddBaseClass
+    pub const BASE_CLASS_FLAG_PROTOTYPE: u32 = 1 << 0;
+    // TypeUDTMaskCppTypeTraits
+    pub const CPP_TYPE_TRAITS_MASK_TRIVIALLY_CONSTRUCTIBLE: u32 = 1 << 0;
+    pub const CPP_TYPE_TRAITS_MASK_TRIVIALLY_DESTRUCTIBLE: u32 = 1 << 1;
+    pub const CPP_TYPE_TRAITS_MASK_TRIVIALLY_COPY_CONSTRUCTIBLE: u32 = 1 << 2;
+    pub const CPP_TYPE_TRAITS_MASK_TRIVIALLY_MOVE_CONSTRUCTIBLE: u32 = 1 << 3;
+    pub const CPP_TYPE_TRAITS_MASK_TRIVIALLY_COPY_ASSIGNABLE: u32 = 1 << 4;
+    pub const CPP_TYPE_TRAITS_MASK_TRIVIALLY_MOVE_ASSIGNABLE: u32 = 1 << 5;
+    // TypeUDTAddField/TypeUDTAddBitfield
+    pub const FIELD_FLAG_PROTOTYPE: u32 = 1 << 0;
+    // TypeUDTAddVirtualFunction
+    pub const VIRTUAL_FUNCTION_FLAG_PROTOTYPE: u32 = 1 << 0;
+    pub const VIRTUAL_FUNCTION_FLAG_CONST: u32 = 1 << 1;
+    pub const VIRTUAL_FUNCTION_FLAG_OVERRIDE: u32 = 1 << 2;
+    pub const VIRTUAL_FUNCTION_FLAG_UNRESOLVED_RETURN_TYPE: u32 = 1 << 3;
+    // TypeEnumAddConstant/TypeUDTAddEnumConstantWithValue
+    pub const ENUM_CONSTANT_FLAG_PROTOTYPE: u32 = 1 << 0;
 }

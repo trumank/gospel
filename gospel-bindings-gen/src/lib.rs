@@ -64,7 +64,9 @@ pub fn build_rs_generate_bindings(module_name: &str, bindings_type: ModuleBindin
     println!("cargo::rerun-if-changed={}", module_dir.display());
 
     if let Err(generation_error) = generate_module_bindings(&module_dir, &output_file_path, bindings_options) {
-        println!("cargo::error={}", generation_error);
+        for error_line in generation_error.to_string().split('\n').map(|x| x.trim_ascii()).filter(|x| !x.is_empty()) {
+            println!("cargo::error={}", error_line);
+        }
         exit(1);
     }
 }
