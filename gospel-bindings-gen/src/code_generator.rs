@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail};
 use convert_case::{Case, Casing};
 use gospel_compiler::ast::ExpressionValueType;
 use gospel_compiler::backend::CompilerFunctionSignature;
-use gospel_typelib::type_model::{EnumType, FunctionDeclaration, PrimitiveType, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeMember};
+use gospel_typelib::type_model::{EnumType, FunctionDeclaration, PrimitiveType, Type, TypeGraphLike, TypeLayoutCache, UserDefinedType, UserDefinedTypeMember};
 use gospel_vm::vm::{GospelVMTypeContainer, GospelVMValue};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
@@ -532,7 +532,7 @@ impl CodeGenerationContext {
             }
         })
     }
-    fn generate_type_virtual_function_definition(&self, virtual_function_prototype: &VirtualFunctionPrototypeData, is_prototype_virtual_function: bool, type_definition: &BindingsTypeDefinition) -> anyhow::Result<TokenStream> {
+    fn generate_type_virtual_function_definition(&self, virtual_function_prototype: &VirtualFunctionPrototypeData, is_prototype_virtual_function: bool, type_definition: &BindingsTypeDefinition, function_name_override: Option<&str>, hidden_function: bool) -> anyhow::Result<TokenStream> {
         let mut parameter_declarations: Vec<TokenStream> = Vec::new();
         let mut parameter_ptr_values: Vec<TokenStream> = Vec::new();
         let mut parameter_pass_by_reference: Vec<TokenStream> = Vec::new();
@@ -541,7 +541,11 @@ impl CodeGenerationContext {
         let mut any_parameters_need_allocator_type: bool = false;
         let mut any_parameters_need_allocator_instance: bool = false;
 
-        let function_name_string_sneak_case = Self::convert_field_name_to_snake_case(&virtual_function_prototype.virtual_function.name);
+        let function_name_string_sneak_case = if let Some(overridden_function_name) = function_name_override {
+            overridden_function_name.into()
+        } else {
+            Self::convert_field_name_to_snake_case(&virtual_function_prototype.virtual_function.name)
+        };
         let virtual_function_name = &Ident::new(&function_name_string_sneak_case, Span::call_site());
 
         let function_doc_comment = Self::generate_doc_comment(type_definition, &format!("{}$doc", &virtual_function_prototype.virtual_function.name));
@@ -637,11 +641,12 @@ impl CodeGenerationContext {
                     (call_descriptor.get_call_thunk())(#self_type_value_as_ptr, return_value_storage, dynamic_parameter_values.as_ptr())
                 }
         } else { quote!{ (call_descriptor.get_call_thunk())(#self_type_value_as_ptr, return_value_storage, [#(#parameter_ptr_values),*].as_ptr()) } };
+        let function_access_specifier = if !hidden_function { Some(quote!{ pub }) } else { None };
 
         let check_function_available_fragment = if is_prototype_virtual_function {
             let check_existence_function_name = &Ident::new(&format!("check_available_{}", &function_name_string_sneak_case), Span::call_site());
             Some(quote! {
-                pub fn #check_existence_function_name() {
+                #function_access_specifier fn #check_existence_function_name() {
                     use generic_statics::{define_namespace, Namespace};
                     define_namespace!(CheckExistenceType);
                     let check_function_exists = CheckExistenceType::generic_static::<gospel_runtime::local_type_model::CachedThreadSafeCheckFunctionExists<Self, #type_universe>>();
@@ -652,7 +657,7 @@ impl CodeGenerationContext {
 
         let result_function_definition = quote! {
             #function_doc_comment
-            pub fn #virtual_function_name #optional_allocator_generic_type (#self_type_declaration, #(#parameter_declarations),*) #return_value_declaration {
+            #function_access_specifier fn #virtual_function_name #optional_allocator_generic_type (#self_type_declaration, #(#parameter_declarations),*) #return_value_declaration {
                 use generic_statics::{define_namespace, Namespace};
                 use gospel_runtime::core_type_definitions::StaticTypeTag;
                 use gospel_runtime::local_type_model::ImplicitPtrMetadata;
@@ -872,23 +877,32 @@ impl CodeGenerationContext {
 
         let mut generated_virtual_function_names: HashSet<String> = HashSet::new();
         let mut generated_virtual_functions: Vec<TokenStream> = Vec::new();
+        let mut has_known_virtual_destructor: bool = false;
 
-        // Generate exact virtual functions first
-        for udt_member in &user_defined_type.members {
-            if let UserDefinedTypeMember::VirtualFunction(virtual_function) = udt_member && !virtual_function.is_virtual_function_override && !virtual_function.name.contains("@") {
-                let function_prototype_data = VirtualFunctionPrototypeData{virtual_function: virtual_function.clone(), ..VirtualFunctionPrototypeData::default()};
-                let virtual_function_tokens = self.generate_type_virtual_function_definition(&function_prototype_data, false, type_definition)?;
-                generated_virtual_functions.push(virtual_function_tokens);
-                generated_virtual_function_names.insert(function_prototype_data.virtual_function.name.clone());
+        if self.bindings_type == ModuleBindingsType::Local {
+            // Generate exact virtual functions first
+            for udt_member in &user_defined_type.members {
+                if let UserDefinedTypeMember::VirtualFunction(virtual_function) = udt_member && !virtual_function.is_virtual_function_override {
+                    let is_virtual_destructor_function = virtual_function.name == UserDefinedType::DESTRUCTOR_FUNCTION_NAME;
+                    if !virtual_function.name.contains("@") || is_virtual_destructor_function {
+                        let function_name_override = if is_virtual_destructor_function { Some("call_virtual_destructor") } else { None };
+                        let is_hidden_function = is_virtual_destructor_function;
+                        let function_prototype_data = VirtualFunctionPrototypeData{virtual_function: virtual_function.clone(), ..VirtualFunctionPrototypeData::default()};
+                        let virtual_function_tokens = self.generate_type_virtual_function_definition(&function_prototype_data, false, type_definition, function_name_override, is_hidden_function)?;
+                        generated_virtual_functions.push(virtual_function_tokens);
+                        generated_virtual_function_names.insert(function_prototype_data.virtual_function.name.clone());
+                        has_known_virtual_destructor |= is_virtual_destructor_function;
+                    }
+                }
             }
-        }
 
-        // Generate virtual function prototypes now
-        let virtual_function_prototypes = self.collect_udt_virtual_function_prototypes(type_container, &generated_virtual_function_names);
-        for virtual_function_prototype in &virtual_function_prototypes {
-            if !virtual_function_prototype.virtual_function.name.contains("@") {
-                let virtual_function_tokens = self.generate_type_virtual_function_definition(&virtual_function_prototype, true, type_definition)?;
-                generated_virtual_functions.push(virtual_function_tokens);
+            // Generate virtual function prototypes now
+            let virtual_function_prototypes = self.collect_udt_virtual_function_prototypes(type_container, &generated_virtual_function_names);
+            for virtual_function_prototype in &virtual_function_prototypes {
+                if !virtual_function_prototype.virtual_function.name.contains("@") {
+                    let virtual_function_tokens = self.generate_type_virtual_function_definition(&virtual_function_prototype, true, type_definition, None, false)?;
+                    generated_virtual_functions.push(virtual_function_tokens);
+                }
             }
         }
 
@@ -918,7 +932,28 @@ impl CodeGenerationContext {
                     }
                 }
             });
-            if type_definition.function_declaration.as_ref().unwrap().metadata.contains_key("impl_bitwise_clone") {
+
+            let statically_known_type_traits = if !type_container.partial_type {
+                let mut type_layout_cache = TypeLayoutCache::create(self.module_context.run_context.target_triplet().unwrap().clone());
+                Type::cpp_type_traits(type_definition.type_index.unwrap(), &self.module_context.run_context, &mut type_layout_cache).ok()
+            } else { None };
+
+            let trivially_constructible_hint = type_definition.function_declaration.as_ref().unwrap().metadata.contains_key("impl_zeroed_default");
+            let trivially_copy_constructible_hint = type_definition.function_declaration.as_ref().unwrap().metadata.contains_key("impl_bitwise_clone");
+            let trivially_destructible_hint = type_definition.function_declaration.as_ref().unwrap().metadata.contains_key("impl_empty_drop");
+            let custom_drop_impl = type_definition.function_declaration.as_ref().unwrap().metadata.contains_key("custom_drop_impl");
+
+            if statically_known_type_traits.as_ref().map(|x| x.trivially_constructible).unwrap_or(trivially_constructible_hint) {
+                all_type_implementations.push(quote! {
+                    unsafe impl #parameter_declaration gospel_runtime::local_type_model::DefaultConstructAtUninit for #type_name #parameter_list {
+                        unsafe fn default_construct_at(dest: *mut u8) {
+                            use gospel_runtime::local_type_model::ImplicitPtrMetadata;
+                            dest.write_bytes(0, Self::static_size_of_val());
+                        }
+                    }
+                });
+            }
+            if statically_known_type_traits.as_ref().map(|x| x.trivially_copy_constructible).unwrap_or(trivially_copy_constructible_hint) {
                 all_type_implementations.push(quote! {
                     unsafe impl #parameter_declaration std::clone::CloneToUninit for #type_name #parameter_list {
                         unsafe fn clone_to_uninit(&self, dest: *mut u8) {
@@ -928,12 +963,28 @@ impl CodeGenerationContext {
                     }
                 });
             }
-            if type_definition.function_declaration.as_ref().unwrap().metadata.contains_key("impl_zeroed_default") {
+            if has_known_virtual_destructor {
                 all_type_implementations.push(quote! {
-                    unsafe impl #parameter_declaration gospel_runtime::local_type_model::DefaultConstructAtUninit for #type_name #parameter_list {
-                        unsafe fn default_construct_at(dest: *mut u8) {
-                            use gospel_runtime::local_type_model::ImplicitPtrMetadata;
-                            dest.write_bytes(0, Self::static_size_of_val());
+                    impl #parameter_declaration Drop for #type_name #parameter_list {
+                        fn drop(&mut self) {
+                            self.call_virtual_destructor();
+                        }
+                    }
+                });
+            } else if statically_known_type_traits.as_ref().map(|x| x.trivially_destructible).unwrap_or(trivially_destructible_hint) {
+                all_type_implementations.push(quote! {
+                    impl #parameter_declaration Drop for #type_name #parameter_list {
+                        fn drop(&mut self) {}
+                    }
+                });
+            } else if !custom_drop_impl {
+                all_type_implementations.push(quote! {
+                    impl #parameter_declaration Drop for #type_name #parameter_list {
+                        fn drop(&mut self) {
+                            panic!("Drop not implemented for Gospel type {} (which does not have a virtual destructor or can be statically proven to be trivially destructible). \
+                                Add [[impl_empty_drop]] to type definition to indicate that this type has no destructor, \
+                                or mark the type definition with [[custom_drop_impl]] and provide custom Drop impl for this type, \
+                                or avoid dropping instances of this type (since Drop without destructor will leak memory and/or IO)", #full_type_name);
                         }
                     }
                 });

@@ -28,8 +28,7 @@ type uint32_t = unsigned int;
 type int64_t = long long int;
 type uint64_t = unsigned long long int;
 
-/* Test block comment */
-[[impl_bitwise_clone]] [[impl_zeroed_default]]
+[[impl_bitwise_clone]] [[impl_zeroed_default]] [[impl_empty_drop]]
 template<typename T>
 struct TVector {
     T X;
@@ -66,12 +65,11 @@ visible struct TArray {
     InAllocator::typename IndexType ArrayMax;
 };
 
-[[impl_bitwise_clone]] [[impl_zeroed_default]]
 struct FNameEntryId {
     uint32_t Value;
 };
 // FName has different alignment requirements across versions due to union in early versions
-[[impl_bitwise_clone]] [[impl_zeroed_default]]
+[[impl_bitwise_clone]] [[impl_zeroed_default]] [[impl_empty_drop]]
 struct alignas(if (UE_VERSION >= 411 && UE_VERSION < 422) 8 else 4) FName {
     if (UE_VERSION < 422) {
         // Early versions (4.12-4.21): Contains union with uint64_t (8-byte aligned)
@@ -90,13 +88,11 @@ struct alignas(if (UE_VERSION >= 411 && UE_VERSION < 422) 8 else 4) FName {
     }
 };
 
-[[impl_bitwise_clone]] [[impl_zeroed_default]]
 struct FStructBaseChain {
     (FStructBaseChain*)* StructBaseChainArray;
     int32_t NumStructBasesInChainMinusOne;
 };
 
-[[impl_bitwise_clone]] [[impl_zeroed_default]]
 struct FClassBaseChain {
     (FClassBaseChain*)* ClassBaseChainArray;
     int32_t NumClassBasesInChainMinusOne;
@@ -104,6 +100,7 @@ struct FClassBaseChain {
 
 struct FFastIndexingClassTreeRegistrar {
     uint64_t Placeholder;
+    // Note that this is not actually a trivial type
 };
 
 type EPropertyFlags = uint64_t;
@@ -111,13 +108,12 @@ type ELifetimeCondition = uint8_t;
 type EArrayPropertyFlags = uint8_t;
 type EMapPropertyFlags = uint8_t;
 
-[[impl_bitwise_clone]] [[impl_zeroed_default]]
 template<typename T>
 struct TEnumAsByte {
-    T Value;
+    uint8_t ByteValue;
 };
 
-[[impl_bitwise_clone]] [[impl_zeroed_default]]
+[[impl_bitwise_clone]] [[impl_zeroed_default]] [[impl_empty_drop]]
 template<typename T>
 struct TObjectPtr {
     T* Object; // Memory-identical to raw pointer
@@ -778,20 +774,18 @@ struct TUniquePtr {
     T* Ptr;
 };
 
-[[impl_bitwise_clone]] [[impl_zeroed_default]]
 struct FIntPoint {
     int32_t X;
     int32_t Y;
 };
 
-[[impl_bitwise_clone]] [[impl_zeroed_default]]
 struct FIntVector {
     int32_t X;
     int32_t Y;
     int32_t Z;
 };
 
-[[impl_bitwise_clone]] [[impl_zeroed_default]]
+[[impl_bitwise_clone]] [[impl_zeroed_default]] [[impl_empty_drop]]
 struct FBox {
     FVector Min;
     FVector Max;
@@ -839,7 +833,6 @@ struct UMetaData {
     uint64_t Placeholder[10];
 };
 
-[[impl_bitwise_clone]] [[impl_zeroed_default]]
 struct FPackageId {
     uint64_t Value;
 };
@@ -859,7 +852,6 @@ struct FPackagePath {
     }
 };
 
-[[impl_bitwise_clone]] [[impl_zeroed_default]]
 struct FPackageFileVersion {
     int32_t FileVersionUE4;
     int32_t FileVersionUE5;
@@ -964,7 +956,7 @@ class UPackage : UObject {
     }
 };
 
-[[impl_zeroed_default]]
+[[impl_zeroed_default]] [[impl_bitwise_clone]] [[impl_empty_drop]]
 struct FStaticConstructObjectParameters {
     UClass* Class;
     UObject* Outer;
