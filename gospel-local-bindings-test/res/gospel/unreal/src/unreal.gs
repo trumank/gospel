@@ -29,7 +29,7 @@ type int64_t = long long int;
 type uint64_t = unsigned long long int;
 
 /* Test block comment */
-[[bitwise_copyable]] [[zero_constructible]]
+[[impl_bitwise_clone]] [[impl_zeroed_default]]
 template<typename T>
 struct TVector {
     T X;
@@ -41,21 +41,21 @@ type FVector = if (UE_VERSION >= 501) TVector<double> else TVector<float>;
 
 visible struct FScriptElement {};
 
-[[zero_constructible]]
+[[impl_zeroed_default]]
 template<typename InIndexType>
 visible struct TSizedHeapAllocator {
     type IndexType = InIndexType;
     private FScriptElement* Data;
 };
 
-[[zero_constructible]]
+[[impl_zeroed_default]]
 template<typename InElementType, unsigned int InNumInlineElements, typename InSecondaryAllocator>
 visible struct TInlineAllocator {
     InElementType InlineAllocation[InNumInlineElements];
     InSecondaryAllocator SecondaryAllocation;
 };
 
-[[zero_constructible]]
+[[impl_zeroed_default]]
 template<typename InElementType, typename InAllocator = TSizedHeapAllocator<int32_t>>
 visible struct TArray {
     type ElementType = InElementType;
@@ -66,12 +66,12 @@ visible struct TArray {
     InAllocator::typename IndexType ArrayMax;
 };
 
-[[bitwise_copyable]] [[zero_constructible]]
+[[impl_bitwise_clone]] [[impl_zeroed_default]]
 struct FNameEntryId {
     uint32_t Value;
 };
 // FName has different alignment requirements across versions due to union in early versions
-[[bitwise_copyable]] [[zero_constructible]]
+[[impl_bitwise_clone]] [[impl_zeroed_default]]
 struct alignas(if (UE_VERSION >= 411 && UE_VERSION < 422) 8 else 4) FName {
     if (UE_VERSION < 422) {
         // Early versions (4.12-4.21): Contains union with uint64_t (8-byte aligned)
@@ -90,13 +90,13 @@ struct alignas(if (UE_VERSION >= 411 && UE_VERSION < 422) 8 else 4) FName {
     }
 };
 
-[[bitwise_copyable]] [[zero_constructible]]
+[[impl_bitwise_clone]] [[impl_zeroed_default]]
 struct FStructBaseChain {
     (FStructBaseChain*)* StructBaseChainArray;
     int32_t NumStructBasesInChainMinusOne;
 };
 
-[[bitwise_copyable]] [[zero_constructible]]
+[[impl_bitwise_clone]] [[impl_zeroed_default]]
 struct FClassBaseChain {
     (FClassBaseChain*)* ClassBaseChainArray;
     int32_t NumClassBasesInChainMinusOne;
@@ -111,13 +111,13 @@ type ELifetimeCondition = uint8_t;
 type EArrayPropertyFlags = uint8_t;
 type EMapPropertyFlags = uint8_t;
 
-[[bitwise_copyable]] [[zero_constructible]]
+[[impl_bitwise_clone]] [[impl_zeroed_default]]
 template<typename T>
 struct TEnumAsByte {
     T Value;
 };
 
-[[bitwise_copyable]] [[zero_constructible]]
+[[impl_bitwise_clone]] [[impl_zeroed_default]]
 template<typename T>
 struct TObjectPtr {
     T* Object; // Memory-identical to raw pointer
@@ -772,26 +772,26 @@ struct TScopedPointer {
     T* Ptr;
 };
 
-[[zero_constructible]]
+[[impl_zeroed_default]]
 template<typename T>
 struct TUniquePtr {
     T* Ptr;
 };
 
-[[bitwise_copyable]] [[zero_constructible]]
+[[impl_bitwise_clone]] [[impl_zeroed_default]]
 struct FIntPoint {
     int32_t X;
     int32_t Y;
 };
 
-[[bitwise_copyable]] [[zero_constructible]]
+[[impl_bitwise_clone]] [[impl_zeroed_default]]
 struct FIntVector {
     int32_t X;
     int32_t Y;
     int32_t Z;
 };
 
-[[bitwise_copyable]] [[zero_constructible]]
+[[impl_bitwise_clone]] [[impl_zeroed_default]]
 struct FBox {
     FVector Min;
     FVector Max;
@@ -839,7 +839,7 @@ struct UMetaData {
     uint64_t Placeholder[10];
 };
 
-[[bitwise_copyable]] [[zero_constructible]]
+[[impl_bitwise_clone]] [[impl_zeroed_default]]
 struct FPackageId {
     uint64_t Value;
 };
@@ -859,7 +859,7 @@ struct FPackagePath {
     }
 };
 
-[[bitwise_copyable]] [[zero_constructible]]
+[[impl_bitwise_clone]] [[impl_zeroed_default]]
 struct FPackageFileVersion {
     int32_t FileVersionUE4;
     int32_t FileVersionUE5;
@@ -964,7 +964,7 @@ class UPackage : UObject {
     }
 };
 
-[[zero_constructible]]
+[[impl_zeroed_default]]
 struct FStaticConstructObjectParameters {
     UClass* Class;
     UObject* Outer;

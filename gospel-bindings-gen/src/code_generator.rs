@@ -4,7 +4,6 @@ use anyhow::{anyhow, bail};
 use convert_case::{Case, Casing};
 use gospel_compiler::ast::ExpressionValueType;
 use gospel_compiler::backend::CompilerFunctionSignature;
-use gospel_compiler::core_attributes::{is_trivially_constructible, is_trivially_copyable};
 use gospel_typelib::type_model::{EnumType, FunctionDeclaration, PrimitiveType, Type, TypeGraphLike, UserDefinedType, UserDefinedTypeMember};
 use gospel_vm::vm::{GospelVMTypeContainer, GospelVMValue};
 use proc_macro2::{Ident, Span, TokenStream};
@@ -919,7 +918,7 @@ impl CodeGenerationContext {
                     }
                 }
             });
-            if is_trivially_copyable(type_definition.function_declaration.as_ref().unwrap()) {
+            if type_definition.function_declaration.as_ref().unwrap().metadata.contains_key("impl_bitwise_clone") {
                 all_type_implementations.push(quote! {
                     unsafe impl #parameter_declaration std::clone::CloneToUninit for #type_name #parameter_list {
                         unsafe fn clone_to_uninit(&self, dest: *mut u8) {
@@ -929,7 +928,7 @@ impl CodeGenerationContext {
                     }
                 });
             }
-            if is_trivially_constructible(type_definition.function_declaration.as_ref().unwrap()) {
+            if type_definition.function_declaration.as_ref().unwrap().metadata.contains_key("impl_zeroed_default") {
                 all_type_implementations.push(quote! {
                     unsafe impl #parameter_declaration gospel_runtime::local_type_model::DefaultConstructAtUninit for #type_name #parameter_list {
                         unsafe fn default_construct_at(dest: *mut u8) {

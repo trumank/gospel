@@ -4,4 +4,3 @@ pub mod backend;
 mod lex_util;
 pub mod parser;
 pub mod module_definition;
-pub mod core_attributes;
