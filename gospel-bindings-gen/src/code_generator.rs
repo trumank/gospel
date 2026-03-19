@@ -853,6 +853,43 @@ impl CodeGenerationContext {
         let full_type_name = user_defined_type.name.clone().unwrap();
         let type_doc_comment = Self::generate_doc_comment(type_definition, "doc");
 
+        let mut generated_parent_class_cast_helpers: Vec<TokenStream> = Vec::new();
+        for known_base_class_index in &user_defined_type.base_class_indices {
+            let base_class_type_container = self.module_context.run_context.type_container_by_index(*known_base_class_index);
+            if let Type::UDT(base_class_udt) = &base_class_type_container.wrapped_type &&
+                let Some(base_class_udt_name) = &base_class_udt.name &&
+                let Some(source_crate_name) = self.module_context.type_source_crate_lookup.get(base_class_udt_name) {
+                // Try to generate as an explicit UDT definition within source crate
+                let full_base_class_type_name = self.generate_type_qualified_name(source_crate_name, base_class_udt_name);
+
+                let base_class_type = if let Some(function_arguments) = &base_class_type_container.source_function_args && !function_arguments.is_empty() {
+                    let base_class_type_arguments: Vec<TokenStream> = function_arguments.iter().map(|x| self.generate_vm_value_as_type(x)).collect::<anyhow::Result<Vec<TokenStream>>>()?;
+                    quote! { #full_base_class_type_name<#(#base_class_type_arguments),*> }
+                } else {
+                    quote! { #full_base_class_type_name }
+                };
+                let base_cast_helper_name = Self::convert_field_name_to_snake_case(&Self::generate_short_type_name(base_class_udt_name));
+
+                if self.bindings_type == ModuleBindingsType::Local {
+                    let type_universe = self.generate_type_universe_full_name();
+                    let cast_helper_name = Ident::new(&base_cast_helper_name, Span::call_site());
+                    let mut_cast_helper_name = Ident::new(&format!("{}_mut", base_cast_helper_name), Span::call_site());
+
+                    generated_parent_class_cast_helpers.push(quote! {
+                        pub fn #cast_helper_name(&self) -> &#base_class_type { gospel_runtime::local_type_model::static_cast_checked::<Self, #base_class_type, #type_universe>(self) }
+                        pub fn #mut_cast_helper_name(&mut self) -> &mut #base_class_type { gospel_runtime::local_type_model::static_cast_mut_checked::<Self, #base_class_type, #type_universe>(self) }
+                    });
+                } else if self.bindings_type == ModuleBindingsType::External {
+                    let cast_helper_name = Ident::new(&base_cast_helper_name, Span::call_site());
+                    generated_parent_class_cast_helpers.push(quote! {
+                        pub fn #cast_helper_name<M : gospel_runtime::external_memory::Memory + gospel_runtime::external_type_model::TypeNamespace>(self: &gospel_runtime::external_type_model::Ref<M, Self>) -> gospel_runtime::external_type_model::Ref<M, #base_class_type> {
+                            self.cast_checked::<#base_class_type>()
+                        }
+                    });
+                }
+            }
+        }
+
         let mut generated_field_names: HashSet<String> = HashSet::new();
         let mut generated_fields: Vec<TokenStream> = Vec::new();
 
@@ -1004,6 +1041,7 @@ impl CodeGenerationContext {
             }
             #(#all_type_implementations)*
             impl #parameter_declaration #type_name #parameter_list {
+                #(#generated_parent_class_cast_helpers)*
                 #(#generated_fields)*
                 #(#generated_virtual_functions)*
             }

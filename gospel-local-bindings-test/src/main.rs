@@ -116,8 +116,7 @@ fn main() -> anyhow::Result<()> {
         object_flags: 1, internal_index: 50, class_private: null(), name_private: FNameLayout{value: 49, number: 5}, outer_private: null()}, next: null()};
 
     let field_ref = unsafe { UField::from_raw_ptr_mut(&mut test_field as *mut TestUFieldLayout).as_mut_unchecked() };
-    // TODO: Generate a type-level static_cast and static_cast_checked function that automatically picks implied type universe
-    let object_ref = static_cast_mut_checked::<UField, UObject, GospelVMTypeUniverse>(field_ref);
+    let object_ref = field_ref.u_object_mut();
     let object_internal_index = *object_ref.internal_index();
     assert_eq!(test_field.baseclass_0.internal_index, object_internal_index);
 

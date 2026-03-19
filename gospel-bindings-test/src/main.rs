@@ -43,7 +43,7 @@ fn main() -> anyhow::Result<()> {
     let opaque_field_ptr = OpaquePtr{memory: current_process_memory.clone(), address: test_field_address};
 
     let field_ptr = Ptr::<M, UField>::from_raw_ptr(opaque_field_ptr.clone()).to_ref_checked();
-    let object_ptr = field_ptr.cast_checked::<UObject>();
+    let object_ptr = UField::u_object(&field_ptr);
     let object_internal_index = UObject::internal_index(&object_ptr).read()?;
     assert_eq!(test_field.baseclass_0.internal_index, object_internal_index);
 
