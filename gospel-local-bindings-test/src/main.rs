@@ -5,9 +5,8 @@
 
 use std::alloc::{Global};
 use std::mem::MaybeUninit;
-use std::path::PathBuf;
 use std::ptr::null;
-use std::str::FromStr;
+use include_dir::{include_dir, Dir};
 use gospel_runtime::local_type_model::{allocate_default, allocate_zeroed, enable_dynamic_code_backtraces, static_cast_mut_checked, ImplicitPtrMetadata, PlatformWideChar};
 use gospel_runtime::vm_integration::{GospelVMTypeGraphBackend, GospelVMTypeUniverse};
 use gospel_typelib::compiled_target_triplet;
@@ -103,13 +102,13 @@ struct TestUFieldLayout {
     next: *const TestUFieldLayout,
 }
 
+static UNREAL_MODULE_ROOT: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/res/gospel/unreal");
+
 fn main() -> anyhow::Result<()> {
     enable_dynamic_code_backtraces();
 
-    let module_path = PathBuf::from_str(env!("CARGO_MANIFEST_DIR"))?.join("res/gospel/unreal");
-
     let vm_options = GospelVMOptions::default().target_triplet(compiled_target_triplet().unwrap()).with_global("UE_VERSION", 504);
-    let type_graph_backend = GospelVMTypeGraphBackend::create_from_module_tree(&module_path, &Vec::new(), vm_options)?;
+    let type_graph_backend = GospelVMTypeGraphBackend::create_from_root_module(UNREAL_MODULE_ROOT.clone(), vm_options)?;
     GospelVMTypeUniverse::set_type_graph_backend(type_graph_backend);
 
     let mut test_field = TestUFieldLayout{baseclass_0: TestUObjectLayout{vtable: TestUObjectVTableLayout::static_get_object_vtable(),

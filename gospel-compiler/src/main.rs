@@ -29,7 +29,6 @@ pub mod parser;
 mod lex_util;
 pub mod backend;
 pub mod module_definition;
-pub mod core_attributes;
 
 #[derive(Parser, Debug)]
 struct ActionAssembleModule {
@@ -192,7 +191,7 @@ struct CommandLineModuleCompileOptions {
     module: Option<PathBuf>,
 }
 impl CommandLineModuleCompileOptions {
-    fn resolve_module_dependencies(&self) -> anyhow::Result<Rc<GospelModule>> {
+    fn resolve_module_dependencies(&self) -> anyhow::Result<(Rc<GospelModule>, PathBuf)> {
         let mut all_module_paths: Vec<PathBuf> = Vec::new();
         for module_include_path in &self.included_modules {
             let absolute_module_path = absolute(module_include_path)?;
@@ -204,11 +203,11 @@ impl CommandLineModuleCompileOptions {
             user_specified_path
         } else { current_dir()? })?;
         let main_module_index = all_module_paths.iter().position(|x| x == &absolute_module_path).unwrap_or_else(|| {
-            all_module_paths.push(absolute_module_path);
+            all_module_paths.push(absolute_module_path.clone());
             all_module_paths.len() - 1
         });
         let resolved_modules = resolve_module_dependencies(&all_module_paths)?;
-        Ok(resolved_modules[main_module_index].clone())
+        Ok((resolved_modules[main_module_index].clone(), absolute_module_path))
     }
 }
 
@@ -499,10 +498,10 @@ fn do_action_parse(action: ActionParseSourceFile) -> anyhow::Result<()> {
 }
 
 fn do_action_compile(action: ActionCompileModule) -> anyhow::Result<()> {
-    let module_definition = action.module_compile_options.resolve_module_dependencies()?;
+    let (module_definition, module_dir) = action.module_compile_options.resolve_module_dependencies()?;
     let compiler_instance = action.compiler_options.create_compiler_instance()?;
 
-    let output_file_name = action.output.unwrap_or_else(|| module_definition.default_build_product_path());
+    let output_file_name = action.output.unwrap_or_else(|| module_dir.join("target").join(&format!("{}.gso", &module_definition.module_name())));
     if let Some(parent_directory) = output_file_name.parent() {
         create_dir_all(parent_directory).map_err(|x| anyhow!("Failed to create parent directories for file {}: {}", output_file_name.display(), x))?;
     }
@@ -517,7 +516,7 @@ fn do_action_compile(action: ActionCompileModule) -> anyhow::Result<()> {
 }
 
 fn do_action_eval(action: ActionEvalExpression) -> anyhow::Result<()> {
-    let module_definition = action.module_compile_options.resolve_module_dependencies()?;
+    let module_definition = action.module_compile_options.resolve_module_dependencies()?.0;
     let compiler_instance = action.compiler_options.create_compiler_instance()?;
 
     // Compile full module tree and mount it to the VM state

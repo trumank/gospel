@@ -110,7 +110,7 @@ impl GospelVMOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct GospelVMMemberPrototype {
     pub member_declaration: UserDefinedTypeMember,
     pub unresolved_return_type: bool,

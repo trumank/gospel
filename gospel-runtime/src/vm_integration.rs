@@ -1,23 +1,23 @@
-use std::path::PathBuf;
-use std::ptr::null_mut;
-use std::str::FromStr;
-use std::sync::{Mutex, RwLock};
-use std::sync::atomic::{AtomicPtr, Ordering};
-use anyhow::anyhow;
-use gospel_typelib::type_model::{MutableTypeGraph, Type, TypeGraphLike, TypeTemplateArgument};
-use gospel_vm::vm::{GospelVMOptions, GospelVMRunContext, GospelVMState, GospelVMValue};
-use gospel_vm::writer::GospelSourceObjectReference;
-#[cfg(feature = "compiler")]
-use gospel_compiler::backend::{CompilerInstance, CompilerOptions};
-#[cfg(feature = "compiler")]
-use gospel_compiler::module_definition::resolve_module_dependencies;
-use lazy_static::lazy_static;
-use gospel_typelib::target_triplet::TargetTriplet;
 use crate::core_type_definitions::StaticTypeLayoutCache;
 #[cfg(feature = "external")]
 use crate::external_type_model::TypeNamespace;
 #[cfg(feature = "local")]
 use crate::local_type_model::TypeUniverse;
+use anyhow::anyhow;
+#[cfg(feature = "compiler")]
+use gospel_compiler::backend::{CompilerInstance, CompilerOptions};
+#[cfg(feature = "compiler")]
+use gospel_compiler::module_definition::{resolve_module_dependencies_generic, GospelPathLike};
+use gospel_typelib::target_triplet::TargetTriplet;
+use gospel_typelib::type_model::{MutableTypeGraph, Type, TypeGraphLike, TypeTemplateArgument};
+use gospel_vm::vm::{GospelVMOptions, GospelVMRunContext, GospelVMState, GospelVMValue};
+use gospel_vm::writer::GospelSourceObjectReference;
+use lazy_static::lazy_static;
+use std::ptr::null_mut;
+use std::rc::Rc;
+use std::str::FromStr;
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::{Mutex, RwLock};
 
 #[derive(Debug)]
 pub struct GospelVMTypeGraphBackend {
@@ -26,12 +26,12 @@ pub struct GospelVMTypeGraphBackend {
 }
 impl GospelVMTypeGraphBackend {
     #[cfg(feature = "compiler")]
-    pub fn create_from_module_tree(module_path: &PathBuf, additional_dependencies: &Vec<PathBuf>, vm_options: GospelVMOptions) -> anyhow::Result<GospelVMTypeGraphBackend> {
-        let mut root_module_paths: Vec<PathBuf> = Vec::new();
+    pub fn create_from_module_tree(module_path: Rc<dyn GospelPathLike>, additional_dependencies: &Vec<Rc<dyn GospelPathLike>>, vm_options: GospelVMOptions) -> anyhow::Result<GospelVMTypeGraphBackend> {
+        let mut root_module_paths: Vec<Rc<dyn GospelPathLike>> = Vec::new();
         root_module_paths.push(module_path.clone());
         root_module_paths.extend(additional_dependencies.iter().cloned());
 
-        let resolved_root_modules = resolve_module_dependencies(&root_module_paths)?;
+        let resolved_root_modules = resolve_module_dependencies_generic(&root_module_paths)?;
         let main_module_path = resolved_root_modules[0].clone();
 
         let compiler_instance = CompilerInstance::create(CompilerOptions::default());
@@ -44,6 +44,11 @@ impl GospelVMTypeGraphBackend {
         let vm_run_context = GospelVMRunContext::create(vm_options);
         Ok(GospelVMTypeGraphBackend{vm_instance, vm_run_context})
     }
+    #[cfg(feature = "compiler")]
+    pub fn create_from_root_module<T : GospelPathLike + 'static>(module_path: T, vm_options: GospelVMOptions) -> anyhow::Result<GospelVMTypeGraphBackend> {
+        Self::create_from_module_tree(Rc::new(module_path), &Vec::new(), vm_options)
+    }
+
     #[cfg(feature = "external")]
     pub fn to_type_ptr_namespace(self) -> GospelVMTypeNamespace {
         let target_triplet = self.vm_run_context.target_triplet().unwrap().clone();

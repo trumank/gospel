@@ -35,7 +35,7 @@ fn main() -> anyhow::Result<()> {
     let module_path = PathBuf::from_str(env!("CARGO_MANIFEST_DIR"))?.join("res/gospel/unreal");
 
     let vm_options = GospelVMOptions::default().target_triplet(compiled_target_triplet().unwrap()).with_global("UE_VERSION", 504);
-    let type_graph_backend = GospelVMTypeGraphBackend::create_from_module_tree(&module_path, &Vec::new(), vm_options)?;
+    let type_graph_backend = GospelVMTypeGraphBackend::create_from_root_module(module_path, vm_options)?;
     let current_process_memory =  Arc::new(M{memory: CurrentProcessMemory{}, namespace: type_graph_backend.to_type_ptr_namespace()});
 
     let test_field = TestUFieldLayout{baseclass_0: TestUObjectLayout{vtable: 0, object_flags: 1, internal_index: 50, class_private: null(), name_private: 0, outer_private: null()}, next: null()};

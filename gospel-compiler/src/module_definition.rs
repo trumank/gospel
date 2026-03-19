@@ -1,7 +1,9 @@
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::{read_to_string};
-use std::path::{absolute, Path, PathBuf};
+use std::fmt::{Debug, Formatter};
+use std::hash::{Hash, Hasher};
+use std::path::{PathBuf};
 use std::rc::Rc;
 use std::str::FromStr;
 use anyhow::{anyhow, bail};
@@ -9,10 +11,151 @@ use fancy_regex::Regex;
 use itertools::Itertools;
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
-use walkdir::WalkDir;
+use strum::Display;
 use gospel_vm::module::GospelContainer;
 use crate::backend::{CompilerInstance, CompilerModuleBuilder};
 use crate::parser::parse_source_file;
+
+/// Resolves module dependency graph given the list of module paths
+pub fn resolve_module_dependencies(root_module_paths: &Vec<PathBuf>) -> anyhow::Result<Vec<Rc<GospelModule>>> {
+    resolve_module_dependencies_generic(&root_module_paths.iter().map(|x| Rc::new(x.clone()) as Rc<dyn GospelPathLike>).collect())
+}
+
+/// Resolves module dependency graph given the list of module paths
+pub fn resolve_module_dependencies_generic(root_module_paths: &Vec<Rc<dyn GospelPathLike>>) -> anyhow::Result<Vec<Rc<GospelModule>>> {
+    let mut new_resolver = GospelModuleResolver{modules: HashMap::new(), root_modules: Vec::new(), modules_pending_solve: Vec::new()};
+    new_resolver.discover_modules_recursive(root_module_paths)?;
+    new_resolver.solve_module_dependencies()?;
+    new_resolver.collect_module_dependencies()?;
+    Ok(new_resolver.root_modules)
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Display, Hash)]
+pub enum GospelPathLikeType {
+    Dir, File, Symlink, Unknown
+}
+
+/** Trait for path-like objects. Abstract away the underlying filesystem */
+pub trait GospelPathLike {
+    fn get_file_name(&self) -> String;
+    fn file_type(&self) -> anyhow::Result<GospelPathLikeType>;
+    fn resolve(&self, subpath: &str) -> anyhow::Result<Rc<dyn GospelPathLike>>;
+    fn walk(&self) -> anyhow::Result<Vec<anyhow::Result<Rc<dyn GospelPathLike>>>>;
+    fn read_to_string(&self) -> anyhow::Result<String>;
+    fn display_to_string(&self) -> String;
+    fn get_extension(&self) -> Option<String> {
+        let file_name = self.get_file_name();
+        if let Some(separator_index) = file_name.rfind('.') {
+            Some(file_name[separator_index + 1..].to_string())
+        } else { None }
+    }
+    fn get_identity_for_comparison(&self) -> &[u8];
+}
+impl Debug for dyn GospelPathLike {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display_to_string())
+    }
+}
+impl PartialEq for dyn GospelPathLike {
+    fn eq(&self, other: &Self) -> bool {
+        self.get_identity_for_comparison() == other.get_identity_for_comparison()
+    }
+}
+impl Eq for dyn GospelPathLike {}
+impl Hash for dyn GospelPathLike {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.get_identity_for_comparison().hash(state);
+    }
+}
+impl PartialOrd for dyn GospelPathLike {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.get_identity_for_comparison().partial_cmp(other.get_identity_for_comparison())
+    }
+}
+impl Ord for dyn GospelPathLike {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+
+fn walk_recursive(dir: Rc<dyn GospelPathLike>) -> anyhow::Result<Vec<anyhow::Result<Rc<dyn GospelPathLike>>>> {
+    let mut result_entries: Vec<anyhow::Result<Rc<dyn GospelPathLike>>> = Vec::new();
+    let mut undiscovered_dirs: Vec<Rc<dyn GospelPathLike>> = Vec::new();
+    undiscovered_dirs.push(dir);
+    while let Some(dir_like) = undiscovered_dirs.pop() {
+        for dir_entry in dir_like.walk()? {
+            if let Ok(x) = &dir_entry && let Ok(file_type) = x.file_type() && file_type == GospelPathLikeType::Dir {
+                undiscovered_dirs.push(dir_entry.as_ref().unwrap().clone());
+            }
+            result_entries.push(dir_entry);
+        }
+    }
+    Ok(result_entries)
+}
+
+impl GospelPathLike for PathBuf {
+    fn get_file_name(&self) -> String {
+        self.file_name().unwrap().to_string_lossy().to_string()
+    }
+    fn file_type(&self) -> anyhow::Result<GospelPathLikeType> {
+        let file_metadata = std::fs::metadata(self)?;
+        if file_metadata.is_file() { return Ok(GospelPathLikeType::File); }
+        if file_metadata.is_dir() { return Ok(GospelPathLikeType::Dir); }
+        if file_metadata.is_symlink() { return Ok(GospelPathLikeType::Symlink); }
+        Ok(GospelPathLikeType::Unknown)
+    }
+    fn resolve(&self, subpath: &str) -> anyhow::Result<Rc<dyn GospelPathLike>> {
+        Ok(Rc::new(self.join(subpath)))
+    }
+    fn walk(&self) -> anyhow::Result<Vec<anyhow::Result<Rc<dyn GospelPathLike>>>> {
+        let read_result = std::fs::read_dir(self)?;
+        let mut result: Vec<anyhow::Result<Rc<dyn GospelPathLike>>> = Vec::new();
+        for dir_entry_result in read_result {
+            result.push(Ok(dir_entry_result.map(|x| Rc::new(x.path()))?));
+        }
+        Ok(result)
+    }
+    fn read_to_string(&self) -> anyhow::Result<String> {
+        Ok(std::fs::read_to_string(self)?)
+    }
+    fn display_to_string(&self) -> String {
+        self.display().to_string()
+    }
+    fn get_identity_for_comparison(&self) -> &[u8] {
+        self.as_os_str().as_encoded_bytes()
+    }
+}
+
+fn map_include_dir_dir_entry(dir_entry: &include_dir::DirEntry<'static>) -> Rc<dyn GospelPathLike> {
+    match dir_entry {
+        include_dir::DirEntry::Dir(dir) => Rc::new(dir.clone()),
+        include_dir::DirEntry::File(file) => Rc::new(file.clone())
+    }
+}
+impl GospelPathLike for include_dir::Dir<'static> {
+    fn get_file_name(&self) -> String { self.path().file_name().unwrap().to_string_lossy().to_string() }
+    fn file_type(&self) -> anyhow::Result<GospelPathLikeType> { Ok(GospelPathLikeType::Dir) }
+    fn resolve(&self, subpath: &str) -> anyhow::Result<Rc<dyn GospelPathLike>> {
+        Ok(map_include_dir_dir_entry(self.get_entry(subpath).ok_or_else(|| anyhow!("File does not exist"))?))
+    }
+    fn walk(&self) -> anyhow::Result<Vec<anyhow::Result<Rc<dyn GospelPathLike>>>> {
+        Ok(self.entries().iter().map(|x| Ok(map_include_dir_dir_entry(x))).collect())
+    }
+    fn read_to_string(&self) -> anyhow::Result<String> { Err(anyhow!("Unsupported operation for Dir")) }
+    fn display_to_string(&self) -> String { self.path().display().to_string() }
+    fn get_identity_for_comparison(&self) -> &[u8] { self.path().as_os_str().as_encoded_bytes() }
+}
+impl GospelPathLike for include_dir::File<'static> {
+    fn get_file_name(&self) -> String { self.path().file_name().unwrap().to_string_lossy().to_string() }
+    fn file_type(&self) -> anyhow::Result<GospelPathLikeType> { Ok(GospelPathLikeType::File) }
+    fn resolve(&self, _subpath: &str) -> anyhow::Result<Rc<dyn GospelPathLike>> { Err(anyhow!("Unsupported operation for File")) }
+    fn walk(&self) -> anyhow::Result<Vec<anyhow::Result<Rc<dyn GospelPathLike>>>> { Err(anyhow!("Unsupported operation for File")) }
+    fn read_to_string(&self) -> anyhow::Result<String> {
+        Ok(self.contents_utf8().ok_or_else(|| anyhow!("Failed to parse contents as utf8"))?.to_string())
+    }
+    fn display_to_string(&self) -> String { self.path().display().to_string() }
+    fn get_identity_for_comparison(&self) -> &[u8] { self.path().as_os_str().as_encoded_bytes() }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GospelModuleDescriptor {
@@ -42,8 +185,8 @@ pub struct GospelModuleDefinitionFile {
 pub struct GospelModule {
     pub definition: GospelModuleDefinitionFile,
     pub version: Version,
-    pub module_dir: PathBuf,
-    pub source_dir: PathBuf,
+    pub module_dir: Rc<dyn GospelPathLike>,
+    pub source_dir: Rc<dyn GospelPathLike>,
     pub resolved_dependencies: RefCell<Vec<Rc<GospelModule>>>,
 }
 impl GospelModule {
@@ -51,13 +194,13 @@ impl GospelModule {
         &self.definition.module.name
     }
     fn collect_source_files(&self, builder: &dyn CompilerModuleBuilder) -> anyhow::Result<()> {
-        let mut all_source_files: Vec<PathBuf> = Vec::new();
+        let mut all_source_files: Vec<Rc<dyn GospelPathLike>> = Vec::new();
 
         // Discover all source files in the module first
-        for dir_entry_result in WalkDir::new(&self.source_dir) {
+        for dir_entry_result in walk_recursive(self.source_dir.clone())? {
             let dir_entry = dir_entry_result.map_err(|x| anyhow!("Failed to iterate module {} source directory: {}", &self.definition.module.name, x))?;
-            if dir_entry.file_type().is_file() && let Some(extension) = dir_entry.path().extension() && extension == "gs" {
-                all_source_files.push(dir_entry.path().to_path_buf());
+            if dir_entry.file_type()? == GospelPathLikeType::File && let Some(extension) = dir_entry.get_extension() && extension == "gs" {
+                all_source_files.push(dir_entry);
             }
         }
         // Sort files in a consistent order
@@ -65,12 +208,12 @@ impl GospelModule {
 
         // Parse source files and add them to the builder
         for source_filename in all_source_files {
-            let source_file_contents = read_to_string(&source_filename)
-                .map_err(|x| anyhow!("Failed to read module {} source file {}: {}", &self.definition.module.name, source_filename.display(), x))?;
-            let parsed_source_file = parse_source_file(&source_filename.file_name().unwrap().to_string_lossy().to_string(), &source_file_contents)
-                .map_err(|x| anyhow!("Failed to parse module {} source file {}: {}", &self.definition.module.name, source_filename.display(), x))?;
+            let source_file_contents = source_filename.read_to_string()
+                .map_err(|x| anyhow!("Failed to read module {} source file {}: {}", &self.definition.module.name, &source_filename.display_to_string(), x))?;
+            let parsed_source_file = parse_source_file(&source_filename.get_file_name(), &source_file_contents)
+                .map_err(|x| anyhow!("Failed to parse module {} source file {}: {}", &self.definition.module.name, &source_filename.display_to_string(), x))?;
             builder.add_source_file(parsed_source_file)
-                .map_err(|x| anyhow!("Failed to compile module {} source file {}: {}", &self.definition.module.name, source_filename.display(), x))?;
+                .map_err(|x| anyhow!("Failed to compile module {} source file {}: {}", &self.definition.module.name, &source_filename.display_to_string(), x))?;
         }
         Ok({})
     }
@@ -108,9 +251,6 @@ impl GospelModule {
         result_modules.push(self.compile_module(compiler)?);
         Ok(result_modules)
     }
-    pub fn default_build_product_path(&self) -> PathBuf {
-        self.module_dir.join("target").join(format!("{}.gso", &self.definition.module.name))
-    }
     fn collect_module_dependencies_recursive(&self, dependency_list: &mut Vec<Rc<GospelModule>>, dependency_set: &mut HashSet<String>) {
         for dependency_module in self.resolved_dependencies.borrow().iter() {
             dependency_module.collect_module_dependencies_recursive(dependency_list, dependency_set);
@@ -125,7 +265,7 @@ impl GospelModule {
 #[derive(Debug, Clone, Default)]
 struct GospelModuleSource {
     module_name: String,
-    all_locations: RefCell<HashMap<PathBuf, Rc<GospelModule>>>,
+    all_locations: RefCell<HashMap<Rc<dyn GospelPathLike>, Rc<GospelModule>>>,
     solver_constraints: RefCell<Vec<VersionReq>>,
     resolved_module: RefCell<Option<Rc<GospelModule>>>,
 }
@@ -137,7 +277,7 @@ struct GospelModuleResolver {
     modules_pending_solve: Vec<String>,
 }
 impl GospelModuleResolver {
-    fn discover_modules_recursive(&mut self, root_module_paths: &Vec<PathBuf>) -> anyhow::Result<()> {
+    fn discover_modules_recursive(&mut self, root_module_paths: &Vec<Rc<dyn GospelPathLike>>) -> anyhow::Result<()> {
         let mut module_stack: Vec<String> = Vec::new();
         module_stack.push(String::from("<root modules>"));
         for module_path in root_module_paths {
@@ -205,19 +345,18 @@ impl GospelModuleResolver {
         }
         Ok({})
     }
-    fn resolve_module_internal(&mut self, module_path: &Path, expected_module_name: Option<&str>, module_stack: &mut Vec<String>) -> anyhow::Result<Rc<GospelModule>> {
+    fn resolve_module_internal(&mut self, module_dir: &Rc<dyn GospelPathLike>, expected_module_name: Option<&str>, module_stack: &mut Vec<String>) -> anyhow::Result<Rc<GospelModule>> {
         let referenced_by_string = module_stack.join(" -> ");
-        let absolute_module_path = absolute(module_path)
-            .map_err(|x| anyhow!("Module directory {} does not exist: {} (referenced by {})", module_path.display(), x, &referenced_by_string))?;
 
-        let module_file_path = absolute_module_path.join(PathBuf::from("Gospel.toml"));
-        if !module_file_path.is_file() {
-            bail!("Failed to find gospel module descriptor file at {} (referenced by {})", module_file_path.display(), &referenced_by_string);
+        let module_file_path_result = module_dir.resolve("Gospel.toml").ok();
+        if module_file_path_result.as_ref().and_then(|x| x.file_type().ok()) != Some(GospelPathLikeType::File) {
+            bail!("Failed to find gospel module descriptor file at {}/Gospel.toml (referenced by {})", module_dir.display_to_string(), &referenced_by_string);
         }
-        let module_file_contents = read_to_string(&module_file_path)
-            .map_err(|x| anyhow!("Failed to read gospel module descriptor file at {}: {} (referenced by {})", module_file_path.display(), x, &referenced_by_string))?;
+        let module_file_path = module_file_path_result.unwrap();
+        let module_file_contents = module_file_path.read_to_string()
+            .map_err(|x| anyhow!("Failed to read gospel module descriptor file at {}: {} (referenced by {})", module_file_path.display_to_string(), x, &referenced_by_string))?;
         let module_definition: GospelModuleDefinitionFile = toml::from_str(&module_file_contents)
-            .map_err(|x| anyhow!("Failed to parse gospel module descriptor file at {}: {} (referenced by {})", module_file_path.display(), x, &referenced_by_string))?;
+            .map_err(|x| anyhow!("Failed to parse gospel module descriptor file at {}: {} (referenced by {})", module_file_path.display_to_string(), x, &referenced_by_string))?;
 
         let module_name = module_definition.module.name.clone();
         let module_name_pattern = Regex::from_str("[A-Za-z0-9-_$]+")?;
@@ -234,27 +373,28 @@ impl GospelModuleResolver {
         // Check if there is already an existing module at this absolute path
         let module_source = self.modules.entry(module_name.clone()).or_insert_with(||
             Rc::new(GospelModuleSource{module_name: module_name.clone(), ..GospelModuleSource::default()})).clone();
-        if let Some(existing_module) = module_source.all_locations.borrow().get(&absolute_module_path) {
+        if let Some(existing_module) = module_source.all_locations.borrow().get(module_dir) {
             return Ok(existing_module.clone());
         }
 
         let module_version = Version::parse(&module_definition.module.version)
             .map_err(|x| anyhow!("Failed to parse module {} version: {} (referenced by {})", &module_name, x, &referenced_by_string))?;
         // Make sure module source directory exists
-        let module_source_dir = absolute_module_path.join("src");
-        if !module_source_dir.is_dir() {
-            bail!("Module {} does not have source directory {} (referenced by {})", module_name, module_source_dir.display(), &referenced_by_string);
+        let module_source_dir_result = module_dir.resolve("src").ok();
+        if module_source_dir_result.as_ref().and_then(|x| x.file_type().ok()) != Some(GospelPathLikeType::Dir) {
+            bail!("Module {} does not have source directory {}/src (referenced by {})", module_name, module_dir.display_to_string(), &referenced_by_string);
         }
-        let result_module = Rc::new(GospelModule{definition: module_definition.clone(), version: module_version, module_dir: absolute_module_path.clone(),
+        let module_source_dir = module_source_dir_result.unwrap();
+        let result_module = Rc::new(GospelModule{definition: module_definition.clone(), version: module_version, module_dir: module_dir.clone(),
             source_dir: module_source_dir, resolved_dependencies: RefCell::new(Vec::new())});
-        module_source.all_locations.borrow_mut().insert(absolute_module_path.clone(), result_module.clone());
+        module_source.all_locations.borrow_mut().insert(module_dir.clone(), result_module.clone());
 
         // Resolve module dependencies
         module_stack.push(module_name.clone());
         for (dependency_module_name, dependency_descriptor) in &module_definition.dependencies {
             if !dependency_descriptor.path.is_empty() {
-                let dependency_path = absolute_module_path.join(&dependency_descriptor.path);
-                self.resolve_module_internal(&dependency_path, Some(dependency_module_name.as_str()), module_stack)
+                module_dir.resolve(&dependency_descriptor.path)
+                    .and_then(|x| self.resolve_module_internal(&x, Some(dependency_module_name.as_str()), module_stack))
                     .map_err(|x| anyhow!("Failed to resolve module {} dependency {}: {} (referenced by {})", module_name, dependency_module_name, x, &referenced_by_string))?;
             }
         }
@@ -262,13 +402,4 @@ impl GospelModuleResolver {
 
         Ok(result_module)
     }
-}
-
-/// Resolves module dependency graph given the list of module paths
-pub fn resolve_module_dependencies(root_module_paths: &Vec<PathBuf>) -> anyhow::Result<Vec<Rc<GospelModule>>> {
-    let mut new_resolver = GospelModuleResolver{modules: HashMap::new(), root_modules: Vec::new(), modules_pending_solve: Vec::new()};
-    new_resolver.discover_modules_recursive(root_module_paths)?;
-    new_resolver.solve_module_dependencies()?;
-    new_resolver.collect_module_dependencies()?;
-    Ok(new_resolver.root_modules)
 }
