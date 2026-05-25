@@ -31,7 +31,7 @@ pub enum DataEndianness {
 }
 
 /// Represents a target triplet with unparsed textual components that have been disambiguated
-#[derive(Copy, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
 pub struct RawTargetTriplet<'a> {
     pub arch_and_sub: &'a str,
     pub vendor: &'a str,
@@ -39,38 +39,35 @@ pub struct RawTargetTriplet<'a> {
     pub abi: Option<&'a str>,
 }
 
-/// Parses given target triplet string into the disambiguated raw target triplet
-pub fn parse_raw_target_triplet(target_triplet_str: &str) -> RawTargetTriplet<'_> {
+pub fn parse_raw_target_triplet(target_triplet_str: &str) -> Option<RawTargetTriplet<'_>> {
     // String format: <arch><sub>-<vendor>-<sys>-<abi>. Sub, vendor and abi are optional
     let components: Vec<&str> = target_triplet_str.split("-").collect();
-    if components.len() < 2 || components.len() > 4 {
-        panic!("Invalid TARGET format '{}'. Expected from 2 to 4 components", target_triplet_str);
-    }
-    if components.len() == 2 {
-        // For 2 components, the format is not ambiguous and is <arch><sub>-<sys>. Default ABI is assumed in this case, as well as "unknown" vendor
-        RawTargetTriplet{arch_and_sub: components[0], vendor: "unknown", sys: components[1], abi: None}
-    } else if components.len() == 4 {
-        // For 4 components, the format is not ambiguous and is <arch><sub>-<vendor>-<sys>-<abi> with all components present
-        RawTargetTriplet{arch_and_sub: components[0], vendor: components[1], sys: components[2], abi: Some(components[3])}
-    } else if components.len() == 3 {
-        // For 3 components, the format is ambiguous. It could be either <arch><sub>-<sys>-<abi> or <arch><sub>-<vendor>-<sys>
-        // We can disambiguate by checking against known vendors and systems, and then fall back to <arch><sub>-<sys>
-        lazy_static! {
-            static ref known_vendors: HashSet<&'static str> = HashSet::from(["esp32", "esp32s2", "apple", "win7", "uwp", "unknown", "pc", "lynx", "unikraft", "nvidia", "wrs", "sny", "mti", "amd", "nintendo"]);
-            static ref known_oss: HashSet<&'static str> = HashSet::from(["none", "windows", "darwin", "freebsd", "fuchsia", "haiku", "hermit", "hurd-gnu", "illumos", "l4re", "linux", "dragonfly", "solaris", "nto", "cygwin", "lynx", "s178", "netbsd", "switch", "watchos", "visionos", "tvos", "ios"]);
+    match components.len() {
+        2 => {
+            // For 2 components, the format is not ambiguous and is <arch><sub>-<sys>. Default ABI is assumed in this case, as well as "unknown" vendor
+            Some(RawTargetTriplet{arch_and_sub: components[0], vendor: "unknown", sys: components[1], abi: None})
         }
-        // If second component is a well-known vendor name or third component is well-known OS name, this is <arch><sub>-<vendor>-<sys>
-        if known_vendors.contains(components[1]) || known_oss.contains(components[2]) {
-            RawTargetTriplet{arch_and_sub: components[0], vendor: components[1], sys: components[2], abi: None}
-        } else if known_vendors.contains(components[1]) {
-            // If second component is a well-known OS name, this is <arch><sub>-<sys>-<abi>
-            RawTargetTriplet{arch_and_sub: components[0], vendor: "unknown", sys: components[1], abi: Some(components[2])}
-        } else {
-            // Otherwise, assume second component is vendor name, and third component is an OS name
-            RawTargetTriplet{arch_and_sub: components[0], vendor: components[1], sys: components[2], abi: None}
+        4 => {
+            // For 4 components, the format is not ambiguous and is <arch><sub>-<vendor>-<sys>-<abi> with all components present
+            Some(RawTargetTriplet{arch_and_sub: components[0], vendor: components[1], sys: components[2], abi: Some(components[3])})
         }
-    } else {
-        panic!("Invalid size for target triplet: {}", components.len());
+        3 => {
+            // For 3 components, the format is ambiguous. It could be either <arch><sub>-<sys>-<abi> or <arch><sub>-<vendor>-<sys>
+            // We disambiguate by checking against known vendors and systems.
+            lazy_static! {
+                static ref known_vendors: HashSet<&'static str> = HashSet::from(["esp32", "esp32s2", "apple", "win7", "uwp", "unknown", "pc", "lynx", "unikraft", "nvidia", "wrs", "sny", "mti", "amd", "nintendo"]);
+                static ref known_oss: HashSet<&'static str> = HashSet::from(["none", "windows", "darwin", "freebsd", "fuchsia", "haiku", "hermit", "hurd-gnu", "illumos", "l4re", "linux", "dragonfly", "solaris", "nto", "cygwin", "lynx", "s178", "netbsd", "switch", "watchos", "visionos", "tvos", "ios"]);
+            }
+            if known_oss.contains(components[1]) {
+                // If the second component is a well-known OS name, this is <arch><sub>-<sys>-<abi>, e.g. aarch64-linux-android
+                Some(RawTargetTriplet{arch_and_sub: components[0], vendor: "unknown", sys: components[1], abi: Some(components[2])})
+            } else {
+                // Otherwise the second component is a vendor name and the third is the OS, i.e. <arch><sub>-<vendor>-<sys>.
+                // This covers known vendors (e.g. pc), known OSes in the third slot, and the ambiguous fallback.
+                Some(RawTargetTriplet{arch_and_sub: components[0], vendor: components[1], sys: components[2], abi: None})
+            }
+        }
+        _ => None,
     }
 }
 
@@ -166,7 +163,86 @@ impl TargetTriplet {
     }
     /// Parses the given string into a target triplet
     pub fn parse(triplet_str: &str) -> Option<TargetTriplet> {
-        let raw_target_triplet = parse_raw_target_triplet(triplet_str);
-        Self::parse_from_raw(raw_target_triplet)
+        Self::parse_from_raw(parse_raw_target_triplet(triplet_str)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_android_three_component() {
+        // The second component is a known OS, so this is <arch>-<sys>-<abi>.
+        assert_eq!(
+            TargetTriplet::parse("aarch64-linux-android"),
+            Some(TargetTriplet {
+                arch: TargetArchitecture::ARM64,
+                sys: TargetOperatingSystem::Linux,
+                env: Some(TargetEnvironment::Android),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_android_four_component() {
+        assert_eq!(
+            TargetTriplet::parse("aarch64-unknown-linux-android"),
+            Some(TargetTriplet {
+                arch: TargetArchitecture::ARM64,
+                sys: TargetOperatingSystem::Linux,
+                env: Some(TargetEnvironment::Android),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_common_triplets() {
+        assert_eq!(
+            TargetTriplet::parse("x86_64-pc-windows-msvc"),
+            Some(TargetTriplet {
+                arch: TargetArchitecture::X86_64,
+                sys: TargetOperatingSystem::Win32,
+                env: Some(TargetEnvironment::MSVC),
+            })
+        );
+        // Two-component form: <arch>-<sys>, default (None) ABI.
+        assert_eq!(
+            TargetTriplet::parse("x86_64-windows"),
+            Some(TargetTriplet {
+                arch: TargetArchitecture::X86_64,
+                sys: TargetOperatingSystem::Win32,
+                env: None,
+            })
+        );
+        // Three-component <arch>-<sys>-<abi> for a non-android ABI.
+        assert_eq!(
+            TargetTriplet::parse("x86_64-linux-gnu"),
+            Some(TargetTriplet {
+                arch: TargetArchitecture::X86_64,
+                sys: TargetOperatingSystem::Linux,
+                env: Some(TargetEnvironment::Gnu),
+            })
+        );
+        // Three-component <arch>-<vendor>-<sys> where the vendor is known.
+        assert_eq!(
+            TargetTriplet::parse("x86_64-pc-windows"),
+            Some(TargetTriplet {
+                arch: TargetArchitecture::X86_64,
+                sys: TargetOperatingSystem::Win32,
+                env: None,
+            })
+        );
+    }
+
+    #[test]
+    fn malformed_input_returns_none_without_panicking() {
+        for bad in ["", "x86_64", "a-b-c-d-e", "one-two-three-four-five"] {
+            assert_eq!(parse_raw_target_triplet(bad), None, "input: {bad:?}");
+            assert_eq!(TargetTriplet::parse(bad), None, "input: {bad:?}");
+        }
+        // Well-formed shape but unsupported arch/os/abi resolves to None too.
+        assert_eq!(TargetTriplet::parse("mips-unknown-linux-gnu"), None);
+        assert_eq!(TargetTriplet::parse("x86_64-solaris"), None);
     }
 }
